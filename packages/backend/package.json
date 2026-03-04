@@ -9,10 +9,12 @@
     "dev:setup": "convex dev --configure --until-success"
   },
   "dependencies": {
+    "@ai-sdk/gateway": "latest",
+    "@convex-dev/better-auth": "catalog:",
+    "@mastra/core": "latest",
+    "@mvp-template/i18n": "workspace:*",
     "@react-email/components": "^0.5.7",
     "@react-email/render": "^1.4.0",
-    "@convex-dev/better-auth": "catalog:",
-    "@mvp-template/i18n": "workspace:*",
     "better-auth": "catalog:",
     "convex": "catalog:",
     "dotenv": "catalog:",
@@ -22,8 +24,8 @@
   },
   "devDependencies": {
     "@mvp-template/config": "workspace:*",
-    "@types/react": "19.2.7",
     "@types/node": "^24.3.0",
+    "@types/react": "19.2.7",
     "typescript": "catalog:"
   }
 }

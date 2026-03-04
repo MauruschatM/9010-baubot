@@ -395,7 +395,7 @@ function MembersRoute() {
                                 {t("app.shell.openMemberActions")}
                               </span>
                             </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
+                            <DropdownMenuContent align="end" className="w-44">
                               <DropdownMenuItem
                                 onClick={() => openEditRoleDialog(member)}
                                 disabled={
@@ -489,7 +489,7 @@ function MembersRoute() {
                               {t("app.shell.openInvitationActions")}
                             </span>
                           </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
+                          <DropdownMenuContent align="end" className="w-44">
                             <DropdownMenuItem
                               variant="destructive"
                               onClick={() =>

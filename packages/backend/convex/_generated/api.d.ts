@@ -8,13 +8,20 @@
  * @module
  */
 
+import type * as ai from "../ai.js";
+import type * as aiState from "../aiState.js";
 import type * as auth from "../auth.js";
 import type * as emails_organizationInvitationEmail from "../emails/organizationInvitationEmail.js";
 import type * as emails_otpEmail from "../emails/otpEmail.js";
 import type * as healthCheck from "../healthCheck.js";
 import type * as http from "../http.js";
 import type * as lib_resend from "../lib/resend.js";
+import type * as mastra_agent from "../mastra/agent.js";
+import type * as mastra_tools from "../mastra/tools.js";
+import type * as mastraComponent_constants from "../mastraComponent/constants.js";
+import type * as mastraComponent_serialization from "../mastraComponent/serialization.js";
 import type * as members from "../members.js";
+import type * as organizationAgentProfiles from "../organizationAgentProfiles.js";
 import type * as preferences from "../preferences.js";
 import type * as privateData from "../privateData.js";
 
@@ -25,13 +32,20 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  ai: typeof ai;
+  aiState: typeof aiState;
   auth: typeof auth;
   "emails/organizationInvitationEmail": typeof emails_organizationInvitationEmail;
   "emails/otpEmail": typeof emails_otpEmail;
   healthCheck: typeof healthCheck;
   http: typeof http;
   "lib/resend": typeof lib_resend;
+  "mastra/agent": typeof mastra_agent;
+  "mastra/tools": typeof mastra_tools;
+  "mastraComponent/constants": typeof mastraComponent_constants;
+  "mastraComponent/serialization": typeof mastraComponent_serialization;
   members: typeof members;
+  organizationAgentProfiles: typeof organizationAgentProfiles;
   preferences: typeof preferences;
   privateData: typeof privateData;
 }>;

@@ -1,0 +1,1038 @@
+import { v } from "convex/values";
+import {
+  paginationOptsValidator,
+  paginationResultValidator,
+} from "convex/server";
+
+import { components } from "./_generated/api";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
+import { authComponent } from "./auth";
+import {
+  MAX_CHAT_HISTORY_MESSAGES,
+  GENERATION_CONTEXT_LOOKBACK_MS,
+  GENERATION_CONTEXT_MAX_MESSAGES,
+  GENERATION_CONTEXT_MIN_MESSAGES,
+  getMastraResourceId,
+  getMastraThreadId,
+  vMastraChatMessageType,
+  vMastraChatRole,
+  vMastraChatRunStatus,
+  vMastraChatStreamActor,
+  vMastraChatStreamPhase,
+} from "./mastraComponent/constants";
+import {
+  toDisplayText,
+  toGenerationContent,
+} from "./mastraComponent/serialization";
+
+type MemberDoc = {
+  _id: string;
+  organizationId: string;
+  userId: string;
+  role: string;
+};
+
+const vPersistedMessageInput = v.object({
+  messageId: v.string(),
+  role: vMastraChatRole,
+  type: vMastraChatMessageType,
+  content: v.any(),
+  text: v.string(),
+  attachmentNames: v.array(v.string()),
+  createdAt: v.number(),
+});
+
+const vChatMessage = v.object({
+  id: v.string(),
+  threadOrder: v.number(),
+  role: vMastraChatRole,
+  type: vMastraChatMessageType,
+  createdAt: v.number(),
+  text: v.string(),
+  content: v.any(),
+  attachmentNames: v.array(v.string()),
+});
+
+const vChatThreadSummary = v.object({
+  threadId: v.string(),
+  title: v.union(v.string(), v.null()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+});
+
+const vPendingActionType = v.literal("delete-organization");
+const vPendingActionStatus = v.union(
+  v.literal("pending"),
+  v.literal("confirmed"),
+  v.literal("canceled"),
+  v.literal("expired"),
+);
+const vPendingActionPayload = v.object({
+  organizationId: v.string(),
+  organizationName: v.optional(v.string()),
+});
+
+const vPendingAction = v.object({
+  id: v.id("aiPendingActions"),
+  actionType: vPendingActionType,
+  payload: vPendingActionPayload,
+  expiresAt: v.number(),
+  createdAt: v.number(),
+});
+
+function sortMessages<T extends { createdAt: number; messageId: string }>(
+  messages: T[],
+) {
+  return messages.sort((messageA, messageB) => {
+    if (messageA.createdAt === messageB.createdAt) {
+      return messageA.messageId.localeCompare(messageB.messageId);
+    }
+    return messageA.createdAt - messageB.createdAt;
+  });
+}
+
+function normalizeCreatedAt(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeMessageText(message: {
+  type: "text" | "tool-call" | "tool-result";
+  text: string;
+  content: unknown;
+}) {
+  if (message.text && message.text.trim().length > 0) {
+    return message.text;
+  }
+
+  return toDisplayText({
+    type: message.type,
+    content: message.content,
+  });
+}
+
+function areArraysEqual(valuesA: string[], valuesB: string[]) {
+  if (valuesA.length !== valuesB.length) {
+    return false;
+  }
+
+  return valuesA.every((value, index) => value === valuesB[index]);
+}
+
+function areValuesEqual(valueA: unknown, valueB: unknown) {
+  try {
+    return JSON.stringify(valueA) === JSON.stringify(valueB);
+  } catch {
+    return false;
+  }
+}
+
+function createThreadId(options: { organizationId: string; userId: string }) {
+  const suffix =
+    typeof crypto !== "undefined" && "randomUUID" in crypto
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2);
+
+  return `${getMastraThreadId(options)}:${Date.now()}:${suffix}`;
+}
+
+function toChatMessage(message: {
+  messageId: string;
+  threadOrder: number;
+  role: "system" | "user" | "assistant" | "tool";
+  type: "text" | "tool-call" | "tool-result";
+  createdAt: number;
+  _creationTime: number;
+  text: string;
+  content: unknown;
+  attachmentNames: string[];
+}) {
+  return {
+    id: message.messageId,
+    threadOrder: message.threadOrder,
+    role: message.role,
+    type: message.type,
+    createdAt: normalizeCreatedAt(message.createdAt, message._creationTime),
+    text: normalizeMessageText({
+      type: message.type,
+      text: message.text,
+      content: message.content,
+    }),
+    content: message.content,
+    attachmentNames: message.attachmentNames,
+  };
+}
+
+export const getChatRuntimeState = query({
+  args: {
+    organizationId: v.string(),
+    threadId: v.optional(v.string()),
+  },
+  returns: v.object({
+    threadId: v.string(),
+    runStatus: vMastraChatRunStatus,
+    lastError: v.union(v.string(), v.null()),
+    streamingText: v.union(v.string(), v.null()),
+    streamPhase: vMastraChatStreamPhase,
+    streamActor: vMastraChatStreamActor,
+    activeToolLabel: v.union(v.string(), v.null()),
+    pendingAction: v.union(vPendingAction, v.null()),
+  }),
+  handler: async (ctx, args) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("You must be signed in");
+    }
+
+    const membership = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+      model: "member",
+      where: [
+        {
+          field: "organizationId",
+          operator: "eq",
+          value: args.organizationId,
+        },
+        {
+          field: "userId",
+          operator: "eq",
+          value: authUser._id,
+        },
+      ],
+    })) as MemberDoc | null;
+
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const defaultThreadId = getMastraThreadId({
+      organizationId: args.organizationId,
+      userId: authUser._id,
+    });
+    const threadId = args.threadId ?? defaultThreadId;
+    const existingThread = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_threadId", (q) => q.eq("threadId", threadId))
+      .unique();
+    if (
+      existingThread &&
+      (existingThread.organizationId !== args.organizationId ||
+        existingThread.userId !== authUser._id)
+    ) {
+      throw new Error("You do not have access to this chat thread");
+    }
+
+    const runState = await ctx.db
+      .query("chatThreadStates")
+      .withIndex("by_threadId", (q) => q.eq("threadId", threadId))
+      .unique();
+
+    const latestPendingAction = await ctx.db
+      .query("aiPendingActions")
+      .withIndex("by_thread_status_createdAt", (q) =>
+        q.eq("threadId", threadId).eq("status", "pending"),
+      )
+      .order("desc")
+      .first();
+
+    const pendingAction =
+      latestPendingAction && latestPendingAction.expiresAt > Date.now()
+        ? {
+            id: latestPendingAction._id,
+            actionType: latestPendingAction.actionType,
+            payload: latestPendingAction.payload,
+            expiresAt: latestPendingAction.expiresAt,
+            createdAt: latestPendingAction.createdAt,
+          }
+        : null;
+
+    return {
+      threadId,
+      runStatus: runState?.status ?? "idle",
+      lastError: runState?.lastError ?? null,
+      streamingText: runState?.streamingText ?? null,
+      streamPhase: runState?.streamPhase ?? "idle",
+      streamActor: runState?.streamActor ?? "main",
+      activeToolLabel: runState?.activeToolLabel ?? null,
+      pendingAction,
+    };
+  },
+});
+
+export const listChatMessages = query({
+  args: {
+    organizationId: v.string(),
+    threadId: v.optional(v.string()),
+    paginationOpts: paginationOptsValidator,
+  },
+  returns: paginationResultValidator(vChatMessage),
+  handler: async (ctx, args) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("You must be signed in");
+    }
+
+    const membership = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+      model: "member",
+      where: [
+        {
+          field: "organizationId",
+          operator: "eq",
+          value: args.organizationId,
+        },
+        {
+          field: "userId",
+          operator: "eq",
+          value: authUser._id,
+        },
+      ],
+    })) as MemberDoc | null;
+
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const defaultThreadId = getMastraThreadId({
+      organizationId: args.organizationId,
+      userId: authUser._id,
+    });
+    const threadId = args.threadId ?? defaultThreadId;
+    const existingThread = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_threadId", (q) => q.eq("threadId", threadId))
+      .unique();
+    if (
+      existingThread &&
+      (existingThread.organizationId !== args.organizationId ||
+        existingThread.userId !== authUser._id)
+    ) {
+      throw new Error("You do not have access to this chat thread");
+    }
+
+    const paginatedResult = await ctx.db
+      .query("agentChatMessages")
+      .withIndex("by_threadId_order", (q) => q.eq("threadId", threadId))
+      .order("desc")
+      .paginate(args.paginationOpts);
+
+    return {
+      ...paginatedResult,
+      page: paginatedResult.page.map((message) => toChatMessage(message)),
+    };
+  },
+});
+
+export const getChatState = query({
+  args: {
+    organizationId: v.string(),
+    threadId: v.optional(v.string()),
+  },
+  returns: v.object({
+    threadId: v.string(),
+    runStatus: vMastraChatRunStatus,
+    lastError: v.union(v.string(), v.null()),
+    streamingText: v.union(v.string(), v.null()),
+    streamPhase: vMastraChatStreamPhase,
+    streamActor: vMastraChatStreamActor,
+    activeToolLabel: v.union(v.string(), v.null()),
+    pendingAction: v.union(vPendingAction, v.null()),
+    messages: v.array(
+      v.object({
+        id: v.string(),
+        role: vMastraChatRole,
+        type: vMastraChatMessageType,
+        createdAt: v.number(),
+        text: v.string(),
+        content: v.any(),
+        attachmentNames: v.array(v.string()),
+      }),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("You must be signed in");
+    }
+
+    const membership = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+      model: "member",
+      where: [
+        {
+          field: "organizationId",
+          operator: "eq",
+          value: args.organizationId,
+        },
+        {
+          field: "userId",
+          operator: "eq",
+          value: authUser._id,
+        },
+      ],
+    })) as MemberDoc | null;
+
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const defaultThreadId = getMastraThreadId({
+      organizationId: args.organizationId,
+      userId: authUser._id,
+    });
+    const threadId = args.threadId ?? defaultThreadId;
+    const existingThread = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_threadId", (q) => q.eq("threadId", threadId))
+      .unique();
+    if (
+      existingThread &&
+      (existingThread.organizationId !== args.organizationId ||
+        existingThread.userId !== authUser._id)
+    ) {
+      throw new Error("You do not have access to this chat thread");
+    }
+
+    const recentMessages = await ctx.db
+      .query("agentChatMessages")
+      .withIndex("by_threadId_order", (q) => q.eq("threadId", threadId))
+      .order("desc")
+      .take(MAX_CHAT_HISTORY_MESSAGES);
+
+    const orderedMessages = recentMessages.slice().reverse();
+
+    const runState = await ctx.db
+      .query("chatThreadStates")
+      .withIndex("by_threadId", (q) => q.eq("threadId", threadId))
+      .unique();
+
+    const latestPendingAction = await ctx.db
+      .query("aiPendingActions")
+      .withIndex("by_thread_status_createdAt", (q) =>
+        q.eq("threadId", threadId).eq("status", "pending"),
+      )
+      .order("desc")
+      .first();
+
+    const pendingAction =
+      latestPendingAction && latestPendingAction.expiresAt > Date.now()
+        ? {
+            id: latestPendingAction._id,
+            actionType: latestPendingAction.actionType,
+            payload: latestPendingAction.payload,
+            expiresAt: latestPendingAction.expiresAt,
+            createdAt: latestPendingAction.createdAt,
+          }
+        : null;
+
+    return {
+      threadId,
+      runStatus: runState?.status ?? "idle",
+      lastError: runState?.lastError ?? null,
+      streamingText: runState?.streamingText ?? null,
+      streamPhase: runState?.streamPhase ?? "idle",
+      streamActor: runState?.streamActor ?? "main",
+      activeToolLabel: runState?.activeToolLabel ?? null,
+      pendingAction,
+      messages: orderedMessages.map((message) => ({
+        id: message.messageId,
+        role: message.role,
+        type: message.type,
+        createdAt: normalizeCreatedAt(message.createdAt, message._creationTime),
+        text: normalizeMessageText({
+          type: message.type,
+          text: message.text,
+          content: message.content,
+        }),
+        content: message.content,
+        attachmentNames: message.attachmentNames,
+      })),
+    };
+  },
+});
+
+export const createChatThread = mutation({
+  args: {
+    organizationId: v.string(),
+  },
+  returns: v.object({
+    threadId: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("You must be signed in");
+    }
+
+    const membership = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+      model: "member",
+      where: [
+        {
+          field: "organizationId",
+          operator: "eq",
+          value: args.organizationId,
+        },
+        {
+          field: "userId",
+          operator: "eq",
+          value: authUser._id,
+        },
+      ],
+    })) as MemberDoc | null;
+
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const now = Date.now();
+    const threadId = createThreadId({
+      organizationId: args.organizationId,
+      userId: authUser._id,
+    });
+    const resourceId = getMastraResourceId({
+      organizationId: args.organizationId,
+      userId: authUser._id,
+    });
+
+    await ctx.db.insert("agentChatThreads", {
+      threadId,
+      resourceId,
+      organizationId: args.organizationId,
+      userId: authUser._id,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return {
+      threadId,
+      createdAt: now,
+      updatedAt: now,
+    };
+  },
+});
+
+export const listChatThreads = query({
+  args: {
+    organizationId: v.string(),
+  },
+  returns: v.array(vChatThreadSummary),
+  handler: async (ctx, args) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("You must be signed in");
+    }
+
+    const membership = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+      model: "member",
+      where: [
+        {
+          field: "organizationId",
+          operator: "eq",
+          value: args.organizationId,
+        },
+        {
+          field: "userId",
+          operator: "eq",
+          value: authUser._id,
+        },
+      ],
+    })) as MemberDoc | null;
+
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const resourceId = getMastraResourceId({
+      organizationId: args.organizationId,
+      userId: authUser._id,
+    });
+
+    const threads = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_resourceId", (q) => q.eq("resourceId", resourceId))
+      .collect();
+
+    return threads
+      .filter(
+        (thread) =>
+          thread.organizationId === args.organizationId &&
+          thread.userId === authUser._id,
+      )
+      .sort((threadA, threadB) => {
+        if (threadA.updatedAt === threadB.updatedAt) {
+          return threadB.createdAt - threadA.createdAt;
+        }
+        return threadB.updatedAt - threadA.updatedAt;
+      })
+      .map((thread) => ({
+        threadId: thread.threadId,
+        title: thread.title ?? null,
+        createdAt: thread.createdAt,
+        updatedAt: thread.updatedAt,
+      }));
+  },
+});
+
+export const getChatThreadById = internalQuery({
+  args: {
+    threadId: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      threadId: v.string(),
+      resourceId: v.string(),
+      organizationId: v.string(),
+      userId: v.string(),
+      title: v.union(v.string(), v.null()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const thread = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_threadId", (q) => q.eq("threadId", args.threadId))
+      .unique();
+
+    if (!thread) {
+      return null;
+    }
+
+    return {
+      threadId: thread.threadId,
+      resourceId: thread.resourceId,
+      organizationId: thread.organizationId,
+      userId: thread.userId,
+      title: thread.title ?? null,
+      createdAt: thread.createdAt,
+      updatedAt: thread.updatedAt,
+    };
+  },
+});
+
+export const getMessagesForGeneration = internalQuery({
+  args: {
+    threadId: v.string(),
+  },
+  returns: v.array(
+    v.object({
+      id: v.string(),
+      role: vMastraChatRole,
+      type: vMastraChatMessageType,
+      content: v.any(),
+      createdAt: v.number(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const newestMessages = await ctx.db
+      .query("agentChatMessages")
+      .withIndex("by_threadId_order", (q) => q.eq("threadId", args.threadId))
+      .order("desc")
+      .take(GENERATION_CONTEXT_MAX_MESSAGES);
+
+    const now = Date.now();
+    const lookbackThreshold = now - GENERATION_CONTEXT_LOOKBACK_MS;
+
+    return newestMessages
+      .filter((message, index) => {
+        if (index < GENERATION_CONTEXT_MIN_MESSAGES) {
+          return true;
+        }
+
+        const createdAt = normalizeCreatedAt(message.createdAt, message._creationTime);
+        return createdAt >= lookbackThreshold;
+      })
+      .slice()
+      .reverse()
+      .map((message) => ({
+        id: message.messageId,
+        role: message.role,
+        type: message.type,
+        content: toGenerationContent({
+          type: message.type,
+          content: message.content,
+          text: message.text,
+        }),
+        createdAt: normalizeCreatedAt(message.createdAt, message._creationTime),
+      }));
+  },
+});
+
+export const upsertGeneratedMessages = internalMutation({
+  args: {
+    threadId: v.string(),
+    resourceId: v.string(),
+    organizationId: v.string(),
+    userId: v.string(),
+    title: v.optional(v.string()),
+    messages: v.array(vPersistedMessageInput),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+
+    let existingThread = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_threadId", (q) => q.eq("threadId", args.threadId))
+      .unique();
+
+    if (
+      existingThread &&
+      (existingThread.organizationId !== args.organizationId ||
+        existingThread.userId !== args.userId ||
+        existingThread.resourceId !== args.resourceId)
+    ) {
+      throw new Error("Invalid chat thread id");
+    }
+
+    if (!existingThread) {
+      const threadId = await ctx.db.insert("agentChatThreads", {
+        threadId: args.threadId,
+        resourceId: args.resourceId,
+        organizationId: args.organizationId,
+        userId: args.userId,
+        title: args.title,
+        createdAt: now,
+        updatedAt: now,
+      });
+      existingThread = await ctx.db.get(threadId);
+    }
+
+    const lastStoredMessage = await ctx.db
+      .query("agentChatMessages")
+      .withIndex("by_threadId_order", (q) => q.eq("threadId", args.threadId))
+      .order("desc")
+      .first();
+
+    let nextThreadOrder = lastStoredMessage?.threadOrder ?? 0;
+
+    const incomingMessages = sortMessages(
+      args.messages.slice().map((message) => ({
+        ...message,
+      })),
+    );
+
+    for (const message of incomingMessages) {
+      const normalizedText = normalizeMessageText({
+        type: message.type,
+        text: message.text,
+        content: message.content,
+      });
+      const normalizedCreatedAt = normalizeCreatedAt(message.createdAt, now);
+      const normalizedAttachmentNames = message.attachmentNames.filter(
+        (attachmentName) => attachmentName.trim().length > 0,
+      );
+
+      const existingMessage = await ctx.db
+        .query("agentChatMessages")
+        .withIndex("by_threadId_messageId", (q) =>
+          q.eq("threadId", args.threadId).eq("messageId", message.messageId),
+        )
+        .unique();
+
+      if (existingMessage) {
+        const shouldPatch =
+          existingMessage.role !== message.role ||
+          existingMessage.type !== message.type ||
+          existingMessage.text !== normalizedText ||
+          !areArraysEqual(existingMessage.attachmentNames, normalizedAttachmentNames) ||
+          !areValuesEqual(existingMessage.content, message.content) ||
+          existingMessage.createdAt !== normalizedCreatedAt;
+
+        if (shouldPatch) {
+          await ctx.db.patch(existingMessage._id, {
+            role: message.role,
+            type: message.type,
+            content: message.content,
+            text: normalizedText,
+            attachmentNames: normalizedAttachmentNames,
+            createdAt: normalizedCreatedAt,
+          });
+        }
+
+        continue;
+      }
+
+      nextThreadOrder += 1;
+      await ctx.db.insert("agentChatMessages", {
+        messageId: message.messageId,
+        threadId: args.threadId,
+        threadOrder: nextThreadOrder,
+        role: message.role,
+        type: message.type,
+        content: message.content,
+        text: normalizedText,
+        attachmentNames: normalizedAttachmentNames,
+        createdAt: normalizedCreatedAt,
+      });
+    }
+
+    if (existingThread) {
+      await ctx.db.patch(existingThread._id, {
+        updatedAt: now,
+        title: args.title ?? existingThread.title,
+      });
+    }
+
+    return null;
+  },
+});
+
+export const setChatThreadState = internalMutation({
+  args: {
+    threadId: v.string(),
+    resourceId: v.string(),
+    organizationId: v.string(),
+    userId: v.string(),
+    status: vMastraChatRunStatus,
+    lastError: v.union(v.string(), v.null()),
+    lastRunId: v.union(v.string(), v.null()),
+    streamingText: v.union(v.string(), v.null()),
+    streamPhase: vMastraChatStreamPhase,
+    streamActor: vMastraChatStreamActor,
+    activeToolLabel: v.union(v.string(), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const existingState = await ctx.db
+      .query("chatThreadStates")
+      .withIndex("by_threadId", (q) => q.eq("threadId", args.threadId))
+      .unique();
+
+    const patch = {
+      threadId: args.threadId,
+      resourceId: args.resourceId,
+      organizationId: args.organizationId,
+      userId: args.userId,
+      status: args.status,
+      lastError: args.lastError,
+      lastRunId: args.lastRunId,
+      streamingText: args.streamingText,
+      streamPhase: args.streamPhase,
+      streamActor: args.streamActor,
+      activeToolLabel: args.activeToolLabel,
+      updatedAt: Date.now(),
+    };
+
+    if (existingState) {
+      await ctx.db.patch(existingState._id, patch);
+      return null;
+    }
+
+    await ctx.db.insert("chatThreadStates", patch);
+    return null;
+  },
+});
+
+export const upsertPendingDeleteOrganizationAction = internalMutation({
+  args: {
+    threadId: v.string(),
+    resourceId: v.string(),
+    organizationId: v.string(),
+    userId: v.string(),
+    payload: vPendingActionPayload,
+    expiresAt: v.number(),
+  },
+  returns: v.object({
+    pendingActionId: v.id("aiPendingActions"),
+    expiresAt: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+
+    const existingPendingAction = await ctx.db
+      .query("aiPendingActions")
+      .withIndex("by_thread_status_createdAt", (q) =>
+        q.eq("threadId", args.threadId).eq("status", "pending"),
+      )
+      .order("desc")
+      .first();
+
+    if (
+      existingPendingAction &&
+      existingPendingAction.actionType === "delete-organization" &&
+      existingPendingAction.expiresAt > now
+    ) {
+      await ctx.db.patch(existingPendingAction._id, {
+        payload: args.payload,
+        expiresAt: args.expiresAt,
+        updatedAt: now,
+      });
+
+      return {
+        pendingActionId: existingPendingAction._id,
+        expiresAt: args.expiresAt,
+      };
+    }
+
+    if (existingPendingAction && existingPendingAction.expiresAt <= now) {
+      await ctx.db.patch(existingPendingAction._id, {
+        status: "expired",
+        updatedAt: now,
+        resolvedAt: now,
+      });
+    }
+
+    const pendingActionId = await ctx.db.insert("aiPendingActions", {
+      threadId: args.threadId,
+      resourceId: args.resourceId,
+      organizationId: args.organizationId,
+      userId: args.userId,
+      actionType: "delete-organization",
+      status: "pending",
+      payload: args.payload,
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: args.expiresAt,
+    });
+
+    return {
+      pendingActionId,
+      expiresAt: args.expiresAt,
+    };
+  },
+});
+
+export const getPendingActionById = internalQuery({
+  args: {
+    pendingActionId: v.id("aiPendingActions"),
+  },
+  returns: v.union(
+    v.object({
+      id: v.id("aiPendingActions"),
+      threadId: v.string(),
+      resourceId: v.string(),
+      organizationId: v.string(),
+      userId: v.string(),
+      actionType: vPendingActionType,
+      status: vPendingActionStatus,
+      payload: vPendingActionPayload,
+      createdAt: v.number(),
+      updatedAt: v.number(),
+      expiresAt: v.number(),
+      resolvedAt: v.optional(v.number()),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const pendingAction = await ctx.db.get(args.pendingActionId);
+    if (!pendingAction) {
+      return null;
+    }
+
+    return {
+      id: pendingAction._id,
+      threadId: pendingAction.threadId,
+      resourceId: pendingAction.resourceId,
+      organizationId: pendingAction.organizationId,
+      userId: pendingAction.userId,
+      actionType: pendingAction.actionType,
+      status: pendingAction.status,
+      payload: pendingAction.payload,
+      createdAt: pendingAction.createdAt,
+      updatedAt: pendingAction.updatedAt,
+      expiresAt: pendingAction.expiresAt,
+      resolvedAt: pendingAction.resolvedAt,
+    };
+  },
+});
+
+export const resolvePendingAction = internalMutation({
+  args: {
+    pendingActionId: v.id("aiPendingActions"),
+    status: v.union(
+      v.literal("confirmed"),
+      v.literal("canceled"),
+      v.literal("expired"),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const pendingAction = await ctx.db.get(args.pendingActionId);
+    if (!pendingAction) {
+      return null;
+    }
+
+    await ctx.db.patch(args.pendingActionId, {
+      status: args.status,
+      updatedAt: Date.now(),
+      resolvedAt: Date.now(),
+    });
+
+    return null;
+  },
+});
+
+export const clearChatHistory = mutation({
+  args: {
+    organizationId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("You must be signed in");
+    }
+
+    const membership = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+      model: "member",
+      where: [
+        {
+          field: "organizationId",
+          operator: "eq",
+          value: args.organizationId,
+        },
+        {
+          field: "userId",
+          operator: "eq",
+          value: authUser._id,
+        },
+      ],
+    })) as MemberDoc | null;
+
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const threadId = getMastraThreadId({
+      organizationId: args.organizationId,
+      userId: authUser._id,
+    });
+
+    const messages = await ctx.db
+      .query("agentChatMessages")
+      .withIndex("by_threadId_order", (q) => q.eq("threadId", threadId))
+      .collect();
+    await Promise.all(messages.map((message) => ctx.db.delete(message._id)));
+
+    const thread = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_threadId", (q) => q.eq("threadId", threadId))
+      .unique();
+    if (thread) {
+      await ctx.db.delete(thread._id);
+    }
+
+    const runState = await ctx.db
+      .query("chatThreadStates")
+      .withIndex("by_threadId", (q) => q.eq("threadId", threadId))
+      .unique();
+    if (runState) {
+      await ctx.db.delete(runState._id);
+    }
+
+    const pendingActions = await ctx.db
+      .query("aiPendingActions")
+      .withIndex("by_thread_status", (q) => q.eq("threadId", threadId))
+      .collect();
+    await Promise.all(
+      pendingActions.map((pendingAction) => ctx.db.delete(pendingAction._id)),
+    );
+
+    return null;
+  },
+});

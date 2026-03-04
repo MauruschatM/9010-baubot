@@ -116,6 +116,45 @@
   --radius-4xl: calc(var(--radius) + 16px);
 }
 
+@keyframes chat-shimmer {
+  0% {
+    background-position: 220% 0;
+    opacity: 0.74;
+  }
+  45% {
+    opacity: 1;
+  }
+  100% {
+    background-position: -220% 0;
+    opacity: 0.74;
+  }
+}
+
+@layer utilities {
+  .chat-shimmer-text {
+    color: color-mix(in oklab, var(--color-muted-foreground) 92%, transparent);
+    will-change: background-position, opacity;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .chat-shimmer-text {
+      color: transparent;
+      background-image: linear-gradient(
+        96deg,
+        color-mix(in oklab, var(--color-muted-foreground) 62%, transparent) 0%,
+        color-mix(in oklab, var(--color-muted-foreground) 62%, transparent) 34%,
+        color-mix(in oklab, var(--color-foreground) 90%, transparent) 50%,
+        color-mix(in oklab, var(--color-muted-foreground) 62%, transparent) 66%,
+        color-mix(in oklab, var(--color-muted-foreground) 62%, transparent) 100%
+      );
+      background-size: 260% 100%;
+      background-clip: text;
+      -webkit-background-clip: text;
+      animation: chat-shimmer 1.85s ease-in-out infinite;
+    }
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

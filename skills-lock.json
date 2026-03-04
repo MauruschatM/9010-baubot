@@ -56,6 +56,11 @@
       "sourceType": "github",
       "computedHash": "5d0e3b753d051d24e4688497947e5c018b54a889559ce50f61bb329c1d1e1848"
     },
+    "mastra": {
+      "source": "mastra-ai/skills",
+      "sourceType": "github",
+      "computedHash": "e252375a8efb764c7015eabe5deae8d387422a167da47eb20f326ccb7d697eb0"
+    },
     "resend": {
       "source": "resend/resend-skills",
       "sourceType": "github",

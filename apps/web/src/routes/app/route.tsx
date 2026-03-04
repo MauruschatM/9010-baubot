@@ -25,6 +25,7 @@ import { useTheme } from "next-themes";
 import { toast } from "sonner";
 import {
   RiArrowDownSLine,
+  RiCheckLine,
   RiComputerLine,
   RiGlobalLine,
   RiLayoutGridLine,
@@ -35,6 +36,7 @@ import {
   RiRepeatLine,
   RiSearchLine,
   RiSettings4Line,
+  RiSparklingLine,
   RiSunLine,
   RiTeamLine,
 } from "@remixicon/react";
@@ -94,6 +96,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { AgentChatPanel } from "@/components/agent-chat-panel";
 import { authClient } from "@/lib/auth-client";
 import {
   ensureProviderErrorCoverage,
@@ -114,6 +117,179 @@ function slugify(value: string) {
 type InviteMemberRole = "owner" | "admin" | "member";
 
 const inviteMemberRoleValues: InviteMemberRole[] = ["member", "admin", "owner"];
+
+type AgentStyleId = "woman" | "man";
+
+type AgentStyleOption = {
+  id: AgentStyleId;
+  imageSrc: string;
+  namePoolByLocale: Record<AppLocale, readonly string[]>;
+  labelKey: string;
+};
+
+const SHARED_AGENT_NAMES_BY_LOCALE: Record<AppLocale, readonly string[]> = {
+  en: [
+    "Nova",
+    "Ari",
+    "Noa",
+    "Sage",
+    "Sky",
+    "Robin",
+    "Jules",
+    "Mika",
+    "Alex",
+    "Phoenix",
+    "Kai",
+    "Remy",
+    "Quinn",
+    "Taylor",
+    "River",
+    "Emery",
+    "Reese",
+    "Rowan",
+    "Avery",
+    "Jordan",
+    "Casey",
+    "Riley",
+    "Parker",
+    "Harper",
+    "Charlie",
+    "Jamie",
+    "Morgan",
+    "Sam",
+  ],
+  de: [
+    "Nova",
+    "Ari",
+    "Noa",
+    "Mika",
+    "Alex",
+    "Robin",
+    "Jules",
+    "Kai",
+    "Luca",
+    "Nico",
+    "Emil",
+    "Theo",
+    "Mila",
+    "Lea",
+    "Leni",
+    "Lina",
+    "Jonas",
+    "Felix",
+    "Hanna",
+    "Clara",
+    "Greta",
+    "Frieda",
+    "Paul",
+    "Oskar",
+  ],
+};
+
+const AGENT_STYLE_OPTIONS: readonly AgentStyleOption[] = [
+  {
+    id: "woman",
+    imageSrc: "/assets/agent/woman-1.png",
+    namePoolByLocale: {
+      en: [
+        "Emma",
+        "Olivia",
+        "Sophia",
+        "Amelia",
+        "Isla",
+        "Evelyn",
+        "Hazel",
+        "Charlotte",
+        "Mia",
+        "Ava",
+        "Lena",
+        "Nora",
+        "Mila",
+      ],
+      de: [
+        "Anna",
+        "Maria",
+        "Sophie",
+        "Lena",
+        "Lea",
+        "Mila",
+        "Emma",
+        "Hanna",
+        "Clara",
+        "Lina",
+        "Greta",
+        "Frieda",
+        "Paula",
+        "Johanna",
+        "Martha",
+      ],
+    },
+    labelKey: "app.dialogs.aiAgent.styles.woman",
+  },
+  {
+    id: "man",
+    imageSrc: "/assets/agent/man-1.png",
+    namePoolByLocale: {
+      en: [
+        "Liam",
+        "Noah",
+        "Oliver",
+        "Elijah",
+        "James",
+        "Henry",
+        "Theodore",
+        "Arthur",
+        "Leo",
+        "Ethan",
+        "Mason",
+        "Lucas",
+        "Finn",
+      ],
+      de: [
+        "Leon",
+        "Noah",
+        "Elias",
+        "Luca",
+        "Finn",
+        "Paul",
+        "Emil",
+        "Jonas",
+        "Theo",
+        "Felix",
+        "Oskar",
+        "Matteo",
+        "Max",
+        "Karl",
+        "Johann",
+      ],
+    },
+    labelKey: "app.dialogs.aiAgent.styles.man",
+  },
+] as const;
+
+const DEFAULT_AGENT_STYLE_ID: AgentStyleId = "woman";
+const DEFAULT_AGENT_NAME = "Nova";
+
+function getAgentStyleOption(styleId: AgentStyleId) {
+  return (
+    AGENT_STYLE_OPTIONS.find((styleOption) => styleOption.id === styleId) ??
+    AGENT_STYLE_OPTIONS[0]
+  );
+}
+
+function getRandomValue<T>(values: readonly T[]): T {
+  const index = Math.floor(Math.random() * values.length);
+  return values[index] ?? values[0];
+}
+
+function randomizeAgentNameByStyle(styleId: AgentStyleId, locale: AppLocale) {
+  const styleOption = getAgentStyleOption(styleId);
+  const randomizedPool = [
+    ...styleOption.namePoolByLocale[locale],
+    ...SHARED_AGENT_NAMES_BY_LOCALE[locale],
+  ];
+  return getRandomValue(randomizedPool);
+}
 
 function isInviteMemberRole(value: string | null): value is InviteMemberRole {
   if (!value) {
@@ -253,6 +429,17 @@ function AppRouteContent() {
   }>;
   const localePreference = useQuery(api.preferences.getMyLocale);
   const setMyLocale = useMutation(api.preferences.setMyLocale);
+  const saveOrganizationAgentProfile = useMutation(
+    api.organizationAgentProfiles.saveForOrganization,
+  );
+  const organizationAgentProfile = useQuery(
+    api.organizationAgentProfiles.getForOrganization,
+    activeOrganization?.id
+      ? {
+          organizationId: activeOrganization.id,
+        }
+      : "skip",
+  );
 
   const user = useQuery(api.auth.getCurrentUser);
   const [userName, setUserName] = useState("");
@@ -266,6 +453,11 @@ function AppRouteContent() {
     useState(false);
   const [isCreateOrganizationDialogOpen, setIsCreateOrganizationDialogOpen] =
     useState(false);
+  const [isAiAgentDialogOpen, setIsAiAgentDialogOpen] = useState(false);
+  const [draftAiAgentName, setDraftAiAgentName] = useState("");
+  const [draftAiAgentStyleId, setDraftAiAgentStyleId] =
+    useState<AgentStyleId>(DEFAULT_AGENT_STYLE_ID);
+  const [isSavingAiAgent, setIsSavingAiAgent] = useState(false);
   const [isUpdatingOrganization, setIsUpdatingOrganization] = useState(false);
   const [isLeavingOrganization, setIsLeavingOrganization] = useState(false);
   const [isDeletingOrganization, setIsDeletingOrganization] = useState(false);
@@ -340,7 +532,8 @@ function AppRouteContent() {
         organizationId: activeOrganization.id,
         data: {
           name: trimmedName,
-          logo: normalizedLogo || undefined,
+          // Better Auth organization update accepts string; empty string clears the logo.
+          logo: normalizedLogo || "",
         },
       });
 
@@ -364,6 +557,11 @@ function AppRouteContent() {
     activeOrganization?.name || t("common.misc.untitledWorkspace");
   const organizationInitial =
     organizationDisplayName.trim().charAt(0).toUpperCase() || "O";
+  const activeAiAgentProfile = organizationAgentProfile;
+  const activeAgentStyleOption = getAgentStyleOption(
+    activeAiAgentProfile?.styleId ?? DEFAULT_AGENT_STYLE_ID,
+  );
+  const activeAgentName = activeAiAgentProfile?.name ?? DEFAULT_AGENT_NAME;
   const isOwner = activeMember?.role === "owner";
   const userDisplayName = user?.name?.trim() || t("common.misc.user");
   const userInitial = userDisplayName.charAt(0).toUpperCase() || "U";
@@ -473,7 +671,7 @@ function AppRouteContent() {
     try {
       const { error } = await authClient.updateUser({
         name: trimmedName,
-        image: normalizedImage || "",
+        image: normalizedImage || null,
       });
 
       if (error) {
@@ -529,6 +727,54 @@ function AppRouteContent() {
     setOrganizationName(activeOrganization.name);
     setOrganizationLogo(activeOrganization.logo ?? "");
     setIsOrganizationDialogOpen(true);
+  };
+
+  const openAiAgentSettings = () => {
+    if (!activeOrganization?.id) {
+      return;
+    }
+
+    const existingProfile = organizationAgentProfile;
+    const styleId = existingProfile?.styleId ?? DEFAULT_AGENT_STYLE_ID;
+
+    setDraftAiAgentStyleId(styleId);
+    setDraftAiAgentName(existingProfile?.name ?? DEFAULT_AGENT_NAME);
+    setIsAiAgentDialogOpen(true);
+  };
+
+  const handleRandomizeAiAgentName = () => {
+    setDraftAiAgentName(randomizeAgentNameByStyle(draftAiAgentStyleId, locale));
+  };
+
+  const handleSaveAiAgent = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!activeOrganization?.id) {
+      toast.error(t("app.toasts.noActiveOrganization"));
+      return;
+    }
+
+    const trimmedName = draftAiAgentName.trim();
+    if (trimmedName.length < 2) {
+      toast.error(t("app.toasts.agentNameMinLength"));
+      return;
+    }
+
+    setIsSavingAiAgent(true);
+    try {
+      await saveOrganizationAgentProfile({
+        organizationId: activeOrganization.id,
+        name: trimmedName,
+        styleId: draftAiAgentStyleId,
+      });
+
+      toast.success(t("app.toasts.agentSetupSaved"));
+      setIsAiAgentDialogOpen(false);
+    } catch (error) {
+      toast.error(t("app.toasts.failedSaveAgentSetup"));
+    } finally {
+      setIsSavingAiAgent(false);
+    }
   };
 
   const handleOrganizationLogoFileChange = async (
@@ -769,6 +1015,7 @@ function AppRouteContent() {
               <SidebarMenuItem>
                 <DropdownMenu>
                   <DropdownMenuTrigger
+                    className="group/org-menu-trigger"
                     render={
                       <SidebarMenuButton
                         disabled={isOrganizationPending || !activeOrganization}
@@ -786,7 +1033,7 @@ function AppRouteContent() {
                       </AvatarFallback>
                     </Avatar>
                     <span className="truncate">{organizationDisplayName}</span>
-                    <RiArrowDownSLine className="ml-auto size-4 text-sidebar-foreground/70" />
+                    <RiArrowDownSLine className="ml-auto size-4 text-sidebar-foreground/70 transition-transform duration-200 ease-out group-data-open/org-menu-trigger:rotate-180 group-data-popup-open/org-menu-trigger:rotate-180" />
                   </DropdownMenuTrigger>
                   <DropdownMenuContent
                     className="rounded-xl bg-card px-1.5 pb-1.5 pt-2.5"
@@ -798,6 +1045,14 @@ function AppRouteContent() {
                       <DropdownMenuLabel className="px-2.5">
                         {t("common.misc.organization")}
                       </DropdownMenuLabel>
+                      <DropdownMenuItem
+                        className="min-h-8 px-2"
+                        onClick={openAiAgentSettings}
+                        disabled={isOrganizationPending || !activeOrganization}
+                      >
+                        <RiSparklingLine />
+                        <span>{t("app.shell.aiAgentMenuLabel")}</span>
+                      </DropdownMenuItem>
                       <DropdownMenuItem
                         className="min-h-8 px-2"
                         onClick={openOrganizationSettings}
@@ -854,6 +1109,7 @@ function AppRouteContent() {
               <SidebarMenuItem>
                 <DropdownMenu>
                   <DropdownMenuTrigger
+                    className="group/user-menu-trigger"
                     render={
                       <SidebarMenuButton className="h-9 rounded-lg px-2 font-medium !bg-transparent transition-none hover:!bg-transparent focus-visible:!bg-transparent" />
                     }
@@ -865,7 +1121,7 @@ function AppRouteContent() {
                       </AvatarFallback>
                     </Avatar>
                     <span className="truncate">{userDisplayName}</span>
-                    <RiArrowDownSLine className="ml-auto size-4 text-sidebar-foreground/70" />
+                    <RiArrowDownSLine className="ml-auto size-4 rotate-180 text-sidebar-foreground/70 transition-transform duration-200 ease-out group-data-open/user-menu-trigger:rotate-0 group-data-popup-open/user-menu-trigger:rotate-0" />
                   </DropdownMenuTrigger>
                   <DropdownMenuContent
                     className="rounded-xl bg-card px-1.5 pb-1.5 pt-2.5"
@@ -970,7 +1226,7 @@ function AppRouteContent() {
         </SidebarFooter>
       </Sidebar>
 
-      <SidebarInset className="min-h-svh bg-gradient-to-b from-background to-muted/20">
+      <SidebarInset className="h-svh overflow-hidden bg-gradient-to-b from-background to-muted/20">
         <header className="sticky top-0 z-20 bg-background/90 backdrop-blur">
           <div className="flex h-12 items-center justify-between gap-3 border-b border-sidebar-border px-4 md:px-6">
             <div className="flex min-w-0 items-center gap-3">
@@ -1007,12 +1263,19 @@ function AppRouteContent() {
             ) : null}
           </div>
         </header>
-        <main className="flex-1 p-4 md:p-6">
+        <main className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 pt-6 md:p-6 md:pt-8">
           <div className="mx-auto w-full max-w-5xl">
             <Outlet />
           </div>
         </main>
       </SidebarInset>
+
+      <AgentChatPanel
+        organizationId={activeOrganization?.id ?? null}
+        agentName={activeAgentName}
+        agentAvatarSrc={activeAgentStyleOption.imageSrc}
+        onOpenSettings={openAiAgentSettings}
+      />
 
       <Dialog
         open={isInviteMemberDialogOpen}
@@ -1471,6 +1734,92 @@ function AppRouteContent() {
                     : t("common.actions.saveChanges")}
                 </Button>
               </div>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isAiAgentDialogOpen} onOpenChange={setIsAiAgentDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("app.dialogs.aiAgent.title")}</DialogTitle>
+            <DialogDescription>
+              {t("app.dialogs.aiAgent.description")}
+            </DialogDescription>
+          </DialogHeader>
+          <form className="space-y-4" onSubmit={handleSaveAiAgent}>
+            <div className="space-y-2">
+              <Label htmlFor="ai-agent-name">{t("common.labels.name")}</Label>
+              <div className="relative">
+                <Input
+                  id="ai-agent-name"
+                  value={draftAiAgentName}
+                  onChange={(event) => setDraftAiAgentName(event.target.value)}
+                  placeholder={t("app.dialogs.aiAgent.namePlaceholder")}
+                  className="pr-9"
+                  disabled={!activeOrganization || isSavingAiAgent}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={handleRandomizeAiAgentName}
+                  className="absolute top-1/2 right-1 -translate-y-1/2"
+                  aria-label={t("common.actions.randomize")}
+                  title={t("common.actions.randomize")}
+                  disabled={!activeOrganization || isSavingAiAgent}
+                >
+                  <RiRepeatLine />
+                </Button>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>{t("app.dialogs.aiAgent.styleLabel")}</Label>
+              <div className="space-y-1">
+                {AGENT_STYLE_OPTIONS.map((styleOption) => {
+                  const isSelected = styleOption.id === draftAiAgentStyleId;
+
+                  return (
+                    <button
+                      key={styleOption.id}
+                      type="button"
+                      aria-pressed={isSelected}
+                      onClick={() => setDraftAiAgentStyleId(styleOption.id)}
+                      className={`flex w-full items-center gap-2 rounded-md px-1 py-1 text-sm text-muted-foreground transition hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 ${
+                        isSelected ? "bg-muted/40" : ""
+                      }`}
+                      disabled={!activeOrganization || isSavingAiAgent}
+                    >
+                      <img
+                        src={styleOption.imageSrc}
+                        alt={t(styleOption.labelKey)}
+                        className="size-10 rounded-sm object-cover"
+                      />
+                      <span className="flex-1 text-left text-xs font-medium">
+                        {t(styleOption.labelKey)}
+                      </span>
+                      {isSelected ? <RiCheckLine className="size-4" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setIsAiAgentDialogOpen(false);
+                }}
+                disabled={isSavingAiAgent}
+              >
+                {t("common.actions.cancel")}
+              </Button>
+              <Button type="submit" disabled={!activeOrganization || isSavingAiAgent}>
+                {isSavingAiAgent
+                  ? t("common.state.saving")
+                  : t("common.actions.saveChanges")}
+              </Button>
             </DialogFooter>
           </form>
         </DialogContent>
