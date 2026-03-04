@@ -5,7 +5,14 @@ import { createRouter as createTanStackRouter } from "@tanstack/react-router";
 import { setupRouterSsrQueryIntegration } from "@tanstack/react-router-ssr-query";
 
 import "./index.css";
+import { useI18n } from "./lib/i18n-provider";
 import { routeTree } from "./routeTree.gen";
+
+function RouterNotFound() {
+  const { t } = useI18n();
+
+  return <div>{t("common.misc.notFound")}</div>;
+}
 
 export function getRouter() {
   const convexUrl = env.VITE_CONVEX_URL;
@@ -28,7 +35,7 @@ export function getRouter() {
   const router = createTanStackRouter({
     routeTree,
     defaultPreload: "intent",
-    defaultNotFoundComponent: () => <div>Not Found</div>,
+    defaultNotFoundComponent: RouterNotFound,
     context: { queryClient, convexQueryClient },
   });
 

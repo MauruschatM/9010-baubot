@@ -1,4 +1,5 @@
 import { render } from "@react-email/render";
+import { createTranslator, type AppLocale } from "@mvp-template/i18n";
 import * as React from "react";
 import { Resend } from "resend";
 
@@ -70,19 +71,38 @@ export async function sendOtpEmail({
   otp,
   type,
   appName,
+  locale,
 }: {
   email: string;
   otp: string;
   type: OtpType;
   appName: string;
+  locale: AppLocale;
 }) {
+  const t = createTranslator(locale);
+  const titleByType: Record<OtpType, string> = {
+    "sign-in": t("emails.otp.titleSignIn"),
+    "email-verification": t("emails.otp.titleEmailVerification"),
+    "forget-password": t("emails.otp.titleForgetPassword"),
+  };
+  const title = titleByType[type];
+  const preview = t("emails.otp.preview", { title, appName });
+
   await sendEmail({
     to: email,
-    subject: `${appName} verification code`,
+    subject: t("emails.otp.subject", { appName }),
     // Resend requires identical request bodies when reusing idempotency keys.
     // OTP content changes on each send, so include the OTP in the key.
     idempotencyKey: `otp/${type}/${email.toLowerCase()}/${otp}`,
-    react: <OtpEmail otp={otp} type={type} appName={appName} />,
+    react: (
+      <OtpEmail
+        otp={otp}
+        preview={preview}
+        title={title}
+        useCodeToContinue={t("emails.otp.useCodeToContinue")}
+        expiresInFiveMinutes={t("emails.otp.expiresInFiveMinutes")}
+      />
+    ),
   });
 }
 
@@ -93,6 +113,7 @@ export async function sendOrganizationInvitationEmail({
   role,
   inviteUrl,
   invitationId,
+  locale,
 }: {
   email: string;
   inviterName: string;
@@ -100,17 +121,33 @@ export async function sendOrganizationInvitationEmail({
   role: string;
   inviteUrl: string;
   invitationId: string;
+  locale: AppLocale;
 }) {
+  const t = createTranslator(locale);
+  const normalizedRole = role.trim().toLowerCase();
+  const localizedRole =
+    normalizedRole === "owner" ||
+    normalizedRole === "admin" ||
+    normalizedRole === "member"
+      ? t(`common.roles.${normalizedRole}`)
+      : role;
+
   await sendEmail({
     to: email,
-    subject: `Invitation to join ${organizationName}`,
+    subject: t("emails.invitation.subject", { organizationName }),
     idempotencyKey: `organization-invite/${invitationId}`,
     react: (
       <OrganizationInvitationEmail
         inviteUrl={inviteUrl}
-        inviterName={inviterName}
-        organizationName={organizationName}
-        role={role}
+        preview={t("emails.invitation.preview", { organizationName })}
+        headingText={t("emails.invitation.heading")}
+        bodyText={t("emails.invitation.body", {
+          inviterName,
+          organizationName,
+          role: localizedRole,
+        })}
+        acceptCta={t("emails.invitation.acceptCta")}
+        fallbackHint={t("emails.invitation.fallbackHint")}
       />
     ),
   });

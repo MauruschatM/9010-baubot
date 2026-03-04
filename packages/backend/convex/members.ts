@@ -147,7 +147,7 @@ export const getLiveMembersPage = query({
           createdAt: member.createdAt,
           user: {
             id: user?._id ?? member.userId,
-            name: user?.name ?? "Unknown user",
+            name: user?.name ?? "",
             email: user?.email ?? "",
             image: user?.image ?? null,
           },

@@ -15,6 +15,7 @@ import type * as healthCheck from "../healthCheck.js";
 import type * as http from "../http.js";
 import type * as lib_resend from "../lib/resend.js";
 import type * as members from "../members.js";
+import type * as preferences from "../preferences.js";
 import type * as privateData from "../privateData.js";
 
 import type {
@@ -31,6 +32,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   "lib/resend": typeof lib_resend;
   members: typeof members;
+  preferences: typeof preferences;
   privateData: typeof privateData;
 }>;
 

@@ -12,36 +12,35 @@ import {
 
 type OrganizationInvitationEmailProps = {
   inviteUrl: string;
-  inviterName: string;
-  organizationName: string;
-  role: string;
+  preview: string;
+  headingText: string;
+  bodyText: string;
+  acceptCta: string;
+  fallbackHint: string;
 };
 
 export function OrganizationInvitationEmail({
   inviteUrl,
-  inviterName,
-  organizationName,
-  role,
+  preview,
+  headingText,
+  bodyText,
+  acceptCta,
+  fallbackHint,
 }: OrganizationInvitationEmailProps) {
   return (
     <Html>
       <Head />
-      <Preview>
-        Join {organizationName} on the workspace
-      </Preview>
+      <Preview>{preview}</Preview>
       <Body style={body}>
         <Container style={container}>
-          <Heading style={heading}>Organization invitation</Heading>
-          <Text style={text}>
-            {inviterName} invited you to join <strong>{organizationName}</strong> as {" "}
-            <strong>{role}</strong>.
-          </Text>
+          <Heading style={heading}>{headingText}</Heading>
+          <Text style={text}>{bodyText}</Text>
           <Section style={buttonContainer}>
             <Button href={inviteUrl} style={button}>
-              Accept invitation
+              {acceptCta}
             </Button>
           </Section>
-          <Text style={muted}>If the button does not work, copy this URL:</Text>
+          <Text style={muted}>{fallbackHint}</Text>
           <Text style={urlText}>{inviteUrl}</Text>
         </Container>
       </Body>

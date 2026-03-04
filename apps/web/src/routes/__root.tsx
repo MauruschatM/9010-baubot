@@ -1,4 +1,10 @@
 import type { ConvexQueryClient } from "@convex-dev/react-query";
+import {
+  DEFAULT_LOCALE,
+  LOCALE_COOKIE_NAME,
+  normalizeLocale,
+  parseCookieValue,
+} from "@mvp-template/i18n";
 import type { QueryClient } from "@tanstack/react-query";
 
 import { ConvexBetterAuthProvider } from "@convex-dev/better-auth/react";
@@ -16,6 +22,8 @@ import { useRef } from "react";
 
 import { Toaster } from "@/components/ui/sonner";
 import { authClient } from "@/lib/auth-client";
+import { I18nProvider } from "@/lib/i18n-provider";
+import { getInitialLocaleForRouting } from "@/lib/locale-server";
 import { getAuthTokenForRouting } from "@/lib/route-gates";
 
 import appCss from "../index.css?url";
@@ -44,7 +52,7 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
         content: "width=device-width, initial-scale=1",
       },
       {
-        title: "My App",
+        title: "MVP Template",
       },
     ],
     links: [
@@ -60,9 +68,15 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
     const pathname = normalizePathname(ctx.location.pathname);
 
     if (!import.meta.env.SSR) {
+      const cookieLocale = parseCookieValue(
+        typeof document === "undefined" ? null : document.cookie,
+        LOCALE_COOKIE_NAME,
+      );
+
       return {
         isAuthenticated: false,
         token: null,
+        locale: normalizeLocale(cookieLocale) ?? DEFAULT_LOCALE,
       };
     }
 
@@ -70,10 +84,14 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
       return {
         isAuthenticated: false,
         token: null,
+        locale: DEFAULT_LOCALE,
       };
     }
 
-    const token = await getAuthTokenForRouting();
+    const [token, locale] = await Promise.all([
+      getAuthTokenForRouting(),
+      getInitialLocaleForRouting(),
+    ]);
 
     if (token) {
       ctx.context.convexQueryClient.serverHttpClient?.setAuth(token);
@@ -94,6 +112,7 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
     return {
       isAuthenticated: !!token,
       token,
+      locale,
     };
   },
 });
@@ -112,22 +131,24 @@ function RootDocument() {
       authClient={authClient}
       initialToken={initialTokenRef.current}
     >
-      <html lang="en" suppressHydrationWarning>
+      <html lang={context.locale ?? DEFAULT_LOCALE} suppressHydrationWarning>
         <head>
           <HeadContent />
         </head>
         <body>
-          <ThemeProvider
-            attribute="class"
-            defaultTheme="system"
-            enableSystem
-            disableTransitionOnChange
-          >
-            <Outlet />
-            <Toaster richColors />
-            <TanStackRouterDevtools position="bottom-left" />
-            <Scripts />
-          </ThemeProvider>
+          <I18nProvider initialLocale={context.locale ?? DEFAULT_LOCALE}>
+            <ThemeProvider
+              attribute="class"
+              defaultTheme="system"
+              enableSystem
+              disableTransitionOnChange
+            >
+              <Outlet />
+              <Toaster richColors />
+              <TanStackRouterDevtools position="bottom-left" />
+              <Scripts />
+            </ThemeProvider>
+          </I18nProvider>
         </body>
       </html>
     </ConvexBetterAuthProvider>

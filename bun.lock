@@ -24,6 +24,7 @@
         "@fontsource-variable/geist": "^5.2.8",
         "@mvp-template/backend": "workspace:*",
         "@mvp-template/env": "workspace:*",
+        "@mvp-template/i18n": "workspace:*",
         "@remixicon/react": "^4.9.0",
         "@tailwindcss/vite": "^4.1.8",
         "@tanstack/react-form": "^1.28.0",
@@ -77,6 +78,7 @@
       "version": "1.0.0",
       "dependencies": {
         "@convex-dev/better-auth": "catalog:",
+        "@mvp-template/i18n": "workspace:*",
         "@react-email/components": "^0.5.7",
         "@react-email/render": "^1.4.0",
         "better-auth": "catalog:",
@@ -107,6 +109,18 @@
       },
       "devDependencies": {
         "@mvp-template/config": "workspace:*",
+        "typescript": "catalog:",
+      },
+    },
+    "packages/i18n": {
+      "name": "@mvp-template/i18n",
+      "version": "0.0.0",
+      "dependencies": {
+        "zod": "catalog:",
+      },
+      "devDependencies": {
+        "@mvp-template/config": "workspace:*",
+        "@types/node": "^24.3.0",
         "typescript": "catalog:",
       },
     },
@@ -317,6 +331,8 @@
     "@mvp-template/config": ["@mvp-template/config@workspace:packages/config"],
 
     "@mvp-template/env": ["@mvp-template/env@workspace:packages/env"],
+
+    "@mvp-template/i18n": ["@mvp-template/i18n@workspace:packages/i18n"],
 
     "@noble/ciphers": ["@noble/ciphers@2.1.1", "", {}, "sha512-bysYuiVfhxNJuldNXlFEitTVdNnYUc+XNJZd7Qm2a5j1vZHgY+fazadNFWFaMK/2vye0JVlxV3gHmC0WDfAOQw=="],
 

@@ -1,3 +1,10 @@
+import {
+  SUPPORTED_LOCALES,
+  SYSTEM_LOCALE,
+  normalizeLocale,
+  type AppLocale,
+  type LocalePreference,
+} from "@mvp-template/i18n";
 import { api } from "@mvp-template/backend/convex/_generated/api";
 import {
   Link,
@@ -6,7 +13,7 @@ import {
   useRouterState,
   useNavigate,
 } from "@tanstack/react-router";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import {
   useEffect,
   useMemo,
@@ -19,6 +26,7 @@ import { toast } from "sonner";
 import {
   RiArrowDownSLine,
   RiComputerLine,
+  RiGlobalLine,
   RiLayoutGridLine,
   RiLogoutBoxRLine,
   RiMailSendLine,
@@ -87,7 +95,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { authClient } from "@/lib/auth-client";
+import {
+  ensureProviderErrorCoverage,
+  getLocalizedAuthErrorMessage,
+} from "@/lib/auth-error-i18n";
 import { useClientRouteGate } from "@/lib/client-route-gates";
+import { useI18n, writeLocaleCookie } from "@/lib/i18n-provider";
 
 function slugify(value: string) {
   return value
@@ -100,21 +113,42 @@ function slugify(value: string) {
 
 type InviteMemberRole = "owner" | "admin" | "member";
 
-const inviteMemberRoleOptions: Array<{
-  value: InviteMemberRole;
-  label: string;
-}> = [
-  { value: "member", label: "Member" },
-  { value: "admin", label: "Admin" },
-  { value: "owner", label: "Owner" },
-];
+const inviteMemberRoleValues: InviteMemberRole[] = ["member", "admin", "owner"];
 
 function isInviteMemberRole(value: string | null): value is InviteMemberRole {
   if (!value) {
     return false;
   }
 
-  return inviteMemberRoleOptions.some((roleOption) => roleOption.value === value);
+  return inviteMemberRoleValues.some((roleOption) => roleOption === value);
+}
+
+function normalizeLocalePreference(value: string): LocalePreference | null {
+  if (value === SYSTEM_LOCALE) {
+    return SYSTEM_LOCALE;
+  }
+
+  if (!SUPPORTED_LOCALES.includes(value as AppLocale)) {
+    return null;
+  }
+
+  return value as AppLocale;
+}
+
+function resolveSystemLocale(fallbackLocale: AppLocale): AppLocale {
+  if (typeof navigator === "undefined") {
+    return fallbackLocale;
+  }
+
+  const preferredLocales = [...(navigator.languages ?? []), navigator.language];
+  for (const candidate of preferredLocales) {
+    const normalized = normalizeLocale(candidate);
+    if (normalized) {
+      return normalized;
+    }
+  }
+
+  return fallbackLocale;
 }
 
 const MAX_LOGO_DATA_URL_BYTES = 900 * 1024;
@@ -200,6 +234,7 @@ function AppRoute() {
 }
 
 function AppRouteContent() {
+  const { locale, setLocale, t } = useI18n();
   const { theme, setTheme } = useTheme();
   const navigate = useNavigate({ from: "/app" });
   const pathname = useRouterState({
@@ -216,6 +251,8 @@ function AppRouteContent() {
     id: string;
     name: string;
   }>;
+  const localePreference = useQuery(api.preferences.getMyLocale);
+  const setMyLocale = useMutation(api.preferences.setMyLocale);
 
   const user = useQuery(api.auth.getCurrentUser);
   const [userName, setUserName] = useState("");
@@ -242,10 +279,10 @@ function AppRouteContent() {
   const [inviteMemberRole, setInviteMemberRole] =
     useState<InviteMemberRole>("member");
   const [isInvitingMember, setIsInvitingMember] = useState(false);
-  const inviteMemberRoleLabel =
-    inviteMemberRoleOptions.find(
-      (roleOption) => roleOption.value === inviteMemberRole,
-    )?.label ?? "Member";
+  const [isUpdatingLocale, setIsUpdatingLocale] = useState(false);
+  const inviteMemberRoleLabel = isInviteMemberRole(inviteMemberRole)
+    ? t(`common.roles.${inviteMemberRole}`)
+    : t("common.roles.member");
   const [switchingOrganizationId, setSwitchingOrganizationId] = useState<
     string | null
   >(null);
@@ -254,6 +291,18 @@ function AppRouteContent() {
     () => slugify(createOrganizationName),
     [createOrganizationName],
   );
+  const selectedLocale = locale;
+  const selectedLocalePreference: LocalePreference =
+    localePreference === undefined ? selectedLocale : localePreference ?? SYSTEM_LOCALE;
+
+  useEffect(() => {
+    const providerErrorCodes = Object.keys(authClient.$ERROR_CODES ?? {});
+    if (providerErrorCodes.length === 0) {
+      return;
+    }
+
+    ensureProviderErrorCoverage(providerErrorCodes);
+  }, []);
 
   useEffect(() => {
     if (!activeOrganization) {
@@ -276,7 +325,7 @@ function AppRouteContent() {
     }
 
     if (trimmedName.length < 2) {
-      toast.error("Organization name must be at least 2 characters");
+      toast.error(t("app.toasts.organizationNameMinLength"));
       return;
     }
 
@@ -296,27 +345,27 @@ function AppRouteContent() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Failed to update organization");
+        toast.error(
+          getLocalizedAuthErrorMessage(t, error, "app.toasts.failedUpdateOrganization"),
+        );
         return;
       }
 
-      toast.success("Organization updated");
+      toast.success(t("app.toasts.organizationUpdated"));
       setIsOrganizationDialogOpen(false);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to update organization";
-      toast.error(message);
+      toast.error(t("app.toasts.failedUpdateOrganization"));
     } finally {
       setIsUpdatingOrganization(false);
     }
   };
 
   const organizationDisplayName =
-    activeOrganization?.name || "Untitled workspace";
+    activeOrganization?.name || t("common.misc.untitledWorkspace");
   const organizationInitial =
     organizationDisplayName.trim().charAt(0).toUpperCase() || "O";
   const isOwner = activeMember?.role === "owner";
-  const userDisplayName = user?.name?.trim() || "User";
+  const userDisplayName = user?.name?.trim() || t("common.misc.user");
   const userInitial = userDisplayName.charAt(0).toUpperCase() || "U";
   const isMembersPage = pathname.startsWith("/app/members");
   const selectedTheme =
@@ -361,6 +410,41 @@ function AppRouteContent() {
     }
   };
 
+  const handleLocaleChange = async (nextLocalePreference: string) => {
+    const normalizedPreference = normalizeLocalePreference(nextLocalePreference);
+    if (!normalizedPreference) {
+      return;
+    }
+
+    if (normalizedPreference === selectedLocalePreference) {
+      return;
+    }
+
+    setIsUpdatingLocale(true);
+
+    try {
+      if (normalizedPreference === SYSTEM_LOCALE) {
+        const systemLocale = resolveSystemLocale(selectedLocale);
+        setLocale(systemLocale);
+        writeLocaleCookie(SYSTEM_LOCALE);
+        await setMyLocale({ locale: null });
+      } else {
+        setLocale(normalizedPreference);
+        await setMyLocale({
+          locale: normalizedPreference,
+        });
+      }
+
+      toast.success(t("app.toasts.languageUpdated"));
+    } catch (error) {
+      toast.error(
+        getLocalizedAuthErrorMessage(t, error, "app.toasts.languageSaveFailed"),
+      );
+    } finally {
+      setIsUpdatingLocale(false);
+    }
+  };
+
   const openUserSettings = () => {
     setUserName(user?.name ?? "");
     setUserImage(user?.image ?? "");
@@ -376,7 +460,7 @@ function AppRouteContent() {
     const currentImage = user?.image ?? "";
 
     if (trimmedName.length < 2) {
-      toast.error("Name must be at least 2 characters");
+      toast.error(t("app.toasts.userNameMinLength"));
       return;
     }
 
@@ -393,16 +477,14 @@ function AppRouteContent() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Failed to update profile");
+        toast.error(getLocalizedAuthErrorMessage(t, error, "app.toasts.failedUpdateProfile"));
         return;
       }
 
-      toast.success("Profile updated");
+      toast.success(t("app.toasts.profileUpdated"));
       setIsUserDialogOpen(false);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to update profile";
-      toast.error(message);
+      toast.error(t("app.toasts.failedUpdateProfile"));
     } finally {
       setIsUpdatingUser(false);
     }
@@ -417,14 +499,14 @@ function AppRouteContent() {
     }
 
     if (!file.type.startsWith("image/")) {
-      toast.error("Please select an image file");
+      toast.error(t("app.toasts.selectImageFile"));
       event.target.value = "";
       return;
     }
 
     const maxFileSizeBytes = 10 * 1024 * 1024;
     if (file.size > maxFileSizeBytes) {
-      toast.error("Image must be 10MB or smaller");
+      toast.error(t("app.toasts.imageTooLarge"));
       event.target.value = "";
       return;
     }
@@ -433,9 +515,7 @@ function AppRouteContent() {
       const optimizedImageDataUrl = await convertImageToLogoDataUrl(file);
       setUserImage(optimizedImageDataUrl);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to process image";
-      toast.error(message);
+      toast.error(t("app.toasts.failedProcessImage"));
     } finally {
       event.target.value = "";
     }
@@ -460,14 +540,14 @@ function AppRouteContent() {
     }
 
     if (!file.type.startsWith("image/")) {
-      toast.error("Please select an image file");
+      toast.error(t("app.toasts.selectImageFile"));
       event.target.value = "";
       return;
     }
 
     const maxFileSizeBytes = 10 * 1024 * 1024;
     if (file.size > maxFileSizeBytes) {
-      toast.error("Image must be 10MB or smaller");
+      toast.error(t("app.toasts.imageTooLarge"));
       event.target.value = "";
       return;
     }
@@ -476,9 +556,7 @@ function AppRouteContent() {
       const optimizedImageDataUrl = await convertImageToLogoDataUrl(file);
       setOrganizationLogo(optimizedImageDataUrl);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to process image";
-      toast.error(message);
+      toast.error(t("app.toasts.failedProcessImage"));
     } finally {
       event.target.value = "";
     }
@@ -497,16 +575,16 @@ function AppRouteContent() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Failed to switch organization");
+        toast.error(
+          getLocalizedAuthErrorMessage(t, error, "app.toasts.failedSwitchOrganization"),
+        );
         return;
       }
 
-      toast.success("Organization switched");
+      toast.success(t("app.toasts.organizationSwitched"));
       setIsOrganizationSwitchDialogOpen(false);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to switch organization";
-      toast.error(message);
+      toast.error(t("app.toasts.failedSwitchOrganization"));
     } finally {
       setSwitchingOrganizationId(null);
     }
@@ -524,12 +602,12 @@ function AppRouteContent() {
     const trimmedName = createOrganizationName.trim();
 
     if (trimmedName.length < 2) {
-      toast.error("Organization name must be at least 2 characters");
+      toast.error(t("app.toasts.organizationNameMinLength"));
       return;
     }
 
     if (!createOrganizationSlug) {
-      toast.error("Enter a valid organization name");
+      toast.error(t("app.toasts.invalidOrganizationName"));
       return;
     }
 
@@ -541,7 +619,9 @@ function AppRouteContent() {
       });
 
       if (createResult.error) {
-        toast.error(createResult.error.message ?? "Failed to create organization");
+        toast.error(
+          getLocalizedAuthErrorMessage(t, createResult.error, "app.toasts.failedCreateOrganization"),
+        );
         return;
       }
 
@@ -553,20 +633,15 @@ function AppRouteContent() {
         });
 
         if (setActiveResult.error) {
-          toast.error(
-            setActiveResult.error.message ??
-              "Organization created, but switching failed",
-          );
+          toast.error(getLocalizedAuthErrorMessage(t, setActiveResult.error, "app.toasts.createdButSwitchFailed"));
           return;
         }
       }
 
-      toast.success("Organization created");
+      toast.success(t("app.toasts.organizationCreated"));
       setIsCreateOrganizationDialogOpen(false);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to create organization";
-      toast.error(message);
+      toast.error(t("app.toasts.failedCreateOrganization"));
     } finally {
       setIsCreatingOrganization(false);
     }
@@ -574,12 +649,12 @@ function AppRouteContent() {
 
   const handleLeaveOrganization = async () => {
     if (!activeOrganization?.id) {
-      toast.error("No active organization selected");
+      toast.error(t("app.toasts.noActiveOrganization"));
       return;
     }
 
     if (isOwner) {
-      toast.error("Owners can't leave. Delete the organization instead.");
+      toast.error(t("app.toasts.ownersCannotLeave"));
       return;
     }
 
@@ -590,17 +665,15 @@ function AppRouteContent() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Failed to leave organization");
+        toast.error(getLocalizedAuthErrorMessage(t, error, "app.toasts.failedLeaveOrganization"));
         return;
       }
 
-      toast.success("You left the organization");
+      toast.success(t("app.toasts.organizationLeft"));
       setIsLeaveOrganizationDialogOpen(false);
       setIsOrganizationDialogOpen(false);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to leave organization";
-      toast.error(message);
+      toast.error(t("app.toasts.failedLeaveOrganization"));
     } finally {
       setIsLeavingOrganization(false);
     }
@@ -608,12 +681,12 @@ function AppRouteContent() {
 
   const handleDeleteOrganization = async () => {
     if (!activeOrganization?.id) {
-      toast.error("No active organization selected");
+      toast.error(t("app.toasts.noActiveOrganization"));
       return;
     }
 
     if (!isOwner) {
-      toast.error("Only organization owners can delete the organization.");
+      toast.error(t("app.toasts.onlyOwnersCanDelete"));
       return;
     }
 
@@ -624,17 +697,15 @@ function AppRouteContent() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Failed to delete organization");
+        toast.error(getLocalizedAuthErrorMessage(t, error, "app.toasts.failedDeleteOrganization"));
         return;
       }
 
-      toast.success("Organization deleted");
+      toast.success(t("app.toasts.organizationDeleted"));
       setIsDeleteOrganizationDialogOpen(false);
       setIsOrganizationDialogOpen(false);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to delete organization";
-      toast.error(message);
+      toast.error(t("app.toasts.failedDeleteOrganization"));
     } finally {
       setIsDeletingOrganization(false);
     }
@@ -650,19 +721,19 @@ function AppRouteContent() {
     event.preventDefault();
 
     if (!activeOrganization?.id) {
-      toast.error("No active organization selected");
+      toast.error(t("app.toasts.noActiveOrganization"));
       return;
     }
 
     const email = inviteMemberEmail.trim().toLowerCase();
 
     if (!email) {
-      toast.error("Enter an email address");
+      toast.error(t("app.toasts.enterEmailAddress"));
       return;
     }
 
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      toast.error("Enter a valid email address");
+      toast.error(t("app.toasts.enterValidEmailAddress"));
       return;
     }
 
@@ -676,16 +747,14 @@ function AppRouteContent() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Failed to send invitation");
+        toast.error(getLocalizedAuthErrorMessage(t, error, "app.toasts.failedSendInvitation"));
         return;
       }
 
-      toast.success(`Invitation sent to ${email}`);
+      toast.success(t("app.toasts.invitationSentTo", { email }));
       closeInviteMemberDialog();
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to send invitation";
-      toast.error(message);
+      toast.error(t("app.toasts.failedSendInvitation"));
     } finally {
       setIsInvitingMember(false);
     }
@@ -726,14 +795,16 @@ function AppRouteContent() {
                     sideOffset={10}
                   >
                     <DropdownMenuGroup>
-                      <DropdownMenuLabel className="px-2.5">Organization</DropdownMenuLabel>
+                      <DropdownMenuLabel className="px-2.5">
+                        {t("common.misc.organization")}
+                      </DropdownMenuLabel>
                       <DropdownMenuItem
                         className="min-h-8 px-2"
                         onClick={openOrganizationSettings}
                         disabled={isOrganizationPending || !activeOrganization}
                       >
                         <RiSettings4Line />
-                        <span>Settings</span>
+                        <span>{t("common.actions.settings")}</span>
                       </DropdownMenuItem>
                       <DropdownMenuSeparator className="my-1" />
                       <DropdownMenuItem
@@ -741,7 +812,7 @@ function AppRouteContent() {
                         onClick={() => setIsOrganizationSwitchDialogOpen(true)}
                       >
                         <RiRepeatLine />
-                        <span>Switch</span>
+                        <span>{t("common.actions.switch")}</span>
                       </DropdownMenuItem>
                     </DropdownMenuGroup>
                   </DropdownMenuContent>
@@ -758,7 +829,7 @@ function AppRouteContent() {
                 className="h-9 rounded-lg px-2 font-medium data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-foreground"
               >
                 <RiLayoutGridLine className="size-4" />
-                <span>Dashboard</span>
+                <span>{t("app.shell.dashboard")}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
@@ -768,7 +839,7 @@ function AppRouteContent() {
                 className="h-9 rounded-lg px-2 font-medium data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-foreground"
               >
                 <RiTeamLine className="size-4" />
-                <span>Members</span>
+                <span>{t("app.shell.members")}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
@@ -803,19 +874,21 @@ function AppRouteContent() {
                     sideOffset={10}
                   >
                     <DropdownMenuGroup>
-                      <DropdownMenuLabel className="px-2.5">Account</DropdownMenuLabel>
+                      <DropdownMenuLabel className="px-2.5">
+                        {t("common.misc.account")}
+                      </DropdownMenuLabel>
                       <DropdownMenuItem
                         className="min-h-8 px-2"
                         onClick={openUserSettings}
                         disabled={!user}
                       >
                         <RiSettings4Line />
-                        <span>Settings</span>
+                        <span>{t("common.actions.settings")}</span>
                       </DropdownMenuItem>
                       <DropdownMenuSub>
                         <DropdownMenuSubTrigger className="min-h-8 px-2">
                           <RiPaletteLine />
-                          <span>Theme</span>
+                          <span>{t("common.theme.label")}</span>
                         </DropdownMenuSubTrigger>
                         <DropdownMenuSubContent className="w-44">
                           <DropdownMenuRadioGroup
@@ -826,16 +899,56 @@ function AppRouteContent() {
                           >
                             <DropdownMenuRadioItem className="min-h-8 pl-2 pr-8" value="system">
                               <RiComputerLine />
-                              <span>System</span>
+                              <span>{t("common.theme.system")}</span>
                             </DropdownMenuRadioItem>
                             <DropdownMenuRadioItem className="min-h-8 pl-2 pr-8" value="light">
                               <RiSunLine />
-                              <span>Light</span>
+                              <span>{t("common.theme.light")}</span>
                             </DropdownMenuRadioItem>
                             <DropdownMenuRadioItem className="min-h-8 pl-2 pr-8" value="dark">
                               <RiMoonLine />
-                              <span>Dark</span>
+                              <span>{t("common.theme.dark")}</span>
                             </DropdownMenuRadioItem>
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuSubContent>
+                      </DropdownMenuSub>
+                      <DropdownMenuSub>
+                        <DropdownMenuSubTrigger className="min-h-8 px-2">
+                          <RiGlobalLine />
+                          <span>{t("common.language.label")}</span>
+                        </DropdownMenuSubTrigger>
+                        <DropdownMenuSubContent className="w-44">
+                          <DropdownMenuRadioGroup
+                            value={selectedLocalePreference}
+                            onValueChange={(value) => {
+                              void handleLocaleChange(value);
+                            }}
+                          >
+                            <DropdownMenuRadioItem
+                              className="min-h-8 pl-2 pr-8"
+                              value={SYSTEM_LOCALE}
+                              disabled={isUpdatingLocale}
+                            >
+                              <RiComputerLine />
+                              <span>{t("common.language.system")}</span>
+                            </DropdownMenuRadioItem>
+                            {SUPPORTED_LOCALES.map((availableLocale) => (
+                              <DropdownMenuRadioItem
+                                key={availableLocale}
+                                className="min-h-8 pl-2 pr-8"
+                                value={availableLocale}
+                                disabled={isUpdatingLocale}
+                              >
+                                <span aria-hidden className="text-base leading-none">
+                                  {availableLocale === "en" ? "🇺🇸" : "🇩🇪"}
+                                </span>
+                                <span>
+                                  {availableLocale === "en"
+                                    ? t("common.language.english")
+                                    : t("common.language.german")}
+                                </span>
+                              </DropdownMenuRadioItem>
+                            ))}
                           </DropdownMenuRadioGroup>
                         </DropdownMenuSubContent>
                       </DropdownMenuSub>
@@ -847,7 +960,7 @@ function AppRouteContent() {
                       onClick={() => void handleSignOut()}
                     >
                       <RiLogoutBoxRLine />
-                      <span>Sign out</span>
+                      <span>{t("common.actions.signOut")}</span>
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -864,7 +977,7 @@ function AppRouteContent() {
               <SidebarTrigger className="-ml-1" />
               <div className="h-4 w-px bg-border" />
               <p className="text-sm font-medium tracking-tight">
-                {isMembersPage ? "Members" : "Workspace"}
+                {isMembersPage ? t("app.shell.members") : t("app.shell.workspace")}
               </p>
             </div>
             {isMembersPage ? (
@@ -877,7 +990,7 @@ function AppRouteContent() {
                     type="search"
                     value={membersSearchQuery}
                     onChange={(event) => handleMembersSearchChange(event.target.value)}
-                    placeholder="Search members"
+                    placeholder={t("app.shell.searchMembers")}
                     className="h-7 w-44 pl-8 sm:w-56"
                   />
                 </div>
@@ -888,7 +1001,7 @@ function AppRouteContent() {
                   disabled={isOrganizationPending || !activeOrganization}
                 >
                   <RiMailSendLine className="size-4" />
-                  <span>Invite</span>
+                  <span>{t("common.actions.invite")}</span>
                 </Button>
               </div>
             ) : null}
@@ -914,26 +1027,26 @@ function AppRouteContent() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Invite Member</DialogTitle>
+            <DialogTitle>{t("app.dialogs.inviteMember.title")}</DialogTitle>
             <DialogDescription>
-              Send an invitation to join this organization.
+              {t("app.dialogs.inviteMember.description")}
             </DialogDescription>
           </DialogHeader>
           <form className="space-y-4" onSubmit={handleInviteMember}>
             <div className="space-y-2">
-              <Label htmlFor="invite-member-email">Email</Label>
+              <Label htmlFor="invite-member-email">{t("common.labels.email")}</Label>
               <Input
                 id="invite-member-email"
                 type="email"
                 autoComplete="email"
                 value={inviteMemberEmail}
                 onChange={(event) => setInviteMemberEmail(event.target.value)}
-                placeholder="person@company.com"
+                placeholder={t("app.dialogs.inviteMember.emailPlaceholder")}
                 disabled={isInvitingMember}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="invite-member-role">Role</Label>
+              <Label htmlFor="invite-member-role">{t("common.labels.role")}</Label>
               <Select
                 value={inviteMemberRole}
                 onValueChange={(value) => {
@@ -943,14 +1056,14 @@ function AppRouteContent() {
                 }}
               >
                 <SelectTrigger id="invite-member-role" className="w-full">
-                  <SelectValue placeholder="Select role">
+                  <SelectValue placeholder={t("app.dialogs.inviteMember.selectRole")}>
                     {inviteMemberRoleLabel}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent align="start">
-                  {inviteMemberRoleOptions.map((roleOption) => (
-                    <SelectItem key={roleOption.value} value={roleOption.value}>
-                      {roleOption.label}
+                  {inviteMemberRoleValues.map((roleOption) => (
+                    <SelectItem key={roleOption} value={roleOption}>
+                      {t(`common.roles.${roleOption}`)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -963,13 +1076,15 @@ function AppRouteContent() {
                 onClick={closeInviteMemberDialog}
                 disabled={isInvitingMember}
               >
-                Cancel
+                {t("common.actions.cancel")}
               </Button>
               <Button
                 type="submit"
                 disabled={isInvitingMember || !activeOrganization}
               >
-                {isInvitingMember ? "Sending..." : "Send invite"}
+                {isInvitingMember
+                  ? t("common.state.sending")
+                  : t("common.actions.sendInvite")}
               </Button>
             </DialogFooter>
           </form>
@@ -989,14 +1104,14 @@ function AppRouteContent() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Profile Settings</DialogTitle>
+            <DialogTitle>{t("app.dialogs.profile.title")}</DialogTitle>
             <DialogDescription>
-              Update your display name and avatar.
+              {t("app.dialogs.profile.description")}
             </DialogDescription>
           </DialogHeader>
           <form className="space-y-4" onSubmit={handleUpdateUser}>
             <div className="space-y-2">
-              <Label htmlFor="user-name">Name</Label>
+              <Label htmlFor="user-name">{t("common.labels.name")}</Label>
               <Input
                 id="user-name"
                 value={userName}
@@ -1005,11 +1120,11 @@ function AppRouteContent() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="user-email">Email</Label>
+              <Label htmlFor="user-email">{t("common.labels.email")}</Label>
               <Input id="user-email" value={user?.email ?? ""} readOnly disabled />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="user-avatar">Avatar</Label>
+              <Label htmlFor="user-avatar">{t("common.labels.avatar")}</Label>
               <Input
                 id="user-avatar"
                 type="file"
@@ -1027,7 +1142,7 @@ function AppRouteContent() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{userName || userDisplayName}</p>
                   <p className="text-xs text-muted-foreground">
-                    PNG, JPG, or WEBP up to 10MB (optimized automatically).
+                    {t("app.dialogs.profile.avatarHint")}
                   </p>
                 </div>
                 {userImage ? (
@@ -1038,7 +1153,7 @@ function AppRouteContent() {
                     onClick={() => setUserImage("")}
                     disabled={isUpdatingUser}
                   >
-                    Remove
+                    {t("common.actions.remove")}
                   </Button>
                 ) : null}
               </div>
@@ -1054,10 +1169,12 @@ function AppRouteContent() {
                 }}
                 disabled={isUpdatingUser}
               >
-                Cancel
+                {t("common.actions.cancel")}
               </Button>
               <Button type="submit" disabled={isUpdatingUser}>
-                {isUpdatingUser ? "Saving..." : "Save changes"}
+                {isUpdatingUser
+                  ? t("common.state.saving")
+                  : t("common.actions.saveChanges")}
               </Button>
             </DialogFooter>
           </form>
@@ -1070,17 +1187,19 @@ function AppRouteContent() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Switch Organization</DialogTitle>
+            <DialogTitle>{t("app.dialogs.switchOrganization.title")}</DialogTitle>
             <DialogDescription>
-              Select one of your organizations.
+              {t("app.dialogs.switchOrganization.description")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
             {organizationsResult.data === undefined ? (
-              <p className="text-sm text-muted-foreground">Loading organizations...</p>
+              <p className="text-sm text-muted-foreground">
+                {t("app.dialogs.switchOrganization.loading")}
+              </p>
             ) : organizations.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                You do not have any organizations yet.
+                {t("app.dialogs.switchOrganization.empty")}
               </p>
             ) : (
               <div className="space-y-2">
@@ -1098,10 +1217,10 @@ function AppRouteContent() {
                     <span className="truncate">{organization.name}</span>
                     <span className="text-xs text-muted-foreground">
                       {organization.id === activeOrganization?.id
-                        ? "Active"
+                        ? t("common.misc.active")
                         : switchingOrganizationId === organization.id
-                          ? "Switching..."
-                          : "Switch"}
+                          ? t("common.state.switching")
+                          : t("common.actions.switch")}
                     </span>
                   </Button>
                 ))}
@@ -1115,14 +1234,14 @@ function AppRouteContent() {
               onClick={() => setIsOrganizationSwitchDialogOpen(false)}
               disabled={switchingOrganizationId !== null}
             >
-              Cancel
+              {t("common.actions.cancel")}
             </Button>
             <Button
               type="button"
               onClick={openCreateOrganizationDialog}
               disabled={switchingOrganizationId !== null}
             >
-              Create
+              {t("common.actions.create")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1140,30 +1259,30 @@ function AppRouteContent() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Create Organization</DialogTitle>
+            <DialogTitle>{t("app.dialogs.createOrganization.title")}</DialogTitle>
             <DialogDescription>
-              Create a new organization and switch to it.
+              {t("app.dialogs.createOrganization.description")}
             </DialogDescription>
           </DialogHeader>
           <form className="space-y-4" onSubmit={handleCreateOrganization}>
             <div className="space-y-2">
-              <Label htmlFor="create-organization-name">Name</Label>
+              <Label htmlFor="create-organization-name">{t("common.labels.name")}</Label>
               <Input
                 id="create-organization-name"
                 value={createOrganizationName}
                 onChange={(event) => setCreateOrganizationName(event.target.value)}
                 disabled={isCreatingOrganization}
-                placeholder="Acme Inc"
+                placeholder={t("app.dialogs.createOrganization.namePlaceholder")}
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="create-organization-slug">Slug</Label>
+              <Label htmlFor="create-organization-slug">{t("common.labels.slug")}</Label>
               <Input
                 id="create-organization-slug"
                 value={createOrganizationSlug}
                 readOnly
                 disabled
-                placeholder="acme-inc"
+                placeholder={t("app.dialogs.createOrganization.slugPlaceholder")}
               />
             </div>
             <DialogFooter>
@@ -1176,10 +1295,12 @@ function AppRouteContent() {
                 }}
                 disabled={isCreatingOrganization}
               >
-                Cancel
+                {t("common.actions.cancel")}
               </Button>
               <Button type="submit" disabled={isCreatingOrganization}>
-                {isCreatingOrganization ? "Creating..." : "Create"}
+                {isCreatingOrganization
+                  ? t("common.state.creating")
+                  : t("common.actions.create")}
               </Button>
             </DialogFooter>
           </form>
@@ -1202,14 +1323,14 @@ function AppRouteContent() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Organization</DialogTitle>
+            <DialogTitle>{t("app.dialogs.organization.title")}</DialogTitle>
             <DialogDescription>
-              Edit your organization name and review its slug.
+              {t("app.dialogs.organization.description")}
             </DialogDescription>
           </DialogHeader>
           <form className="space-y-4" onSubmit={handleUpdateOrganization}>
             <div className="space-y-2">
-              <Label htmlFor="organization-name">Name</Label>
+              <Label htmlFor="organization-name">{t("common.labels.name")}</Label>
               <Input
                 id="organization-name"
                 value={organizationName}
@@ -1224,7 +1345,7 @@ function AppRouteContent() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="organization-logo">Logo</Label>
+              <Label htmlFor="organization-logo">{t("common.labels.avatar")}</Label>
               <Input
                 id="organization-logo"
                 type="file"
@@ -1250,7 +1371,7 @@ function AppRouteContent() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{organizationDisplayName}</p>
                   <p className="text-xs text-muted-foreground">
-                    PNG, JPG, or WEBP up to 2MB.
+                    {t("app.dialogs.organization.logoHint")}
                   </p>
                 </div>
                 {organizationLogo ? (
@@ -1266,13 +1387,13 @@ function AppRouteContent() {
                       isOrganizationPending
                     }
                   >
-                    Remove
+                    {t("common.actions.remove")}
                   </Button>
                 ) : null}
               </div>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="organization-slug">Slug</Label>
+              <Label htmlFor="organization-slug">{t("common.labels.slug")}</Label>
               <Input
                 id="organization-slug"
                 value={activeOrganization?.slug || ""}
@@ -1295,7 +1416,7 @@ function AppRouteContent() {
                       !activeOrganization
                     }
                   >
-                    Delete
+                    {t("common.actions.delete")}
                   </Button>
                 ) : (
                   <Button
@@ -1310,7 +1431,7 @@ function AppRouteContent() {
                       !activeOrganization
                     }
                   >
-                    Leave
+                    {t("common.actions.leave")}
                   </Button>
                 )}
               </div>
@@ -1333,7 +1454,7 @@ function AppRouteContent() {
                     isOrganizationPending
                   }
                 >
-                  Cancel
+                  {t("common.actions.cancel")}
                 </Button>
                 <Button
                   type="submit"
@@ -1345,7 +1466,9 @@ function AppRouteContent() {
                     !activeOrganization
                   }
                 >
-                  {isUpdatingOrganization ? "Saving..." : "Save changes"}
+                  {isUpdatingOrganization
+                    ? t("common.state.saving")
+                    : t("common.actions.saveChanges")}
                 </Button>
               </div>
             </DialogFooter>
@@ -1365,23 +1488,25 @@ function AppRouteContent() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Leave organization?</AlertDialogTitle>
+            <AlertDialogTitle>{t("app.dialogs.leaveOrganization.title")}</AlertDialogTitle>
             <AlertDialogDescription>
               {activeOrganization
-                ? `You will lose access to ${activeOrganization.name} unless someone invites you again.`
-                : "You will lose access to this organization unless someone invites you again."}
+                ? t("app.dialogs.leaveOrganization.descriptionWithName", {
+                    organizationName: activeOrganization.name,
+                  })
+                : t("app.dialogs.leaveOrganization.descriptionWithoutName")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isLeavingOrganization}>
-              Cancel
+              {t("common.actions.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               disabled={isLeavingOrganization || isOwner || !activeOrganization}
               onClick={() => void handleLeaveOrganization()}
             >
-              {isLeavingOrganization ? "Leaving..." : "Leave"}
+              {isLeavingOrganization ? t("common.state.leaving") : t("common.actions.leave")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -1399,23 +1524,25 @@ function AppRouteContent() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete organization?</AlertDialogTitle>
+            <AlertDialogTitle>{t("app.dialogs.deleteOrganization.title")}</AlertDialogTitle>
             <AlertDialogDescription>
               {activeOrganization
-                ? `This permanently deletes ${activeOrganization.name}, including members and invitations.`
-                : "This permanently deletes the organization, including members and invitations."}
+                ? t("app.dialogs.deleteOrganization.descriptionWithName", {
+                    organizationName: activeOrganization.name,
+                  })
+                : t("app.dialogs.deleteOrganization.descriptionWithoutName")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isDeletingOrganization}>
-              Cancel
+              {t("common.actions.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               disabled={isDeletingOrganization || !isOwner || !activeOrganization}
               onClick={() => void handleDeleteOrganization()}
             >
-              {isDeletingOrganization ? "Deleting..." : "Delete"}
+              {isDeletingOrganization ? t("common.state.deleting") : t("common.actions.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

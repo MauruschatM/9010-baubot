@@ -22,7 +22,9 @@ import {
 } from "@/components/ui/input-otp";
 import { Label } from "@/components/ui/label";
 import { authClient } from "@/lib/auth-client";
+import { getLocalizedAuthErrorMessage } from "@/lib/auth-error-i18n";
 import { useClientRouteGate } from "@/lib/client-route-gates";
+import { useI18n } from "@/lib/i18n-provider";
 
 export const Route = createFileRoute("/(auth)/login")({
   ssr: false,
@@ -40,6 +42,7 @@ function LoginRoute() {
 }
 
 function LoginRouteContent() {
+  const { t } = useI18n();
   const navigate = useNavigate({ from: "/login" });
   const search = useRouterState({
     select: (state) => state.location.search,
@@ -73,7 +76,7 @@ function LoginRouteContent() {
     const normalizedEmail = email.trim().toLowerCase();
 
     if (!normalizedEmail) {
-      toast.error("Enter your email address");
+      toast.error(t("auth.login.toasts.enterEmail"));
       return;
     }
 
@@ -85,7 +88,7 @@ function LoginRouteContent() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Failed to send code");
+        toast.error(getLocalizedAuthErrorMessage(t, error, "auth.login.toasts.failedSendCode"));
         return;
       }
 
@@ -93,11 +96,9 @@ function LoginRouteContent() {
       lastAutoSubmittedOtpRef.current = null;
       setOtpSent(true);
       focusOtpInput();
-      toast.success("Verification code sent");
+      toast.success(t("auth.login.toasts.codeSent"));
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to send code";
-      toast.error(message);
+      toast.error(t("auth.login.toasts.failedSendCode"));
     } finally {
       setIsSending(false);
     }
@@ -107,12 +108,12 @@ function LoginRouteContent() {
     const normalizedEmail = email.trim().toLowerCase();
 
     if (!normalizedEmail) {
-      toast.error("Enter your email address");
+      toast.error(t("auth.login.toasts.enterEmail"));
       return;
     }
 
     if (otpValue.length !== 6) {
-      toast.error("Enter the 6-digit code");
+      toast.error(t("auth.login.toasts.enterSixDigitCode"));
       return;
     }
 
@@ -124,7 +125,7 @@ function LoginRouteContent() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Invalid code");
+        toast.error(getLocalizedAuthErrorMessage(t, error, "auth.login.toasts.invalidCode"));
         return;
       }
 
@@ -137,9 +138,7 @@ function LoginRouteContent() {
 
       navigate({ to: "/onboarding", replace: true });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to verify code";
-      toast.error(message);
+      toast.error(t("auth.login.toasts.failedVerifyCode"));
     } finally {
       setIsSubmitting(false);
     }
@@ -200,15 +199,15 @@ function LoginRouteContent() {
     <div className="flex min-h-svh items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Login</CardTitle>
+          <CardTitle>{t("auth.login.title")}</CardTitle>
           <CardDescription>
-            Use your email and one-time code. New users are created automatically.
+            {t("auth.login.description")}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form className="space-y-4" onSubmit={handleSubmit}>
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="email">{t("common.labels.email")}</Label>
               <Input
                 id="email"
                 name="email"
@@ -217,14 +216,14 @@ function LoginRouteContent() {
                 ref={emailInputRef}
                 value={email}
                 onChange={(event) => setEmail(event.target.value)}
-                placeholder="you@example.com"
+                placeholder={t("auth.login.emailPlaceholder")}
                 disabled={isSending || isSubmitting}
               />
             </div>
 
             {otpSent ? (
               <div className="space-y-2">
-                <Label htmlFor="otp">Verification code</Label>
+                <Label htmlFor="otp">{t("common.labels.verificationCode")}</Label>
                 <InputOTP
                   id="otp"
                   name="one-time-code"
@@ -254,7 +253,7 @@ function LoginRouteContent() {
                   className="w-full"
                   disabled={isSending || isSubmitting}
                 >
-                  {isSending ? "Sending..." : "Send Code"}
+                  {isSending ? t("common.state.sending") : t("common.actions.sendCode")}
                 </Button>
               ) : (
                 <>
@@ -263,7 +262,7 @@ function LoginRouteContent() {
                     className="w-full"
                     disabled={isSending || isSubmitting}
                   >
-                    {isSubmitting ? "Verifying..." : "Continue"}
+                    {isSubmitting ? t("common.state.verifying") : t("common.actions.continue")}
                   </Button>
                   <Button
                     type="button"
@@ -272,7 +271,7 @@ function LoginRouteContent() {
                     onClick={handleSendOtp}
                     disabled={isSending || isSubmitting}
                   >
-                    {isSending ? "Sending..." : "Resend Code"}
+                    {isSending ? t("common.state.sending") : t("common.actions.resendCode")}
                   </Button>
                 </>
               )}

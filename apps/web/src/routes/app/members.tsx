@@ -46,6 +46,8 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { authClient } from "@/lib/auth-client";
+import { getLocalizedAuthErrorMessage } from "@/lib/auth-error-i18n";
+import { useI18n } from "@/lib/i18n-provider";
 
 export const Route = createFileRoute("/app/members")({
   component: MembersRoute,
@@ -53,11 +55,7 @@ export const Route = createFileRoute("/app/members")({
 
 type MemberRole = "owner" | "admin" | "member";
 
-const memberRoleOptions: Array<{ value: MemberRole; label: string }> = [
-  { value: "member", label: "Member" },
-  { value: "admin", label: "Admin" },
-  { value: "owner", label: "Owner" },
-];
+const memberRoleValues: MemberRole[] = ["member", "admin", "owner"];
 const memberRoleSortOrder: Record<MemberRole, number> = {
   owner: 0,
   admin: 1,
@@ -69,16 +67,19 @@ function isMemberRole(value: string | null): value is MemberRole {
     return false;
   }
 
-  return memberRoleOptions.some((roleOption) => roleOption.value === value);
+  return memberRoleValues.some((roleValue) => roleValue === value);
 }
 
-function getRoleLabel(role: string | string[]) {
+function getRoleLabel(role: string | string[], t: (key: string) => string) {
   if (Array.isArray(role)) {
-    return role.join(", ");
+    return role
+      .map((singleRole) =>
+        isMemberRole(singleRole) ? t(`common.roles.${singleRole}`) : singleRole,
+      )
+      .join(", ");
   }
 
-  const matchedRole = memberRoleOptions.find((roleOption) => roleOption.value === role);
-  return matchedRole?.label ?? role;
+  return isMemberRole(role) ? t(`common.roles.${role}`) : role;
 }
 
 function getRoleSortOrder(role: string | string[]) {
@@ -91,6 +92,7 @@ function getRoleSortOrder(role: string | string[]) {
 }
 
 function MembersRoute() {
+  const { locale, t } = useI18n();
   const { data: activeOrganization, isPending } = authClient.useActiveOrganization();
   const liveMembersPage = useQuery(
     api.members.getLiveMembersPage,
@@ -160,10 +162,10 @@ function MembersRoute() {
     return (
       <div className="space-y-2">
         <p className="text-sm text-muted-foreground">
-          No active organization selected.
+          {t("app.members.noActiveOrganization")}
         </p>
         <Link to="/organization" className="text-sm underline">
-          Go to organization settings
+          {t("app.members.goToOrganizationSettings")}
         </Link>
       </div>
     );
@@ -173,7 +175,7 @@ function MembersRoute() {
     return (
       <div className="space-y-2">
         <p className="text-sm text-muted-foreground">
-          Unable to load members for this organization.
+          {t("app.members.unableToLoad")}
         </p>
       </div>
     );
@@ -253,16 +255,20 @@ function MembersRoute() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Failed to update member role");
+        toast.error(
+          getLocalizedAuthErrorMessage(
+            t,
+            error,
+            "app.members.toasts.failedUpdateMemberRole",
+          ),
+        );
         return;
       }
 
-      toast.success("Member role updated");
+      toast.success(t("app.members.toasts.memberRoleUpdated"));
       closeEditRoleDialog();
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to update member role";
-      toast.error(message);
+      toast.error(t("app.members.toasts.failedUpdateMemberRole"));
     } finally {
       setIsUpdatingMemberRole(false);
     }
@@ -274,7 +280,7 @@ function MembersRoute() {
     }
 
     if (currentMemberId === memberId) {
-      toast.error("You can't remove yourself. Use Leave Organization in settings.");
+      toast.error(t("app.members.toasts.cannotRemoveSelf"));
       return;
     }
 
@@ -286,15 +292,19 @@ function MembersRoute() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Failed to remove member");
+        toast.error(
+          getLocalizedAuthErrorMessage(
+            t,
+            error,
+            "app.members.toasts.failedRemoveMember",
+          ),
+        );
         return;
       }
 
-      toast.success("Member removed");
+      toast.success(t("app.members.toasts.memberRemoved"));
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to remove member";
-      toast.error(message);
+      toast.error(t("app.members.toasts.failedRemoveMember"));
     } finally {
       setRemovingMemberId(null);
     }
@@ -308,15 +318,19 @@ function MembersRoute() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Failed to revoke invitation");
+        toast.error(
+          getLocalizedAuthErrorMessage(
+            t,
+            error,
+            "app.members.toasts.failedRevokeInvitation",
+          ),
+        );
         return;
       }
 
-      toast.success("Invitation revoked");
+      toast.success(t("app.members.toasts.invitationRevoked"));
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to revoke invitation";
-      toast.error(message);
+      toast.error(t("app.members.toasts.failedRevokeInvitation"));
     } finally {
       setRevokingInvitationId(null);
     }
@@ -329,8 +343,8 @@ function MembersRoute() {
           {filteredMembers.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               {membersSearchQuery
-                ? "No members match your search."
-                : "No members found."}
+                ? t("app.members.noMembersMatchSearch")
+                : t("app.members.noMembersFound")}
             </p>
           ) : (
             <ul className="space-y-2">
@@ -360,7 +374,7 @@ function MembersRoute() {
                           variant="outline"
                           className="border-border/70 bg-muted text-muted-foreground"
                         >
-                          {getRoleLabel(member.role)}
+                          {getRoleLabel(member.role, t)}
                         </Badge>
                         {!isCurrentMember ? (
                           <DropdownMenu>
@@ -377,7 +391,9 @@ function MembersRoute() {
                               }
                             >
                               <RiMoreFill className="size-4" />
-                              <span className="sr-only">Open member actions</span>
+                              <span className="sr-only">
+                                {t("app.shell.openMemberActions")}
+                              </span>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
                               <DropdownMenuItem
@@ -387,7 +403,7 @@ function MembersRoute() {
                                 }
                               >
                                 <RiShieldUserLine />
-                                <span>Edit role</span>
+                                <span>{t("common.actions.editRole")}</span>
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 variant="destructive"
@@ -405,8 +421,8 @@ function MembersRoute() {
                                 <RiUserUnfollowLine />
                                 <span>
                                   {removingMemberId === member.id
-                                    ? "Removing..."
-                                    : "Remove"}
+                                    ? t("common.state.removing")
+                                    : t("common.actions.remove")}
                                 </span>
                               </DropdownMenuItem>
                             </DropdownMenuContent>
@@ -423,11 +439,11 @@ function MembersRoute() {
 
         <section className="space-y-2">
           <h2 className="text-base font-semibold tracking-tight">
-            Pending Invitations
+            {t("app.members.pendingInvitations")}
           </h2>
           {pendingInvitations.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No pending invitations.
+              {t("app.members.noPendingInvitations")}
             </p>
           ) : (
             <ul className="space-y-2">
@@ -444,7 +460,9 @@ function MembersRoute() {
                         </p>
                         {hasValidExpiry ? (
                           <p className="text-xs text-muted-foreground">
-                            Expires: {expiresAt.toLocaleDateString()}
+                            {t("app.members.expires", {
+                              date: expiresAt.toLocaleDateString(locale),
+                            })}
                           </p>
                         ) : null}
                       </div>
@@ -453,7 +471,7 @@ function MembersRoute() {
                           variant="outline"
                           className="border-border/70 bg-muted text-muted-foreground"
                         >
-                          {getRoleLabel(invitation.role)}
+                          {getRoleLabel(invitation.role, t)}
                         </Badge>
                         <DropdownMenu>
                           <DropdownMenuTrigger
@@ -467,7 +485,9 @@ function MembersRoute() {
                             }
                           >
                             <RiMoreFill className="size-4" />
-                            <span className="sr-only">Open invitation actions</span>
+                            <span className="sr-only">
+                              {t("app.shell.openInvitationActions")}
+                            </span>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuItem
@@ -480,8 +500,8 @@ function MembersRoute() {
                               <RiUserUnfollowLine />
                               <span>
                                 {revokingInvitationId === invitation.id
-                                  ? "Revoking..."
-                                  : "Revoke"}
+                                  ? t("common.state.revoking")
+                                  : t("common.actions.revoke")}
                               </span>
                             </DropdownMenuItem>
                           </DropdownMenuContent>
@@ -509,16 +529,18 @@ function MembersRoute() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Edit Member Role</DialogTitle>
+            <DialogTitle>{t("app.members.editMemberRoleTitle")}</DialogTitle>
             <DialogDescription>
               {editingMember
-                ? `Change role for ${editingMember.user.name || editingMember.user.email}.`
-                : "Select a new role for this member."}
+                ? t("app.members.editMemberRoleDescriptionWithName", {
+                    memberName: editingMember.user.name || editingMember.user.email,
+                  })
+                : t("app.members.editMemberRoleDescriptionDefault")}
             </DialogDescription>
           </DialogHeader>
           <form className="space-y-4" onSubmit={handleUpdateMemberRole}>
             <div className="space-y-2">
-              <Label htmlFor="edit-member-role">Role</Label>
+              <Label htmlFor="edit-member-role">{t("common.labels.role")}</Label>
               <Select
                 value={nextMemberRole}
                 onValueChange={(value) => {
@@ -528,14 +550,14 @@ function MembersRoute() {
                 }}
               >
                 <SelectTrigger id="edit-member-role" className="w-full">
-                  <SelectValue placeholder="Select role">
-                    {getRoleLabel(nextMemberRole)}
+                  <SelectValue placeholder={t("app.members.selectRole")}>
+                    {getRoleLabel(nextMemberRole, t)}
                   </SelectValue>
                 </SelectTrigger>
                 <SelectContent align="start">
-                  {memberRoleOptions.map((roleOption) => (
-                    <SelectItem key={roleOption.value} value={roleOption.value}>
-                      {roleOption.label}
+                  {memberRoleValues.map((roleOption) => (
+                    <SelectItem key={roleOption} value={roleOption}>
+                      {t(`common.roles.${roleOption}`)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -548,13 +570,15 @@ function MembersRoute() {
                 onClick={closeEditRoleDialog}
                 disabled={isUpdatingMemberRole}
               >
-                Cancel
+                {t("common.actions.cancel")}
               </Button>
               <Button
                 type="submit"
                 disabled={isUpdatingMemberRole || !editingMember}
               >
-                {isUpdatingMemberRole ? "Saving..." : "Save role"}
+                {isUpdatingMemberRole
+                  ? t("common.state.saving")
+                  : t("common.actions.saveRole")}
               </Button>
             </DialogFooter>
           </form>
@@ -571,18 +595,21 @@ function MembersRoute() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove member?</AlertDialogTitle>
+            <AlertDialogTitle>{t("app.members.removeMemberTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
               {memberPendingRemoval
-                ? `This will remove ${memberPendingRemoval.name} (${memberPendingRemoval.email}) from the organization.`
-                : "This member will be removed from the organization."}
+                ? t("app.members.removeMemberDescriptionWithName", {
+                    memberName: memberPendingRemoval.name,
+                    memberEmail: memberPendingRemoval.email,
+                  })
+                : t("app.members.removeMemberDescriptionDefault")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel
               disabled={removingMemberId === memberPendingRemoval?.id}
             >
-              Cancel
+              {t("common.actions.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
@@ -601,8 +628,8 @@ function MembersRoute() {
             >
               {memberPendingRemoval &&
               removingMemberId === memberPendingRemoval.id
-                ? "Removing..."
-                : "Remove"}
+                ? t("common.state.removing")
+                : t("common.actions.remove")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

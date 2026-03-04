@@ -11,33 +11,31 @@ import {
 
 type OtpEmailProps = {
   otp: string;
-  type: "sign-in" | "email-verification" | "forget-password";
-  appName: string;
+  preview: string;
+  title: string;
+  useCodeToContinue: string;
+  expiresInFiveMinutes: string;
 };
 
-const typeTitleMap: Record<OtpEmailProps["type"], string> = {
-  "sign-in": "Sign in code",
-  "email-verification": "Email verification code",
-  "forget-password": "Password reset code",
-};
-
-export function OtpEmail({ otp, type, appName }: OtpEmailProps) {
-  const title = typeTitleMap[type];
-
+export function OtpEmail({
+  otp,
+  preview,
+  title,
+  useCodeToContinue,
+  expiresInFiveMinutes,
+}: OtpEmailProps) {
   return (
     <Html>
       <Head />
-      <Preview>
-        {title} for {appName}
-      </Preview>
+      <Preview>{preview}</Preview>
       <Body style={body}>
         <Container style={container}>
           <Heading style={heading}>{title}</Heading>
-          <Text style={text}>Use this code to continue:</Text>
+          <Text style={text}>{useCodeToContinue}</Text>
           <Section style={otpContainer}>
             <Text style={otpText}>{otp}</Text>
           </Section>
-          <Text style={muted}>This code expires in 5 minutes.</Text>
+          <Text style={muted}>{expiresInFiveMinutes}</Text>
         </Container>
       </Body>
     </Html>

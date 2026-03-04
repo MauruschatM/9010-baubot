@@ -15,6 +15,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { authClient } from "@/lib/auth-client";
+import { getLocalizedAuthErrorMessage } from "@/lib/auth-error-i18n";
+import { useI18n } from "@/lib/i18n-provider";
 
 type InvitationDetails = {
   id: string;
@@ -24,12 +26,39 @@ type InvitationDetails = {
   inviterEmail?: string;
 };
 
+type MemberRole = "owner" | "admin" | "member";
+
+function isMemberRole(role: string): role is MemberRole {
+  return role === "owner" || role === "admin" || role === "member";
+}
+
+function formatInvitationRoleLabel(
+  role: string | string[],
+  t: (key: string) => string,
+) {
+  const localizeRole = (value: string) => {
+    const normalized = value.trim().toLowerCase();
+    if (!isMemberRole(normalized)) {
+      return value;
+    }
+
+    return t(`common.roles.${normalized}`);
+  };
+
+  if (Array.isArray(role)) {
+    return role.map((value) => localizeRole(value)).join(", ");
+  }
+
+  return localizeRole(role);
+}
+
 export const Route = createFileRoute("/(auth)/invitation")({
   ssr: false,
   component: InvitationRoute,
 });
 
 function InvitationRoute() {
+  const { t } = useI18n();
   const navigate = useNavigate({ from: "/invitation" });
   const search = useRouterState({
     select: (state) => state.location.search,
@@ -70,7 +99,13 @@ function InvitationRoute() {
         }
 
         if (error) {
-          toast.error(error.message ?? "Invitation not found or expired");
+          toast.error(
+            getLocalizedAuthErrorMessage(
+              t,
+              error,
+              "auth.invitation.toasts.invitationNotFoundOrExpired",
+            ),
+          );
           setInvitation(null);
           return;
         }
@@ -81,9 +116,7 @@ function InvitationRoute() {
           return;
         }
 
-        const message =
-          error instanceof Error ? error.message : "Failed to load invitation";
-        toast.error(message);
+        toast.error(t("auth.invitation.toasts.failedLoadInvitation"));
         setInvitation(null);
       } finally {
         if (!cancelled) {
@@ -101,7 +134,7 @@ function InvitationRoute() {
 
   const handleAcceptInvitation = async () => {
     if (!invitationId) {
-      toast.error("Invitation link is missing an invitation ID");
+      toast.error(t("auth.invitation.toasts.missingInvitationId"));
       return;
     }
 
@@ -112,16 +145,20 @@ function InvitationRoute() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Failed to accept invitation");
+        toast.error(
+          getLocalizedAuthErrorMessage(
+            t,
+            error,
+            "auth.invitation.toasts.failedAcceptInvitation",
+          ),
+        );
         return;
       }
 
-      toast.success("Invitation accepted");
+      toast.success(t("auth.invitation.toasts.invitationAccepted"));
       navigate({ to: "/app", replace: true });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to accept invitation";
-      toast.error(message);
+      toast.error(t("auth.invitation.toasts.failedAcceptInvitation"));
     } finally {
       setIsAcceptingInvitation(false);
     }
@@ -129,7 +166,7 @@ function InvitationRoute() {
 
   const handleRejectInvitation = async () => {
     if (!invitationId) {
-      toast.error("Invitation link is missing an invitation ID");
+      toast.error(t("auth.invitation.toasts.missingInvitationId"));
       return;
     }
 
@@ -140,16 +177,20 @@ function InvitationRoute() {
       });
 
       if (error) {
-        toast.error(error.message ?? "Failed to reject invitation");
+        toast.error(
+          getLocalizedAuthErrorMessage(
+            t,
+            error,
+            "auth.invitation.toasts.failedRejectInvitation",
+          ),
+        );
         return;
       }
 
-      toast.success("Invitation declined");
+      toast.success(t("auth.invitation.toasts.invitationDeclined"));
       navigate({ to: "/app", replace: true });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to reject invitation";
-      toast.error(message);
+      toast.error(t("auth.invitation.toasts.failedRejectInvitation"));
     } finally {
       setIsRejectingInvitation(false);
     }
@@ -160,9 +201,9 @@ function InvitationRoute() {
       <div className="flex min-h-svh items-center justify-center p-4">
         <Card className="w-full max-w-md">
           <CardHeader>
-            <CardTitle>Invalid Invitation Link</CardTitle>
+            <CardTitle>{t("auth.invitation.invalidLinkTitle")}</CardTitle>
             <CardDescription>
-              This invitation link is missing an invitation ID.
+              {t("auth.invitation.invalidLinkDescription")}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -171,7 +212,7 @@ function InvitationRoute() {
               type="button"
               onClick={() => window.location.assign("/login")}
             >
-              Go to login
+              {t("common.actions.goToLogin")}
             </Button>
           </CardContent>
         </Card>
@@ -184,8 +225,8 @@ function InvitationRoute() {
       <div className="flex min-h-svh items-center justify-center p-4">
         <Card className="w-full max-w-md">
           <CardHeader>
-            <CardTitle>Loading Invitation</CardTitle>
-            <CardDescription>Checking your session...</CardDescription>
+            <CardTitle>{t("auth.invitation.loadingTitle")}</CardTitle>
+            <CardDescription>{t("auth.invitation.loadingDescription")}</CardDescription>
           </CardHeader>
         </Card>
       </div>
@@ -197,10 +238,9 @@ function InvitationRoute() {
       <div className="flex min-h-svh items-center justify-center p-4">
         <Card className="w-full max-w-md">
           <CardHeader>
-            <CardTitle>Sign in to Continue</CardTitle>
+            <CardTitle>{t("auth.invitation.signInTitle")}</CardTitle>
             <CardDescription>
-              Sign in first, then return to this page to accept or decline the
-              invitation.
+              {t("auth.invitation.signInDescription")}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -209,7 +249,7 @@ function InvitationRoute() {
               type="button"
               onClick={() => window.location.assign(loginHref)}
             >
-              Go to login
+              {t("common.actions.goToLogin")}
             </Button>
           </CardContent>
         </Card>
@@ -221,40 +261,40 @@ function InvitationRoute() {
     <div className="flex min-h-svh items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Organization Invitation</CardTitle>
+          <CardTitle>{t("auth.invitation.title")}</CardTitle>
           <CardDescription>
-            Review this invitation and choose whether to join.
+            {t("auth.invitation.description")}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {isLoadingInvitation ? (
-            <p className="text-sm text-muted-foreground">Loading invitation...</p>
+            <p className="text-sm text-muted-foreground">
+              {t("auth.invitation.loadingInvitation")}
+            </p>
           ) : invitation ? (
             <div className="space-y-2 rounded-md border p-3">
               <p className="text-sm">
-                <span className="font-medium">Organization:</span>{" "}
-                {invitation.organizationName ?? "Unknown"}
+                <span className="font-medium">{t("common.labels.organization")}:</span>{" "}
+                {invitation.organizationName ?? t("common.misc.unknown")}
               </p>
               <p className="text-sm">
-                <span className="font-medium">Role:</span>{" "}
-                {Array.isArray(invitation.role)
-                  ? invitation.role.join(", ")
-                  : invitation.role}
+                <span className="font-medium">{t("common.labels.role")}:</span>{" "}
+                {formatInvitationRoleLabel(invitation.role, t)}
               </p>
               <p className="text-sm">
-                <span className="font-medium">Invited email:</span>{" "}
+                <span className="font-medium">{t("common.labels.invitedEmail")}:</span>{" "}
                 {invitation.email}
               </p>
               {invitation.inviterEmail ? (
                 <p className="text-sm">
-                  <span className="font-medium">Invited by:</span>{" "}
+                  <span className="font-medium">{t("common.labels.invitedBy")}:</span>{" "}
                   {invitation.inviterEmail}
                 </p>
               ) : null}
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">
-              This invitation may be invalid, expired, or no longer pending.
+              {t("auth.invitation.invitationMayBeInvalid")}
             </p>
           )}
 
@@ -271,7 +311,7 @@ function InvitationRoute() {
                 isRejectingInvitation
               }
             >
-              {isRejectingInvitation ? "Declining..." : "Decline"}
+              {isRejectingInvitation ? t("common.state.declining") : t("common.actions.decline")}
             </Button>
             <Button
               type="button"
@@ -284,7 +324,7 @@ function InvitationRoute() {
                 isRejectingInvitation
               }
             >
-              {isAcceptingInvitation ? "Accepting..." : "Accept"}
+              {isAcceptingInvitation ? t("common.state.accepting") : t("common.actions.accept")}
             </Button>
           </div>
         </CardContent>

@@ -13,7 +13,9 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { authClient } from "@/lib/auth-client";
+import { getLocalizedAuthErrorMessage } from "@/lib/auth-error-i18n";
 import { useClientRouteGate } from "@/lib/client-route-gates";
+import { useI18n } from "@/lib/i18n-provider";
 
 function slugify(value: string) {
   return value
@@ -40,6 +42,7 @@ function OrganizationSetupRoute() {
 }
 
 function OrganizationSetupRouteContent() {
+  const { t } = useI18n();
   const navigate = useNavigate({ from: "/organization" });
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -56,12 +59,12 @@ function OrganizationSetupRouteContent() {
     const trimmedName = name.trim();
 
     if (trimmedName.length < 2) {
-      toast.error("Organization name must be at least 2 characters");
+      toast.error(t("auth.organization.toasts.nameMinLength"));
       return;
     }
 
     if (!slug) {
-      toast.error("Enter a valid organization name");
+      toast.error(t("auth.organization.toasts.invalidName"));
       return;
     }
 
@@ -73,7 +76,13 @@ function OrganizationSetupRouteContent() {
       });
 
       if (createResult.error) {
-        toast.error(createResult.error.message ?? "Failed to create organization");
+        toast.error(
+          getLocalizedAuthErrorMessage(
+            t,
+            createResult.error,
+            "auth.organization.toasts.failedCreate",
+          ),
+        );
         return;
       }
 
@@ -86,19 +95,20 @@ function OrganizationSetupRouteContent() {
 
         if (setActiveResult.error) {
           toast.error(
-            setActiveResult.error.message ??
-              "Organization created, but setting active failed",
+            getLocalizedAuthErrorMessage(
+              t,
+              setActiveResult.error,
+              "auth.organization.toasts.createdButSetActiveFailed",
+            ),
           );
           return;
         }
       }
 
-      toast.success("Organization created");
+      toast.success(t("auth.organization.toasts.created"));
       navigate({ to: "/app", replace: true });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to create organization";
-      toast.error(message);
+      toast.error(t("auth.organization.toasts.failedCreate"));
     } finally {
       setIsSubmitting(false);
     }
@@ -113,15 +123,15 @@ function OrganizationSetupRouteContent() {
     <div className="flex min-h-svh items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Create Organization</CardTitle>
+          <CardTitle>{t("auth.organization.title")}</CardTitle>
           <CardDescription>
-            Enter your organization name to continue.
+            {t("auth.organization.description")}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form className="space-y-4" onSubmit={handleFormSubmit}>
             <div className="space-y-2">
-              <Label htmlFor="organization-name">Name</Label>
+              <Label htmlFor="organization-name">{t("common.labels.name")}</Label>
               <Input
                 id="organization-name"
                 name="organization"
@@ -129,25 +139,25 @@ function OrganizationSetupRouteContent() {
                 ref={nameInputRef}
                 value={name}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="Acme Inc"
+                placeholder={t("auth.organization.namePlaceholder")}
                 disabled={isSubmitting}
               />
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="organization-slug">Slug</Label>
+              <Label htmlFor="organization-slug">{t("common.labels.slug")}</Label>
               <Input
                 id="organization-slug"
                 name="organization-slug"
                 value={slug}
                 readOnly
                 disabled
-                placeholder="acme-inc"
+                placeholder={t("auth.organization.slugPlaceholder")}
               />
             </div>
 
             <Button type="submit" className="w-full" disabled={isSubmitting}>
-              {isSubmitting ? "Creating..." : "Continue"}
+              {isSubmitting ? t("common.state.creating") : t("common.actions.continue")}
             </Button>
           </form>
         </CardContent>

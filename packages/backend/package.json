@@ -12,6 +12,7 @@
     "@react-email/components": "^0.5.7",
     "@react-email/render": "^1.4.0",
     "@convex-dev/better-auth": "catalog:",
+    "@mvp-template/i18n": "workspace:*",
     "better-auth": "catalog:",
     "convex": "catalog:",
     "dotenv": "catalog:",

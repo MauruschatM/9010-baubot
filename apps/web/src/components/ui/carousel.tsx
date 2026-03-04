@@ -5,6 +5,7 @@ import useEmblaCarousel, {
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
+import { useI18n } from "@/lib/i18n-provider"
 import { RiArrowLeftSLine, RiArrowRightSLine } from "@remixicon/react"
 
 type CarouselApi = UseEmblaCarouselType[1]
@@ -175,6 +176,7 @@ function CarouselPrevious({
   size = "icon-sm",
   ...props
 }: React.ComponentProps<typeof Button>) {
+  const { t } = useI18n()
   const { orientation, scrollPrev, canScrollPrev } = useCarousel()
 
   return (
@@ -194,7 +196,7 @@ function CarouselPrevious({
       {...props}
     >
       <RiArrowLeftSLine />
-      <span className="sr-only">Previous slide</span>
+      <span className="sr-only">{t("common.a11y.previousSlide")}</span>
     </Button>
   )
 }
@@ -205,6 +207,7 @@ function CarouselNext({
   size = "icon-sm",
   ...props
 }: React.ComponentProps<typeof Button>) {
+  const { t } = useI18n()
   const { orientation, scrollNext, canScrollNext } = useCarousel()
 
   return (
@@ -224,7 +227,7 @@ function CarouselNext({
       {...props}
     >
       <RiArrowRightSLine />
-      <span className="sr-only">Next slide</span>
+      <span className="sr-only">{t("common.a11y.nextSlide")}</span>
     </Button>
   )
 }
