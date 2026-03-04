@@ -7,21 +7,26 @@ import {
   Outlet,
   Scripts,
   createRootRouteWithContext,
+  redirect,
   useRouteContext,
 } from "@tanstack/react-router";
 import { TanStackRouterDevtools } from "@tanstack/react-router-devtools";
-import { createServerFn } from "@tanstack/react-start";
+import { ThemeProvider } from "next-themes";
+import { useRef } from "react";
 
 import { Toaster } from "@/components/ui/sonner";
 import { authClient } from "@/lib/auth-client";
-import { getToken } from "@/lib/auth-server";
+import { getAuthTokenForRouting } from "@/lib/route-gates";
 
-import Header from "../components/header";
 import appCss from "../index.css?url";
 
-const getAuth = createServerFn({ method: "GET" }).handler(async () => {
-  return await getToken();
-});
+function normalizePathname(pathname: string) {
+  if (pathname === "/") {
+    return pathname;
+  }
+
+  return pathname.replace(/\/+$/, "");
+}
 
 export interface RouterAppContext {
   queryClient: QueryClient;
@@ -52,10 +57,40 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
 
   component: RootDocument,
   beforeLoad: async (ctx) => {
-    const token = await getAuth();
+    const pathname = normalizePathname(ctx.location.pathname);
+
+    if (!import.meta.env.SSR) {
+      return {
+        isAuthenticated: false,
+        token: null,
+      };
+    }
+
+    if (pathname.startsWith("/api/auth/")) {
+      return {
+        isAuthenticated: false,
+        token: null,
+      };
+    }
+
+    const token = await getAuthTokenForRouting();
+
     if (token) {
       ctx.context.convexQueryClient.serverHttpClient?.setAuth(token);
     }
+
+    const requiresAuth =
+      pathname === "/onboarding" ||
+      pathname === "/organization" ||
+      pathname === "/app" ||
+      pathname.startsWith("/app/");
+
+    if (!token && requiresAuth) {
+      if (pathname !== "/login") {
+        throw redirect({ to: "/login", replace: true });
+      }
+    }
+
     return {
       isAuthenticated: !!token,
       token,
@@ -65,24 +100,34 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
 
 function RootDocument() {
   const context = useRouteContext({ from: Route.id });
+  const initialTokenRef = useRef<string | null>(context.token ?? null);
+
+  if (context.token && initialTokenRef.current !== context.token) {
+    initialTokenRef.current = context.token;
+  }
+
   return (
     <ConvexBetterAuthProvider
       client={context.convexQueryClient.convexClient}
       authClient={authClient}
-      initialToken={context.token}
+      initialToken={initialTokenRef.current}
     >
-      <html lang="en" className="dark">
+      <html lang="en" suppressHydrationWarning>
         <head>
           <HeadContent />
         </head>
         <body>
-          <div className="grid h-svh grid-rows-[auto_1fr]">
-            <Header />
+          <ThemeProvider
+            attribute="class"
+            defaultTheme="system"
+            enableSystem
+            disableTransitionOnChange
+          >
             <Outlet />
-          </div>
-          <Toaster richColors />
-          <TanStackRouterDevtools position="bottom-left" />
-          <Scripts />
+            <Toaster richColors />
+            <TanStackRouterDevtools position="bottom-left" />
+            <Scripts />
+          </ThemeProvider>
         </body>
       </html>
     </ConvexBetterAuthProvider>

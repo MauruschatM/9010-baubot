@@ -9,14 +9,19 @@
     "dev:setup": "convex dev --configure --until-success"
   },
   "dependencies": {
+    "@react-email/components": "^0.5.7",
+    "@react-email/render": "^1.4.0",
     "@convex-dev/better-auth": "catalog:",
     "better-auth": "catalog:",
     "convex": "catalog:",
     "dotenv": "catalog:",
+    "react": "19.2.3",
+    "resend": "^6.5.2",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@mvp-template/config": "workspace:*",
+    "@types/react": "19.2.7",
     "@types/node": "^24.3.0",
     "typescript": "catalog:"
   }

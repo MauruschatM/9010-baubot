@@ -18,6 +18,10 @@ Set environment variables from `packages/backend`:
 cd packages/backend
 bun convex env set BETTER_AUTH_SECRET=$(openssl rand -base64 32)
 bun convex env set SITE_URL http://localhost:3001
+bun convex env set RESEND_API_KEY re_xxxxxxxxxxxxxxxxxxxxx
+bun convex env set RESEND_FROM_EMAIL "MVP Template <auth@example.com>"
+# optional
+# bun convex env set RESEND_REPLY_TO support@example.com
 ```
 
 ## Update shadcn/ui (overwrite + add latest)
