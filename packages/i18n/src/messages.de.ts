@@ -219,13 +219,22 @@ export const messagesDe = {
       voiceError: "Spracheingabe fehlgeschlagen. Bitte versuche es erneut.",
       wakingAgent: "Wecke {agentName}...",
       thinking: "Denke nach...",
-      thoughtFor: "Nachgedacht für {duration}",
+      thoughtFor: "Gearbeitet für {duration}",
       stream: {
         thinking: "Denke nach...",
         delegating: "Delegiere...",
         runningTool: "Tool wird ausgeführt...",
         responding: "Antwort wird erstellt...",
+        mainAgent: "Hauptagent",
         organizationAgent: "Unternehmens",
+        userAgent: "Benutzer",
+        organizationWorking: "Arbeite am Unternehmen...",
+        userWorking: "Aktualisiere deine persönlichen Einstellungen...",
+      },
+      clarification: {
+        continue: "Weiter",
+        otherPlaceholder: "Details ergänzen (optional)",
+        completeRequired: "Bitte alle erforderlichen Rückfragen beantworten.",
       },
       confirmation: {
         deleteOrganization: {
@@ -392,6 +401,8 @@ export const messagesDe = {
       invitationSentTo: "Einladung gesendet an {email}",
       languageUpdated: "Sprache aktualisiert",
       languageSaveFailed: "Spracheinstellung konnte nicht gespeichert werden",
+      themeUpdated: "Theme aktualisiert",
+      themeSaveFailed: "Theme-Einstellung konnte nicht gespeichert werden",
     },
   },
   emails: {

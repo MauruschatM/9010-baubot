@@ -8,7 +8,12 @@
  * @module
  */
 
+import type * as agentContext_compiler from "../agentContext/compiler.js";
+import type * as agentContext_gates from "../agentContext/gates.js";
+import type * as agentContext_types from "../agentContext/types.js";
+import type * as agentContext_version from "../agentContext/version.js";
 import type * as ai from "../ai.js";
+import type * as aiAttachments from "../aiAttachments.js";
 import type * as aiState from "../aiState.js";
 import type * as auth from "../auth.js";
 import type * as emails_organizationInvitationEmail from "../emails/organizationInvitationEmail.js";
@@ -32,7 +37,12 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  "agentContext/compiler": typeof agentContext_compiler;
+  "agentContext/gates": typeof agentContext_gates;
+  "agentContext/types": typeof agentContext_types;
+  "agentContext/version": typeof agentContext_version;
   ai: typeof ai;
+  aiAttachments: typeof aiAttachments;
   aiState: typeof aiState;
   auth: typeof auth;
   "emails/organizationInvitationEmail": typeof emails_organizationInvitationEmail;

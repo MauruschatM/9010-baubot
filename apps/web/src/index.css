@@ -130,10 +130,49 @@
   }
 }
 
+@keyframes chat-bubble-blink {
+  0%,
+  49.99% {
+    background-color: var(--chat-bubble-idle-bg);
+    color: var(--chat-bubble-idle-fg);
+    border-color: var(--chat-bubble-idle-border);
+  }
+  50%,
+  100% {
+    background-color: var(--chat-bubble-alert-bg);
+    color: var(--chat-bubble-alert-fg);
+    border-color: var(--chat-bubble-alert-bg);
+  }
+}
+
 @layer utilities {
+  [data-slot="button"].chat-bubble-blink {
+    --chat-bubble-idle-bg: var(--color-background);
+    --chat-bubble-idle-fg: var(--color-foreground);
+    --chat-bubble-idle-border: var(--color-border);
+    --chat-bubble-alert-bg: #000;
+    --chat-bubble-alert-fg: #fff;
+    background-color: var(--chat-bubble-idle-bg);
+    color: var(--chat-bubble-idle-fg);
+    border-color: var(--chat-bubble-idle-border);
+    will-change: background-color, color, border-color;
+  }
+
+  .dark [data-slot="button"].chat-bubble-blink {
+    --chat-bubble-idle-bg: oklch(0.145 0 0);
+    --chat-bubble-idle-fg: oklch(0.985 0 0);
+    --chat-bubble-idle-border: oklch(1 0 0 / 10%);
+    --chat-bubble-alert-bg: #fff;
+    --chat-bubble-alert-fg: #000;
+  }
+
   .chat-shimmer-text {
     color: color-mix(in oklab, var(--color-muted-foreground) 92%, transparent);
     will-change: background-position, opacity;
+  }
+
+  [data-slot="button"].chat-bubble-blink {
+    animation: chat-bubble-blink 1.2s steps(1, end) infinite;
   }
 
   @media (prefers-reduced-motion: no-preference) {

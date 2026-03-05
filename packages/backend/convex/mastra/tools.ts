@@ -56,6 +56,19 @@ export type OrganizationSummary = {
   pendingInvitations: OrganizationInvitation[];
 };
 
+export type UserSettingsSummary = {
+  user: {
+    id: string;
+    name: string;
+    email: string;
+    image: string | null;
+  };
+  preferences: {
+    language: "en" | "de" | "system";
+    theme: "light" | "dark" | "system";
+  };
+};
+
 export type CreateOrganizationToolsOptions = {
   getOrganizationSummary: () => Promise<OrganizationSummary>;
   listOrganizationMembers: () => Promise<OrganizationMember[]>;
@@ -87,6 +100,16 @@ export type CreateOrganizationToolsOptions = {
     expiresAt: number;
   }>;
   deleteOrganization?: () => Promise<{ organizationId: string }>;
+};
+
+export type CreateUserToolsOptions = {
+  getUserSettings: () => Promise<UserSettingsSummary>;
+  updateUserSettings?: (input: {
+    name?: string;
+    image?: string | null;
+    language?: "en" | "de" | "system";
+    theme?: "light" | "dark" | "system";
+  }) => Promise<UserSettingsSummary>;
 };
 
 const workspaceSnapshotSchema = z.object({
@@ -146,6 +169,19 @@ const organizationSummarySchema = z.object({
   pendingInvitations: z.array(organizationInvitationSchema),
 });
 
+const userSettingsSchema = z.object({
+  user: z.object({
+    id: z.string(),
+    name: z.string(),
+    email: z.string(),
+    image: z.union([z.string(), z.null()]),
+  }),
+  preferences: z.object({
+    language: z.union([z.literal("en"), z.literal("de"), z.literal("system")]),
+    theme: z.union([z.literal("light"), z.literal("dark"), z.literal("system")]),
+  }),
+});
+
 export function createWorkspaceSnapshotTool(
   readWorkspaceSnapshot: () => Promise<WorkspaceSnapshot>,
 ) {
@@ -157,6 +193,60 @@ export function createWorkspaceSnapshotTool(
     outputSchema: workspaceSnapshotSchema,
     execute: async () => {
       return await readWorkspaceSnapshot();
+    },
+  });
+}
+
+export function createOrchestratorClarificationTool(locale: "en" | "de") {
+  return createTool({
+    id: "requestClarification",
+    description:
+      locale === "de"
+        ? "Nutze dieses Clarification-Tool, wenn vor einer Delegation wichtige Angaben fehlen. Stelle eine oder mehrere kurze Rückfragen (maximal 3)."
+        : "Use this clarification tool when important details are missing before delegation. Ask one or more concise follow-up questions (up to 3).",
+    inputSchema: z
+      .object({
+        question: z.string().min(3).optional(),
+        questions: z.array(z.string().min(3)).min(1).max(3).optional(),
+        reason: z.string().optional(),
+      })
+      .superRefine((value, ctx) => {
+        const hasSingleQuestion =
+          typeof value.question === "string" && value.question.trim().length > 0;
+        const hasMultipleQuestions =
+          Array.isArray(value.questions) && value.questions.length > 0;
+
+        if (!hasSingleQuestion && !hasMultipleQuestions) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Provide at least one clarification question.",
+            path: ["questions"],
+          });
+        }
+      }),
+    outputSchema: z.object({
+      status: z.literal("clarification_requested"),
+      question: z.union([z.string(), z.null()]),
+      questions: z.array(z.string()),
+      reason: z.union([z.string(), z.null()]),
+    }),
+    execute: async (input) => {
+      const normalizedQuestions = [
+        ...(input.questions ?? []),
+        ...(input.question ? [input.question] : []),
+      ]
+        .map((question) => question.trim())
+        .filter((question, index, allQuestions) => {
+          return question.length > 0 && allQuestions.indexOf(question) === index;
+        })
+        .slice(0, 3);
+
+      return {
+        status: "clarification_requested" as const,
+        question: normalizedQuestions[0] ?? null,
+        questions: normalizedQuestions,
+        reason: input.reason ?? null,
+      };
     },
   });
 }
@@ -375,6 +465,52 @@ export function createOrganizationTools(options: CreateOrganizationToolsOptions)
         return {
           status: "deleted" as const,
           organizationId: deleted.organizationId,
+        };
+      },
+    });
+  }
+
+  return tools;
+}
+
+export function createUserTools(options: CreateUserToolsOptions) {
+  const tools: Record<string, any> = {
+    getUserSettings: createTool({
+      id: "getUserSettings",
+      description:
+        "Returns the current user profile and personal preferences (language and theme).",
+      inputSchema: z.object({}),
+      outputSchema: userSettingsSchema,
+      execute: async () => {
+        return await options.getUserSettings();
+      },
+    }),
+  };
+
+  if (options.updateUserSettings) {
+    const updateUserSettings = options.updateUserSettings;
+    tools.updateUserSettings = createTool({
+      id: "updateUserSettings",
+      description:
+        "Updates personal user settings. Provide only fields you want to change.",
+      inputSchema: z.object({
+        name: z.string().optional(),
+        image: z.union([z.string(), z.null()]).optional(),
+        language: z
+          .union([z.literal("en"), z.literal("de"), z.literal("system")])
+          .optional(),
+        theme: z
+          .union([z.literal("light"), z.literal("dark"), z.literal("system")])
+          .optional(),
+      }),
+      outputSchema: z.object({
+        status: z.literal("updated"),
+        settings: userSettingsSchema,
+      }),
+      execute: async (input) => {
+        return {
+          status: "updated" as const,
+          settings: await updateUserSettings(input),
         };
       },
     });

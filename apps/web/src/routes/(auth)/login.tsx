@@ -4,7 +4,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/sonner";
 
 import { Button } from "@/components/ui/button";
 import {

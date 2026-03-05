@@ -3,11 +3,21 @@
 import { v } from "convex/values";
 
 import { components, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { action } from "./_generated/server";
+import {
+  compileAgentContextPacket,
+  formatContextPacketForInstructions,
+} from "./agentContext/compiler";
+import { runClarificationGate } from "./agentContext/gates";
+import type {
+  AgentContextPageContext,
+  AgentResponseKind,
+  ClarificationQuestion,
+} from "./agentContext/types";
 import { authComponent, createAuth } from "./auth";
 import {
   MAX_ATTACHMENTS,
-  MAX_ATTACHMENT_DATA_URL_LENGTH,
   MAX_PROMPT_LENGTH,
   getMastraResourceId,
   getMastraThreadId,
@@ -30,6 +40,7 @@ import type {
   OrganizationInvitation,
   OrganizationMember,
   OrganizationSummary,
+  UserSettingsSummary,
   WorkspaceSnapshot,
 } from "./mastra/tools";
 
@@ -44,6 +55,7 @@ type UserDoc = {
   _id: string;
   name: string;
   email: string;
+  image?: string | null;
 };
 
 type InvitationDoc = {
@@ -55,7 +67,29 @@ type InvitationDoc = {
 type ChatAttachment = {
   name?: string;
   contentType: string;
-  dataUrl: string;
+  storageId: Id<"_storage">;
+};
+
+type ChatPageContext = {
+  routeId: string;
+  routePath: string;
+  title: string;
+  searchQuery?: string;
+  members?: {
+    totalCount: number;
+    filteredCount: number;
+    pendingInvitationCount: number;
+    currentMemberRole?: string;
+    visibleMembers: Array<{
+      name: string;
+      email: string;
+      role: string;
+    }>;
+    visibleInvitations: Array<{
+      email: string;
+      role: string;
+    }>;
+  };
 };
 
 type RequestPart =
@@ -74,6 +108,14 @@ type RequestPart =
       mimeType: string;
       filename?: string;
     };
+
+type ResolvedChatAttachment = {
+  name: string | undefined;
+  contentType: string;
+  storageId: Id<"_storage">;
+  fileUrl: string | null;
+  base64Data: string;
+};
 
 type PersistedMessage = {
   messageId: string;
@@ -120,9 +162,28 @@ type ToolPermissionFlags = {
   canLeaveOrganization: boolean;
 };
 
+type ClarificationAnswerInput = {
+  questionId: string;
+  optionId?: string;
+  otherText?: string;
+};
+
+type ChatActionResult = {
+  text: string | null;
+  model: string;
+  threadId: string;
+  runId: string | null;
+  responseKind: AgentResponseKind;
+  clarificationSessionId: string | null;
+  pendingActionId: string | null;
+};
+
 const PAGE_SIZE = 200;
 const STREAM_FLUSH_INTERVAL_MS = 180;
 const PENDING_ACTION_TTL_MS = 10 * 60 * 1000;
+const CLARIFICATION_TTL_MS = 15 * 60 * 1000;
+const MAX_PAGE_CONTEXT_ITEMS = 12;
+const MAX_PAGE_CONTEXT_TEXT_LENGTH = 140;
 
 function normalizePrompt(prompt: string) {
   return prompt.trim().slice(0, MAX_PROMPT_LENGTH);
@@ -141,35 +202,89 @@ function normalizeAttachments(attachments: ChatAttachment[]) {
     .map((attachment) => ({
       name: attachment.name?.trim() || undefined,
       contentType: attachment.contentType.trim(),
-      dataUrl: attachment.dataUrl.trim(),
+      storageId: attachment.storageId,
     }))
     .filter(
       (attachment) =>
         attachment.contentType.length > 0 &&
-        attachment.dataUrl.startsWith("data:") &&
-        attachment.dataUrl.length > 0 &&
-        attachment.dataUrl.length <= MAX_ATTACHMENT_DATA_URL_LENGTH,
+        typeof attachment.storageId === "string" &&
+        attachment.storageId.trim().length > 0,
     )
     .slice(0, MAX_ATTACHMENTS);
 }
 
-function extractBase64FromDataUrl(dataUrl: string) {
-  const separatorIndex = dataUrl.indexOf(",");
-  if (separatorIndex < 0) {
+function normalizePageContextText(value: string) {
+  return value.trim().slice(0, MAX_PAGE_CONTEXT_TEXT_LENGTH);
+}
+
+function normalizeOptionalPageContextText(value?: string) {
+  if (typeof value !== "string") {
     return null;
   }
 
-  const metadata = dataUrl.slice(0, separatorIndex).toLowerCase();
-  const payload = dataUrl.slice(separatorIndex + 1);
-  if (!payload) {
+  const normalizedValue = normalizePageContextText(value);
+  return normalizedValue.length > 0 ? normalizedValue : null;
+}
+
+function normalizeNonNegativeInteger(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.floor(value));
+}
+
+function normalizePageContext(
+  pageContext?: ChatPageContext,
+): AgentContextPageContext | null {
+  if (!pageContext) {
     return null;
   }
 
-  if (metadata.includes(";base64")) {
-    return payload;
+  const routeId = normalizePageContextText(pageContext.routeId);
+  const routePath = normalizePageContextText(pageContext.routePath);
+  const title = normalizePageContextText(pageContext.title);
+  if (!routeId || !routePath || !title) {
+    return null;
   }
 
-  return Buffer.from(decodeURIComponent(payload), "utf8").toString("base64");
+  const members = pageContext.members
+    ? {
+        totalCount: normalizeNonNegativeInteger(pageContext.members.totalCount),
+        filteredCount: normalizeNonNegativeInteger(pageContext.members.filteredCount),
+        pendingInvitationCount: normalizeNonNegativeInteger(
+          pageContext.members.pendingInvitationCount,
+        ),
+        currentMemberRole: normalizeOptionalPageContextText(
+          pageContext.members.currentMemberRole,
+        ),
+        visibleMembers: pageContext.members.visibleMembers
+          .slice(0, MAX_PAGE_CONTEXT_ITEMS)
+          .map((member) => ({
+            name: normalizePageContextText(member.name),
+            email: normalizePageContextText(member.email),
+            role: normalizePageContextText(member.role),
+          }))
+          .filter(
+            (member) => member.name.length > 0 || member.email.length > 0,
+          ),
+        visibleInvitations: pageContext.members.visibleInvitations
+          .slice(0, MAX_PAGE_CONTEXT_ITEMS)
+          .map((invitation) => ({
+            email: normalizePageContextText(invitation.email),
+            role: normalizePageContextText(invitation.role),
+          }))
+          .filter((invitation) => invitation.email.length > 0),
+      }
+    : null;
+
+  return {
+    routeId,
+    routePath,
+    title,
+    searchQuery: normalizeOptionalPageContextText(pageContext.searchQuery),
+    members,
+  };
 }
 
 function errorMessageFromUnknown(error: unknown) {
@@ -186,7 +301,7 @@ function errorMessageFromUnknown(error: unknown) {
 
 function buildUserMessage(options: {
   prompt: string;
-  attachments: ChatAttachment[];
+  attachments: ResolvedChatAttachment[];
 }) {
   const parts: RequestPart[] = [];
 
@@ -198,15 +313,10 @@ function buildUserMessage(options: {
   }
 
   for (const attachment of options.attachments) {
-    const base64Data = extractBase64FromDataUrl(attachment.dataUrl);
-    if (!base64Data) {
-      continue;
-    }
-
     if (attachment.contentType.startsWith("image/")) {
       parts.push({
         type: "image",
-        image: base64Data,
+        image: attachment.base64Data,
         mimeType: attachment.contentType,
       });
       continue;
@@ -214,7 +324,7 @@ function buildUserMessage(options: {
 
     parts.push({
       type: "file",
-      data: base64Data,
+      data: attachment.base64Data,
       mimeType: attachment.contentType,
       filename: attachment.name,
     });
@@ -235,6 +345,96 @@ function buildUserMessage(options: {
     role: "user" as const,
     content: parts,
   };
+}
+
+async function resolveAttachmentsFromStorage(
+  ctx: {
+    storage: {
+      get: (storageId: Id<"_storage">) => Promise<Blob | null>;
+      getUrl: (storageId: Id<"_storage">) => Promise<string | null>;
+    };
+  },
+  attachments: ChatAttachment[],
+) {
+  const resolvedAttachments = await Promise.all(
+    attachments.map(async (attachment) => {
+      const [fileBlob, fileUrl] = await Promise.all([
+        ctx.storage.get(attachment.storageId),
+        ctx.storage.getUrl(attachment.storageId),
+      ]);
+
+      if (!fileBlob) {
+        return null;
+      }
+
+      const base64Data = Buffer.from(await fileBlob.arrayBuffer()).toString("base64");
+      if (!base64Data) {
+        return null;
+      }
+
+      return {
+        name: attachment.name,
+        contentType: attachment.contentType,
+        storageId: attachment.storageId,
+        fileUrl,
+        base64Data,
+      } satisfies ResolvedChatAttachment;
+    }),
+  );
+
+  return resolvedAttachments.filter(
+    (attachment): attachment is ResolvedChatAttachment => !!attachment,
+  );
+}
+
+function buildPersistedUserMessageContent(options: {
+  prompt: string;
+  attachments: ResolvedChatAttachment[];
+}) {
+  const parts: Array<Record<string, unknown>> = [];
+
+  if (options.prompt) {
+    parts.push({
+      type: "text",
+      text: options.prompt,
+    });
+  }
+
+  for (const attachment of options.attachments) {
+    if (attachment.contentType.startsWith("image/")) {
+      const persistedImageSource =
+        attachment.fileUrl ??
+        `data:${attachment.contentType};base64,${attachment.base64Data}`;
+      parts.push({
+        type: "image",
+        image: persistedImageSource,
+        url: attachment.fileUrl ?? undefined,
+        mimeType: attachment.contentType,
+        filename: attachment.name,
+        storageId: attachment.storageId,
+      });
+      continue;
+    }
+
+    parts.push({
+      type: "file",
+      mimeType: attachment.contentType,
+      filename: attachment.name,
+      url: attachment.fileUrl ?? undefined,
+      data: attachment.fileUrl ? undefined : attachment.base64Data,
+      storageId: attachment.storageId,
+    });
+  }
+
+  if (parts.length === 0) {
+    return "";
+  }
+
+  if (parts.length === 1 && isRecord(parts[0]) && parts[0].type === "text") {
+    return typeof parts[0].text === "string" ? parts[0].text : "";
+  }
+
+  return parts;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -387,6 +587,317 @@ function toDeleteActionText(options: {
     : "Organization deletion failed.";
 }
 
+function toClarificationCanceledText(locale: "en" | "de") {
+  if (locale === "de") {
+    return "Rückfrage abgebrochen. Du kannst jederzeit eine neue Anfrage senden.";
+  }
+
+  return "Clarification was canceled. You can send a new request anytime.";
+}
+
+function toClarificationExpiredText(locale: "en" | "de") {
+  if (locale === "de") {
+    return "Rückfrage ist abgelaufen. Bitte Anfrage erneut senden.";
+  }
+
+  return "Clarification expired. Please submit your request again.";
+}
+
+function toClarificationMissingText(locale: "en" | "de") {
+  if (locale === "de") {
+    return "Keine offene Rückfrage gefunden.";
+  }
+
+  return "No pending clarification was found.";
+}
+
+function toClarificationAnsweredText(locale: "en" | "de") {
+  if (locale === "de") {
+    return "Danke, ich fahre mit diesen Angaben fort.";
+  }
+
+  return "Thanks, I will continue with these details.";
+}
+
+function toClarificationErrorText(locale: "en" | "de", errorMessage?: string) {
+  if (locale === "de") {
+    return errorMessage
+      ? `Rückfrage konnte nicht verarbeitet werden: ${errorMessage}`
+      : "Rückfrage konnte nicht verarbeitet werden.";
+  }
+
+  return errorMessage
+    ? `Clarification could not be processed: ${errorMessage}`
+    : "Clarification could not be processed.";
+}
+
+function hasClarificationRequestedStatus(result: unknown) {
+  if (!isRecord(result)) {
+    return false;
+  }
+
+  const status = getRecordString(result, "status");
+  return status === "clarification_requested" || status === "question_requested";
+}
+
+function hasApprovalRequiredStatus(result: unknown) {
+  if (!isRecord(result)) {
+    return false;
+  }
+
+  return (
+    getRecordString(result, "status") === "requires_confirmation" &&
+    getRecordString(result, "actionType") === "delete-organization"
+  );
+}
+
+function detectResponseKindFromToolResults(
+  toolResults: ToolResultRecord[],
+): AgentResponseKind {
+  const hasApprovalRequired = toolResults.some((toolResult) =>
+    hasApprovalRequiredStatus(toolResult.result),
+  );
+
+  if (hasApprovalRequired) {
+    return "approval_required";
+  }
+
+  const hasClarificationRequested = toolResults.some((toolResult) =>
+    hasClarificationRequestedStatus(toolResult.result),
+  );
+
+  if (hasClarificationRequested) {
+    return "clarification";
+  }
+
+  return "answer";
+}
+
+function getApprovalPendingActionId(toolResults: ToolResultRecord[]) {
+  for (const toolResult of toolResults) {
+    if (!hasApprovalRequiredStatus(toolResult.result) || !isRecord(toolResult.result)) {
+      continue;
+    }
+
+    const pendingActionId = getRecordString(toolResult.result, "pendingActionId");
+    if (pendingActionId) {
+      return pendingActionId;
+    }
+  }
+
+  return null;
+}
+
+function extractClarificationQuestionsFromResult(result: Record<string, unknown>) {
+  const questions: string[] = [];
+  const singleQuestion = getRecordString(result, "question");
+  if (singleQuestion) {
+    questions.push(singleQuestion);
+  }
+
+  const rawQuestions = result.questions;
+  if (Array.isArray(rawQuestions)) {
+    rawQuestions.forEach((entry) => {
+      if (typeof entry !== "string") {
+        return;
+      }
+
+      const normalized = entry.trim();
+      if (normalized.length === 0) {
+        return;
+      }
+
+      if (!questions.includes(normalized)) {
+        questions.push(normalized);
+      }
+    });
+  }
+
+  return questions.slice(0, 3);
+}
+
+function getClarificationToolRequest(toolResults: ToolResultRecord[]) {
+  for (const toolResult of toolResults) {
+    if (!hasClarificationRequestedStatus(toolResult.result) || !isRecord(toolResult.result)) {
+      continue;
+    }
+
+    const questions = extractClarificationQuestionsFromResult(toolResult.result);
+    if (questions.length === 0) {
+      continue;
+    }
+
+    return {
+      questions,
+      reason: getRecordString(toolResult.result, "reason"),
+    };
+  }
+
+  return null;
+}
+
+function buildClarificationTemplateFromTool(options: {
+  locale: "en" | "de";
+  questions: string[];
+  reason?: string | null;
+}) {
+  const normalizedQuestions = options.questions
+    .map((question) => question.trim())
+    .filter((question, index, allQuestions) => {
+      return question.length > 0 && allQuestions.indexOf(question) === index;
+    })
+    .slice(0, 3);
+
+  const fallbackQuestion =
+    options.locale === "de"
+      ? "Welche fehlenden Details soll ich für dich ergänzen?"
+      : "Which missing details should I add before I continue?";
+
+  const clarificationPrompts =
+    normalizedQuestions.length > 0 ? normalizedQuestions : [fallbackQuestion];
+
+  if (options.locale === "de") {
+    return {
+      title: "Rückfrage erforderlich",
+      description:
+        options.reason ??
+        "Bitte beantworte die Rückfrage, damit ich den Auftrag fortsetzen kann.",
+      assistantMessage:
+        clarificationPrompts.length === 1
+          ? clarificationPrompts[0]!
+          : "Ich brauche noch ein paar kurze Angaben, bevor ich fortfahre.",
+      questions: clarificationPrompts.map((prompt, index) => ({
+        id: `details_${index + 1}`,
+        prompt,
+        options: [
+          {
+            id: "provide_details",
+            label: "Details angeben (Empfohlen)",
+            description:
+              "Fehlende Details im Freitextfeld ergänzen, damit ich fortfahren kann.",
+          },
+          {
+            id: "use_current_data",
+            label: "Aktuelle Daten nutzen",
+            description:
+              "Mit den derzeit bekannten Daten fortfahren, falls ausreichend.",
+          },
+          {
+            id: "cancel_request",
+            label: "Vorgang abbrechen",
+            description: "Diesen Vorgang nicht fortsetzen.",
+          },
+        ],
+        allowOther: true,
+        required: true,
+      })),
+    };
+  }
+
+  return {
+    title: "Clarification needed",
+    description:
+      options.reason ??
+      "Please answer the question so I can continue with your request.",
+    assistantMessage:
+      clarificationPrompts.length === 1
+        ? clarificationPrompts[0]!
+        : "I need a few quick details before I continue.",
+    questions: clarificationPrompts.map((prompt, index) => ({
+      id: `details_${index + 1}`,
+      prompt,
+      options: [
+        {
+          id: "provide_details",
+          label: "Provide details (Recommended)",
+          description:
+            "Add the missing detail in the free-text field so I can continue.",
+        },
+        {
+          id: "use_current_data",
+          label: "Use current data",
+          description: "Proceed with the currently available data if sufficient.",
+        },
+        {
+          id: "cancel_request",
+          label: "Cancel request",
+          description: "Do not continue with this operation.",
+        },
+      ],
+      allowOther: true,
+      required: true,
+    })),
+  };
+}
+
+function normalizeClarificationAnswers(options: {
+  answers: ClarificationAnswerInput[];
+  questions: ClarificationQuestion[];
+}) {
+  const answersByQuestionId = new Map(
+    options.answers.map((answer) => [answer.questionId, answer]),
+  );
+
+  const normalizedAnswers: Record<string, string> = {};
+
+  for (const question of options.questions) {
+    const answer = answersByQuestionId.get(question.id);
+    const selectedOption = question.options.find(
+      (option) => option.id === answer?.optionId,
+    );
+    const normalizedOtherText = answer?.otherText?.trim() ?? "";
+
+    if (!selectedOption && !normalizedOtherText) {
+      if (question.required) {
+        throw new Error("Please answer all clarification questions");
+      }
+      continue;
+    }
+
+    if (!selectedOption && normalizedOtherText && !question.allowOther) {
+      throw new Error("An unsupported clarification answer was provided");
+    }
+
+    if (selectedOption && normalizedOtherText) {
+      normalizedAnswers[question.id] = `${selectedOption.label}: ${normalizedOtherText}`;
+      continue;
+    }
+
+    if (selectedOption) {
+      normalizedAnswers[question.id] = selectedOption.label;
+      continue;
+    }
+
+    normalizedAnswers[question.id] = normalizedOtherText;
+  }
+
+  return normalizedAnswers;
+}
+
+function buildResumePromptFromClarification(options: {
+  originalPrompt: string;
+  normalizedAnswers: Record<string, string>;
+  locale: "en" | "de";
+}) {
+  const sortedEntries = Object.entries(options.normalizedAnswers).sort((entryA, entryB) =>
+    entryA[0].localeCompare(entryB[0]),
+  );
+
+  if (sortedEntries.length === 0) {
+    return options.originalPrompt;
+  }
+
+  const detailsLines = sortedEntries.map(
+    ([questionId, value]) => `- ${questionId}: ${value}`,
+  );
+
+  if (options.locale === "de") {
+    return `${options.originalPrompt}\n\nZusätzliche Bestätigung:\n${detailsLines.join("\n")}`;
+  }
+
+  return `${options.originalPrompt}\n\nAdditional confirmation:\n${detailsLines.join("\n")}`;
+}
+
 function getChunkType(chunk: unknown) {
   if (!isRecord(chunk)) {
     return null;
@@ -493,6 +1004,29 @@ function normalizeOrganizationInfo(value: unknown) {
   };
 }
 
+function normalizeUserInfo(value: unknown) {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const id = getRecordString(value, "_id") ?? getRecordString(value, "id");
+  const name = getRecordString(value, "name");
+  const email = getRecordString(value, "email");
+  const imageRaw = value.image;
+  const image = typeof imageRaw === "string" ? imageRaw : null;
+
+  if (!id || !name || !email) {
+    return null;
+  }
+
+  return {
+    id,
+    name,
+    email,
+    image,
+  };
+}
+
 async function callAuthApi(
   auth: AuthApiClient,
   methodName: string,
@@ -594,7 +1128,7 @@ async function getToolPermissionFlags(options: {
   } satisfies ToolPermissionFlags;
 }
 
-export const chat = action({
+export const chat: any = action({
   args: {
     organizationId: v.string(),
     prompt: v.string(),
@@ -604,9 +1138,38 @@ export const chat = action({
         v.object({
           name: v.optional(v.string()),
           contentType: v.string(),
-          dataUrl: v.string(),
+          storageId: v.id("_storage"),
         }),
       ),
+    ),
+    pageContext: v.optional(
+      v.object({
+        routeId: v.string(),
+        routePath: v.string(),
+        title: v.string(),
+        searchQuery: v.optional(v.string()),
+        members: v.optional(
+          v.object({
+            totalCount: v.number(),
+            filteredCount: v.number(),
+            pendingInvitationCount: v.number(),
+            currentMemberRole: v.optional(v.string()),
+            visibleMembers: v.array(
+              v.object({
+                name: v.string(),
+                email: v.string(),
+                role: v.string(),
+              }),
+            ),
+            visibleInvitations: v.array(
+              v.object({
+                email: v.string(),
+                role: v.string(),
+              }),
+            ),
+          }),
+        ),
+      }),
     ),
     threadId: v.optional(v.string()),
   },
@@ -615,13 +1178,21 @@ export const chat = action({
     model: v.string(),
     threadId: v.string(),
     runId: v.union(v.string(), v.null()),
+    responseKind: v.union(
+      v.literal("answer"),
+      v.literal("clarification"),
+      v.literal("approval_required"),
+    ),
+    clarificationSessionId: v.union(v.string(), v.null()),
+    pendingActionId: v.union(v.string(), v.null()),
   }),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<ChatActionResult> => {
     if (!process.env.AI_GATEWAY_API_KEY) {
       throw new Error("AI gateway is not configured");
     }
 
     const locale = toLocale(args.locale);
+    const modelId = process.env.AI_GATEWAY_MODEL ?? DEFAULT_AI_GATEWAY_MODEL;
 
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) {
@@ -656,6 +1227,20 @@ export const chat = action({
     const attachments = normalizeAttachments(
       (args.attachments ?? []) as ChatAttachment[],
     );
+    const resolvedAttachments = await resolveAttachmentsFromStorage(ctx, attachments);
+    if (resolvedAttachments.length !== attachments.length) {
+      throw new Error("One or more attachments are no longer available");
+    }
+    const pageContext = normalizePageContext(
+      args.pageContext as ChatPageContext | undefined,
+    );
+
+    const attachmentContextEntries = resolvedAttachments.map((attachment) => ({
+      name: attachment.name ?? "Attachment",
+      contentType: attachment.contentType,
+      storageId: attachment.storageId,
+      fileUrl: attachment.fileUrl,
+    }));
 
     const defaultThreadId = getMastraThreadId({
       organizationId: args.organizationId,
@@ -680,23 +1265,61 @@ export const chat = action({
         userId: authUser._id,
       });
 
+    const pendingClarificationSession = await ctx.runQuery(
+      internal.aiState.getLatestPendingClarificationByThread,
+      {
+        threadId,
+      },
+    );
+
+    if (
+      pendingClarificationSession &&
+      pendingClarificationSession.status === "pending" &&
+      pendingClarificationSession.expiresAt > Date.now()
+    ) {
+      return {
+        text: pendingClarificationSession.assistantMessage,
+        model: modelId,
+        threadId,
+        runId: null,
+        responseKind: "clarification" as const,
+        clarificationSessionId: pendingClarificationSession.id,
+        pendingActionId: null,
+      };
+    }
+
+    if (
+      pendingClarificationSession &&
+      pendingClarificationSession.status === "pending" &&
+      pendingClarificationSession.expiresAt <= Date.now()
+    ) {
+      await ctx.runMutation(internal.aiState.resolveClarificationSession, {
+        clarificationSessionId: pendingClarificationSession.id,
+        status: "expired",
+      });
+    }
+
     const userMessage = buildUserMessage({
       prompt,
-      attachments,
+      attachments: resolvedAttachments,
+    });
+    const persistedUserContent = buildPersistedUserMessageContent({
+      prompt,
+      attachments: resolvedAttachments,
     });
 
     const userPersistedMessage = buildPersistedMessage({
       messageId: createMessageId(`${threadId}:user`),
       role: "user",
       type: "text",
-      content: userMessage.content,
+      content: persistedUserContent,
       text:
         typeof userMessage.content === "string"
           ? userMessage.content
           :
               prompt ||
-              attachments.map((attachment) => attachment.name ?? "Attachment").join(", "),
-      attachmentNames: attachments.map((attachment) => attachment.name ?? "Attachment"),
+              attachmentContextEntries.map((attachment) => attachment.name).join(", "),
+      attachmentNames: attachmentContextEntries.map((attachment) => attachment.name),
     });
 
     await ctx.runMutation(internal.aiState.upsertGeneratedMessages, {
@@ -720,6 +1343,81 @@ export const chat = action({
       headers,
       organizationId: args.organizationId,
     });
+
+    const contextPacket = compileAgentContextPacket({
+      locale,
+      organizationId: args.organizationId,
+      threadId,
+      userId: authUser._id,
+      currentMemberRole: membership.role,
+      prompt,
+      attachmentNames: attachmentContextEntries.map((attachment) => attachment.name),
+      attachments: attachmentContextEntries,
+      pageContext,
+      permissions: permissionFlags,
+      historyMessages,
+    });
+
+    const clarificationDecision = runClarificationGate(contextPacket);
+    if (clarificationDecision.kind === "clarification") {
+      const session = await ctx.runMutation(
+        internal.aiState.upsertPendingClarificationSession,
+        {
+          threadId,
+          resourceId,
+          organizationId: args.organizationId,
+          userId: authUser._id,
+          intent: clarificationDecision.intent,
+          contextVersion: contextPacket.version,
+          prompt,
+          title: clarificationDecision.template.title,
+          description: clarificationDecision.template.description,
+          assistantMessage: clarificationDecision.template.assistantMessage,
+          questions: clarificationDecision.template.questions,
+          expiresAt: Date.now() + CLARIFICATION_TTL_MS,
+        },
+      );
+
+      const assistantMessage = buildPersistedMessage({
+        messageId: createMessageId(`${threadId}:assistant`),
+        role: "assistant",
+        type: "text",
+        content: clarificationDecision.template.assistantMessage,
+        text: clarificationDecision.template.assistantMessage,
+      });
+
+      await ctx.runMutation(internal.aiState.upsertGeneratedMessages, {
+        threadId,
+        resourceId,
+        organizationId: args.organizationId,
+        userId: authUser._id,
+        messages: [assistantMessage],
+      });
+
+      await ctx.runMutation(internal.aiState.setChatThreadState, {
+        threadId,
+        resourceId,
+        organizationId: args.organizationId,
+        userId: authUser._id,
+        status: "idle",
+        lastError: null,
+        lastRunId: null,
+        streamingText: null,
+        streamPhase: "idle",
+        streamActor: "main",
+        activeToolLabel: null,
+      });
+
+      return {
+        text: clarificationDecision.template.assistantMessage,
+        model: modelId,
+        threadId,
+        runId: null,
+        responseKind: "clarification" as const,
+        clarificationSessionId: session.clarificationSessionId,
+        pendingActionId: null,
+      };
+    }
 
     const listOrganizationMembers = async (): Promise<OrganizationMember[]> => {
       const response = await callAuthApi(auth, "listMembers", {
@@ -880,6 +1578,106 @@ export const chat = action({
       };
     };
 
+    const getUserSettings = async (): Promise<UserSettingsSummary> => {
+      const [userResult, localePreference, themePreference] = await Promise.all([
+        ctx.runQuery(components.betterAuth.adapter.findOne, {
+          model: "user",
+          where: [
+            {
+              field: "_id",
+              operator: "eq",
+              value: authUser._id,
+            },
+          ],
+        }),
+        ctx.runQuery(internal.preferences.getLocaleForUser, {
+          userId: authUser._id,
+        }),
+        ctx.runQuery(internal.preferences.getThemeForUser, {
+          userId: authUser._id,
+        }),
+      ]);
+
+      const normalizedUser = normalizeUserInfo(userResult) ?? {
+        id: authUser._id,
+        name: authUser.name?.trim() || (locale === "de" ? "Benutzer" : "User"),
+        email: authUser.email,
+        image: typeof authUser.image === "string" ? authUser.image : null,
+      };
+
+      return {
+        user: normalizedUser,
+        preferences: {
+          language: localePreference ?? "system",
+          theme: themePreference ?? "system",
+        },
+      };
+    };
+
+    const updateUserSettings = async (input: {
+      name?: string;
+      image?: string | null;
+      language?: "en" | "de" | "system";
+      theme?: "light" | "dark" | "system";
+    }): Promise<UserSettingsSummary> => {
+      const userUpdateData: Record<string, string | null> = {};
+      let hasPreferenceUpdate = false;
+
+      if (typeof input.name === "string") {
+        const normalizedName = input.name.trim();
+        if (normalizedName.length < 2) {
+          throw new Error(
+            locale === "de"
+              ? "Der Name muss mindestens 2 Zeichen lang sein."
+              : "Name must be at least 2 characters.",
+          );
+        }
+        userUpdateData.name = normalizedName;
+      }
+
+      if (input.image !== undefined) {
+        if (input.image === null) {
+          userUpdateData.image = null;
+        } else {
+          const normalizedImage = input.image.trim();
+          userUpdateData.image = normalizedImage.length > 0 ? normalizedImage : null;
+        }
+      }
+
+      if (Object.keys(userUpdateData).length > 0) {
+        await callAuthApi(auth, "updateUser", {
+          body: userUpdateData,
+          headers,
+        });
+      }
+
+      if (input.language !== undefined) {
+        hasPreferenceUpdate = true;
+        await ctx.runMutation(internal.preferences.setLocaleForUser, {
+          userId: authUser._id,
+          locale: input.language === "system" ? null : input.language,
+        });
+      }
+
+      if (input.theme !== undefined) {
+        hasPreferenceUpdate = true;
+        await ctx.runMutation(internal.preferences.setThemeForUser, {
+          userId: authUser._id,
+          theme: input.theme === "system" ? null : input.theme,
+        });
+      }
+
+      if (Object.keys(userUpdateData).length === 0 && !hasPreferenceUpdate) {
+        throw new Error(
+          locale === "de"
+            ? "Mindestens ein Feld zum Aktualisieren angeben."
+            : "Provide at least one field to update.",
+        );
+      }
+
+      return await getUserSettings();
+    };
+
     const requestDeleteOrganizationConfirmation =
       permissionFlags.canDeleteOrganization
         ? async () => {
@@ -912,12 +1710,11 @@ export const chat = action({
           }
         : undefined;
 
-    const modelId = process.env.AI_GATEWAY_MODEL ?? DEFAULT_AI_GATEWAY_MODEL;
-
     const agent = createWorkspaceAgent({
       organizationId: args.organizationId,
       modelId,
       locale,
+      contextPacket: formatContextPacketForInstructions(contextPacket),
       readWorkspaceSnapshot,
       organizationTools: {
         getOrganizationSummary,
@@ -1087,6 +1884,10 @@ export const chat = action({
             }
           : undefined,
       },
+      userTools: {
+        getUserSettings,
+        updateUserSettings,
+      },
     });
 
     await ctx.runMutation(internal.aiState.setChatThreadState, {
@@ -1196,6 +1997,12 @@ export const chat = action({
               actor: "organization",
               toolLabel: null,
             });
+          } else if (toolName?.startsWith("agent-user")) {
+            shouldForceFlush = setStreamState({
+              phase: "delegating",
+              actor: "user",
+              toolLabel: null,
+            });
           } else {
             shouldForceFlush = setStreamState({
               phase: "tool",
@@ -1213,6 +2020,12 @@ export const chat = action({
             shouldForceFlush = setStreamState({
               phase: "thinking",
               actor: "organization",
+              toolLabel: null,
+            });
+          } else if (toolName?.startsWith("agent-user")) {
+            shouldForceFlush = setStreamState({
+              phase: "thinking",
+              actor: "user",
               toolLabel: null,
             });
           } else {
@@ -1236,7 +2049,11 @@ export const chat = action({
 
           shouldForceFlush = setStreamState({
             phase: "thinking",
-            actor: agentId?.includes("organization") ? "organization" : "main",
+            actor: agentId?.includes("organization")
+              ? "organization"
+              : agentId?.includes("user")
+                ? "user"
+                : "main",
             toolLabel: null,
           });
         } else if (type === "step-start") {
@@ -1257,6 +2074,44 @@ export const chat = action({
 
       const toolCalls = extractToolCalls(fullOutput.toolCalls);
       const toolResults = extractToolResults(fullOutput.toolResults);
+      const responseKindFromTools = detectResponseKindFromToolResults(toolResults);
+      const pendingActionId = getApprovalPendingActionId(toolResults);
+      const clarificationToolRequest = getClarificationToolRequest(toolResults);
+      let clarificationSessionId: string | null = null;
+      let responseKind: AgentResponseKind = responseKindFromTools;
+      let finalTextForPersist = finalText;
+
+      if (clarificationToolRequest) {
+        const clarificationTemplate = buildClarificationTemplateFromTool({
+          locale,
+          questions: clarificationToolRequest.questions,
+          reason: clarificationToolRequest.reason,
+        });
+
+        const clarificationSession = await ctx.runMutation(
+          internal.aiState.upsertPendingClarificationSession,
+          {
+            threadId,
+            resourceId,
+            organizationId: args.organizationId,
+            userId: authUser._id,
+            intent: "generic",
+            contextVersion: contextPacket.version,
+            prompt,
+            title: clarificationTemplate.title,
+            description: clarificationTemplate.description,
+            assistantMessage: clarificationTemplate.assistantMessage,
+            questions: clarificationTemplate.questions,
+            expiresAt: Date.now() + CLARIFICATION_TTL_MS,
+          },
+        );
+
+        clarificationSessionId = clarificationSession.clarificationSessionId;
+        responseKind = "clarification";
+        if (!finalTextForPersist.trim()) {
+          finalTextForPersist = clarificationTemplate.assistantMessage;
+        }
+      }
 
       const newMessages: PersistedMessage[] = [];
 
@@ -1293,14 +2148,14 @@ export const chat = action({
         );
       }
 
-      if (finalText.length > 0) {
+      if (finalTextForPersist.length > 0) {
         newMessages.push(
           buildPersistedMessage({
             messageId: createMessageId(`${threadId}:assistant`),
             role: "assistant",
             type: "text",
-            content: finalText,
-            text: finalText,
+            content: finalTextForPersist,
+            text: finalTextForPersist,
           }),
         );
       }
@@ -1336,10 +2191,13 @@ export const chat = action({
       });
 
       return {
-        text: finalText || null,
+        text: finalTextForPersist || null,
         model: modelId,
         threadId,
         runId,
+        responseKind,
+        clarificationSessionId,
+        pendingActionId,
       };
     } catch (error) {
       await ctx.runMutation(internal.aiState.setChatThreadState, {
@@ -1357,6 +2215,333 @@ export const chat = action({
       });
 
       throw error;
+    }
+  },
+});
+
+export const submitClarificationAnswers: any = action({
+  args: {
+    organizationId: v.string(),
+    clarificationSessionId: v.id("aiClarificationSessions"),
+    locale: v.optional(v.union(v.literal("en"), v.literal("de"))),
+    answers: v.array(
+      v.object({
+        questionId: v.string(),
+        optionId: v.optional(v.string()),
+        otherText: v.optional(v.string()),
+      }),
+    ),
+  },
+  returns: v.object({
+    status: v.union(
+      v.literal("answered"),
+      v.literal("expired"),
+      v.literal("missing"),
+      v.literal("error"),
+    ),
+    text: v.string(),
+    resumePrompt: v.union(v.string(), v.null()),
+    threadId: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    const locale = toLocale(args.locale);
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("You must be signed in");
+    }
+
+    const membership = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+      model: "member",
+      where: [
+        {
+          field: "organizationId",
+          operator: "eq",
+          value: args.organizationId,
+        },
+        {
+          field: "userId",
+          operator: "eq",
+          value: authUser._id,
+        },
+      ],
+    })) as MemberDoc | null;
+
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const session = await ctx.runQuery(internal.aiState.getClarificationSessionById, {
+      clarificationSessionId: args.clarificationSessionId,
+    });
+
+    if (
+      !session ||
+      session.organizationId !== args.organizationId ||
+      session.userId !== authUser._id ||
+      session.status !== "pending"
+    ) {
+      return {
+        status: "missing" as const,
+        text: toClarificationMissingText(locale),
+        resumePrompt: null,
+        threadId: null,
+      };
+    }
+
+    if (session.expiresAt <= Date.now()) {
+      await ctx.runMutation(internal.aiState.resolveClarificationSession, {
+        clarificationSessionId: args.clarificationSessionId,
+        status: "expired",
+      });
+
+      return {
+        status: "expired" as const,
+        text: toClarificationExpiredText(locale),
+        resumePrompt: null,
+        threadId: session.threadId,
+      };
+    }
+
+    try {
+      const normalizedAnswers = normalizeClarificationAnswers({
+        answers: args.answers as ClarificationAnswerInput[],
+        questions: session.questions as ClarificationQuestion[],
+      });
+
+      const resumePrompt = buildResumePromptFromClarification({
+        originalPrompt: session.prompt,
+        normalizedAnswers,
+        locale,
+      });
+
+      await ctx.runMutation(internal.aiState.resolveClarificationSession, {
+        clarificationSessionId: args.clarificationSessionId,
+        status: "answered",
+        answers: normalizedAnswers,
+        resumePrompt,
+      });
+
+      return {
+        status: "answered" as const,
+        text: toClarificationAnsweredText(locale),
+        resumePrompt,
+        threadId: session.threadId,
+      };
+    } catch (error) {
+      return {
+        status: "error" as const,
+        text: toClarificationErrorText(locale, errorMessageFromUnknown(error)),
+        resumePrompt: null,
+        threadId: session.threadId,
+      };
+    }
+  },
+});
+
+export const cancelClarificationSession = action({
+  args: {
+    organizationId: v.string(),
+    clarificationSessionId: v.id("aiClarificationSessions"),
+    locale: v.optional(v.union(v.literal("en"), v.literal("de"))),
+  },
+  returns: v.object({
+    status: v.union(
+      v.literal("canceled"),
+      v.literal("expired"),
+      v.literal("missing"),
+      v.literal("error"),
+    ),
+    text: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const locale = toLocale(args.locale);
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("You must be signed in");
+    }
+
+    const membership = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+      model: "member",
+      where: [
+        {
+          field: "organizationId",
+          operator: "eq",
+          value: args.organizationId,
+        },
+        {
+          field: "userId",
+          operator: "eq",
+          value: authUser._id,
+        },
+      ],
+    })) as MemberDoc | null;
+
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const session = await ctx.runQuery(internal.aiState.getClarificationSessionById, {
+      clarificationSessionId: args.clarificationSessionId,
+    });
+
+    if (
+      !session ||
+      session.organizationId !== args.organizationId ||
+      session.userId !== authUser._id ||
+      session.status !== "pending"
+    ) {
+      return {
+        status: "missing" as const,
+        text: toClarificationMissingText(locale),
+      };
+    }
+
+    if (session.expiresAt <= Date.now()) {
+      await ctx.runMutation(internal.aiState.resolveClarificationSession, {
+        clarificationSessionId: args.clarificationSessionId,
+        status: "expired",
+      });
+
+      return {
+        status: "expired" as const,
+        text: toClarificationExpiredText(locale),
+      };
+    }
+
+    try {
+      await ctx.runMutation(internal.aiState.resolveClarificationSession, {
+        clarificationSessionId: args.clarificationSessionId,
+        status: "canceled",
+      });
+
+      const text = toClarificationCanceledText(locale);
+      await ctx.runMutation(internal.aiState.upsertGeneratedMessages, {
+        threadId: session.threadId,
+        resourceId: session.resourceId,
+        organizationId: args.organizationId,
+        userId: authUser._id,
+        messages: [
+          buildPersistedMessage({
+            messageId: createMessageId(`${session.threadId}:assistant`),
+            role: "assistant",
+            type: "text",
+            content: text,
+            text,
+          }),
+        ],
+      });
+
+      return {
+        status: "canceled" as const,
+        text,
+      };
+    } catch (error) {
+      return {
+        status: "error" as const,
+        text: toClarificationErrorText(locale, errorMessageFromUnknown(error)),
+      };
+    }
+  },
+});
+
+export const resumeFromClarification: any = action({
+  args: {
+    organizationId: v.string(),
+    clarificationSessionId: v.id("aiClarificationSessions"),
+    locale: v.optional(v.union(v.literal("en"), v.literal("de"))),
+  },
+  returns: v.object({
+    status: v.union(
+      v.literal("resumed"),
+      v.literal("expired"),
+      v.literal("missing"),
+      v.literal("error"),
+    ),
+    text: v.string(),
+    resumePrompt: v.union(v.string(), v.null()),
+    threadId: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    const locale = toLocale(args.locale);
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("You must be signed in");
+    }
+
+    const membership = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+      model: "member",
+      where: [
+        {
+          field: "organizationId",
+          operator: "eq",
+          value: args.organizationId,
+        },
+        {
+          field: "userId",
+          operator: "eq",
+          value: authUser._id,
+        },
+      ],
+    })) as MemberDoc | null;
+
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const session = await ctx.runQuery(internal.aiState.getClarificationSessionById, {
+      clarificationSessionId: args.clarificationSessionId,
+    });
+
+    if (
+      !session ||
+      session.organizationId !== args.organizationId ||
+      session.userId !== authUser._id
+    ) {
+      return {
+        status: "missing" as const,
+        text: toClarificationMissingText(locale),
+        resumePrompt: null,
+        threadId: null,
+      };
+    }
+
+    if (session.status === "pending" && session.expiresAt <= Date.now()) {
+      await ctx.runMutation(internal.aiState.resolveClarificationSession, {
+        clarificationSessionId: args.clarificationSessionId,
+        status: "expired",
+      });
+
+      return {
+        status: "expired" as const,
+        text: toClarificationExpiredText(locale),
+        resumePrompt: null,
+        threadId: session.threadId,
+      };
+    }
+
+    if (session.status !== "answered") {
+      return {
+        status: "missing" as const,
+        text: toClarificationMissingText(locale),
+        resumePrompt: null,
+        threadId: session.threadId,
+      };
+    }
+
+    try {
+      return {
+        status: "resumed" as const,
+        text: toClarificationAnsweredText(locale),
+        resumePrompt: session.resumePrompt ?? session.prompt,
+        threadId: session.threadId,
+      };
+    } catch (error) {
+      return {
+        status: "error" as const,
+        text: toClarificationErrorText(locale, errorMessageFromUnknown(error)),
+        resumePrompt: null,
+        threadId: session.threadId,
+      };
     }
   },
 });

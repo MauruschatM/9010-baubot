@@ -15,12 +15,18 @@ export default defineSchema({
     locale: v.union(v.literal("en"), v.literal("de")),
     updatedAt: v.number(),
   }).index("by_userId", ["userId"]),
+  userThemePreferences: defineTable({
+    userId: v.string(),
+    theme: v.union(v.literal("light"), v.literal("dark")),
+    updatedAt: v.number(),
+  }).index("by_userId", ["userId"]),
   agentChatThreads: defineTable({
     threadId: v.string(),
     resourceId: v.string(),
     organizationId: v.string(),
     userId: v.string(),
     title: v.optional(v.string()),
+    lastSeenUpdatedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -72,6 +78,55 @@ export default defineSchema({
       organizationId: v.string(),
       organizationName: v.optional(v.string()),
     }),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+    expiresAt: v.number(),
+    resolvedAt: v.optional(v.number()),
+  })
+    .index("by_thread_status_createdAt", ["threadId", "status", "createdAt"])
+    .index("by_thread_status", ["threadId", "status"])
+    .index("by_owner_status", ["organizationId", "userId", "status"]),
+  aiClarificationSessions: defineTable({
+    threadId: v.string(),
+    resourceId: v.string(),
+    organizationId: v.string(),
+    userId: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("answered"),
+      v.literal("canceled"),
+      v.literal("expired"),
+    ),
+    intent: v.union(
+      v.literal("generic"),
+      v.literal("invite_member"),
+      v.literal("remove_member"),
+      v.literal("update_member_role"),
+      v.literal("cancel_invitation"),
+      v.literal("update_organization"),
+    ),
+    contextVersion: v.string(),
+    prompt: v.string(),
+    title: v.string(),
+    description: v.string(),
+    assistantMessage: v.string(),
+    questions: v.array(
+      v.object({
+        id: v.string(),
+        prompt: v.string(),
+        options: v.array(
+          v.object({
+            id: v.string(),
+            label: v.string(),
+            description: v.string(),
+          }),
+        ),
+        allowOther: v.boolean(),
+        required: v.boolean(),
+      }),
+    ),
+    answers: v.optional(v.record(v.string(), v.string())),
+    resumePrompt: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
     expiresAt: v.number(),

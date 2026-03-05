@@ -1,5 +1,5 @@
 import { useTheme } from "next-themes"
-import { Toaster as Sonner, type ToasterProps } from "sonner"
+import { Toaster as Sonner, toast, type ToasterProps } from "sonner"
 import { RiCheckboxCircleLine, RiInformationLine, RiErrorWarningLine, RiCloseCircleLine, RiLoaderLine } from "@remixicon/react"
 
 const Toaster = ({ ...props }: ToasterProps) => {
@@ -44,4 +44,4 @@ const Toaster = ({ ...props }: ToasterProps) => {
   )
 }
 
-export { Toaster }
+export { Toaster, toast }

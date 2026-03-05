@@ -1,0 +1,1 @@
+export const AGENT_CONTEXT_PACKET_VERSION = "2026-03-05.1";

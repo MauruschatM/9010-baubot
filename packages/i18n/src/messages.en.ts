@@ -216,13 +216,22 @@ export const messagesEn = {
       voiceError: "Voice input failed. Please try again.",
       wakingAgent: "Waking {agentName}...",
       thinking: "Thinking...",
-      thoughtFor: "Thought for {duration}",
+      thoughtFor: "Worked for {duration}",
       stream: {
         thinking: "Thinking...",
         delegating: "Delegating...",
         runningTool: "Running tool...",
         responding: "Responding...",
+        mainAgent: "Main",
         organizationAgent: "Organization",
+        userAgent: "User",
+        organizationWorking: "Working on the company...",
+        userWorking: "Updating your personal settings...",
+      },
+      clarification: {
+        continue: "Continue",
+        otherPlaceholder: "Add details (optional)",
+        completeRequired: "Please complete all required clarification questions.",
       },
       confirmation: {
         deleteOrganization: {
@@ -380,6 +389,8 @@ export const messagesEn = {
       invitationSentTo: "Invitation sent to {email}",
       languageUpdated: "Language updated",
       languageSaveFailed: "Failed to save language preference",
+      themeUpdated: "Theme updated",
+      themeSaveFailed: "Failed to save theme preference",
     },
   },
   emails: {

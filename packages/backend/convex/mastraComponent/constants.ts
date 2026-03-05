@@ -30,6 +30,7 @@ export const vMastraChatStreamPhase = v.union(
 export const vMastraChatStreamActor = v.union(
   v.literal("main"),
   v.literal("organization"),
+  v.literal("user"),
 );
 
 export type MastraChatRole = "system" | "user" | "assistant" | "tool";
@@ -41,7 +42,7 @@ export type MastraChatStreamPhase =
   | "delegating"
   | "tool"
   | "responding";
-export type MastraChatStreamActor = "main" | "organization";
+export type MastraChatStreamActor = "main" | "organization" | "user";
 
 export const MAX_CHAT_HISTORY_MESSAGES = 200;
 export const GENERATION_CONTEXT_MIN_MESSAGES = 20;

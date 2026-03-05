@@ -144,7 +144,7 @@ function RootDocument() {
               disableTransitionOnChange
             >
               <Outlet />
-              <Toaster richColors />
+              <Toaster richColors position="top-center" />
               <TanStackRouterDevtools position="bottom-left" />
               <Scripts />
             </ThemeProvider>

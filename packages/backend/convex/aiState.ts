@@ -63,6 +63,7 @@ const vChatThreadSummary = v.object({
   title: v.union(v.string(), v.null()),
   createdAt: v.number(),
   updatedAt: v.number(),
+  lastSeenUpdatedAt: v.union(v.number(), v.null()),
 });
 
 const vPendingActionType = v.literal("delete-organization");
@@ -83,6 +84,48 @@ const vPendingAction = v.object({
   payload: vPendingActionPayload,
   expiresAt: v.number(),
   createdAt: v.number(),
+});
+
+const vClarificationIntent = v.union(
+  v.literal("generic"),
+  v.literal("invite_member"),
+  v.literal("remove_member"),
+  v.literal("update_member_role"),
+  v.literal("cancel_invitation"),
+  v.literal("update_organization"),
+);
+const vClarificationStatus = v.union(
+  v.literal("pending"),
+  v.literal("answered"),
+  v.literal("canceled"),
+  v.literal("expired"),
+);
+const vClarificationQuestionOption = v.object({
+  id: v.string(),
+  label: v.string(),
+  description: v.string(),
+});
+const vClarificationQuestion = v.object({
+  id: v.string(),
+  prompt: v.string(),
+  options: v.array(vClarificationQuestionOption),
+  allowOther: v.boolean(),
+  required: v.boolean(),
+});
+const vPendingClarification = v.object({
+  id: v.id("aiClarificationSessions"),
+  intent: vClarificationIntent,
+  title: v.string(),
+  description: v.string(),
+  assistantMessage: v.string(),
+  questions: v.array(vClarificationQuestion),
+  expiresAt: v.number(),
+  createdAt: v.number(),
+});
+const vChatSeenState = v.object({
+  threadId: v.string(),
+  threadUpdatedAt: v.number(),
+  lastSeenUpdatedAt: v.union(v.number(), v.null()),
 });
 
 function sortMessages<T extends { createdAt: number; messageId: string }>(
@@ -140,6 +183,10 @@ function createThreadId(options: { organizationId: string; userId: string }) {
   return `${getMastraThreadId(options)}:${Date.now()}:${suffix}`;
 }
 
+function getNextThreadUpdatedAt(previousUpdatedAt: number | undefined, now: number) {
+  return Math.max(now, (previousUpdatedAt ?? 0) + 1);
+}
+
 function toChatMessage(message: {
   messageId: string;
   threadOrder: number;
@@ -181,6 +228,7 @@ export const getChatRuntimeState = query({
     streamActor: vMastraChatStreamActor,
     activeToolLabel: v.union(v.string(), v.null()),
     pendingAction: v.union(vPendingAction, v.null()),
+    pendingClarification: v.union(vPendingClarification, v.null()),
   }),
   handler: async (ctx, args) => {
     const authUser = await authComponent.safeGetAuthUser(ctx);
@@ -249,6 +297,28 @@ export const getChatRuntimeState = query({
           }
         : null;
 
+    const latestPendingClarification = await ctx.db
+      .query("aiClarificationSessions")
+      .withIndex("by_thread_status_createdAt", (q) =>
+        q.eq("threadId", threadId).eq("status", "pending"),
+      )
+      .order("desc")
+      .first();
+
+    const pendingClarification =
+      latestPendingClarification && latestPendingClarification.expiresAt > Date.now()
+        ? {
+            id: latestPendingClarification._id,
+            intent: latestPendingClarification.intent,
+            title: latestPendingClarification.title,
+            description: latestPendingClarification.description,
+            assistantMessage: latestPendingClarification.assistantMessage,
+            questions: latestPendingClarification.questions,
+            expiresAt: latestPendingClarification.expiresAt,
+            createdAt: latestPendingClarification.createdAt,
+          }
+        : null;
+
     return {
       threadId,
       runStatus: runState?.status ?? "idle",
@@ -258,6 +328,7 @@ export const getChatRuntimeState = query({
       streamActor: runState?.streamActor ?? "main",
       activeToolLabel: runState?.activeToolLabel ?? null,
       pendingAction,
+      pendingClarification,
     };
   },
 });
@@ -339,6 +410,7 @@ export const getChatState = query({
     streamActor: vMastraChatStreamActor,
     activeToolLabel: v.union(v.string(), v.null()),
     pendingAction: v.union(vPendingAction, v.null()),
+    pendingClarification: v.union(vPendingClarification, v.null()),
     messages: v.array(
       v.object({
         id: v.string(),
@@ -426,6 +498,28 @@ export const getChatState = query({
           }
         : null;
 
+    const latestPendingClarification = await ctx.db
+      .query("aiClarificationSessions")
+      .withIndex("by_thread_status_createdAt", (q) =>
+        q.eq("threadId", threadId).eq("status", "pending"),
+      )
+      .order("desc")
+      .first();
+
+    const pendingClarification =
+      latestPendingClarification && latestPendingClarification.expiresAt > Date.now()
+        ? {
+            id: latestPendingClarification._id,
+            intent: latestPendingClarification.intent,
+            title: latestPendingClarification.title,
+            description: latestPendingClarification.description,
+            assistantMessage: latestPendingClarification.assistantMessage,
+            questions: latestPendingClarification.questions,
+            expiresAt: latestPendingClarification.expiresAt,
+            createdAt: latestPendingClarification.createdAt,
+          }
+        : null;
+
     return {
       threadId,
       runStatus: runState?.status ?? "idle",
@@ -435,6 +529,7 @@ export const getChatState = query({
       streamActor: runState?.streamActor ?? "main",
       activeToolLabel: runState?.activeToolLabel ?? null,
       pendingAction,
+      pendingClarification,
       messages: orderedMessages.map((message) => ({
         id: message.messageId,
         role: message.role,
@@ -502,6 +597,7 @@ export const createChatThread = mutation({
       resourceId,
       organizationId: args.organizationId,
       userId: authUser._id,
+      lastSeenUpdatedAt: now,
       createdAt: now,
       updatedAt: now,
     });
@@ -572,7 +668,208 @@ export const listChatThreads = query({
         title: thread.title ?? null,
         createdAt: thread.createdAt,
         updatedAt: thread.updatedAt,
+        lastSeenUpdatedAt: thread.lastSeenUpdatedAt ?? null,
       }));
+  },
+});
+
+export const hasUnreadChatUpdates = query({
+  args: {
+    organizationId: v.optional(v.string()),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("You must be signed in");
+    }
+
+    if (args.organizationId) {
+      const membership = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+        model: "member",
+        where: [
+          {
+            field: "organizationId",
+            operator: "eq",
+            value: args.organizationId,
+          },
+          {
+            field: "userId",
+            operator: "eq",
+            value: authUser._id,
+          },
+        ],
+      })) as MemberDoc | null;
+
+      if (!membership) {
+        throw new Error("You do not have access to this organization");
+      }
+    }
+
+    const threads = await ctx.db.query("agentChatThreads").collect();
+    const scopedThreads = threads.filter(
+      (thread) =>
+        thread.userId === authUser._id &&
+        (!args.organizationId || thread.organizationId === args.organizationId),
+    );
+
+    for (const thread of scopedThreads) {
+      const lastSeenUpdatedAt = thread.lastSeenUpdatedAt ?? 0;
+      const latestAssistantMessage = await ctx.db
+        .query("agentChatMessages")
+        .withIndex("by_threadId_order", (q) => q.eq("threadId", thread.threadId))
+        .filter((q) => q.eq(q.field("role"), "assistant"))
+        .order("desc")
+        .first();
+
+      if (!latestAssistantMessage) {
+        continue;
+      }
+
+      const assistantMessageCreatedAt = normalizeCreatedAt(
+        latestAssistantMessage.createdAt,
+        latestAssistantMessage._creationTime,
+      );
+      if (assistantMessageCreatedAt > lastSeenUpdatedAt) {
+        return true;
+      }
+    }
+
+    return false;
+  },
+});
+
+export const getChatSeenState = query({
+  args: {
+    organizationId: v.string(),
+    threadId: v.optional(v.string()),
+  },
+  returns: v.union(vChatSeenState, v.null()),
+  handler: async (ctx, args) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("You must be signed in");
+    }
+
+    const membership = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+      model: "member",
+      where: [
+        {
+          field: "organizationId",
+          operator: "eq",
+          value: args.organizationId,
+        },
+        {
+          field: "userId",
+          operator: "eq",
+          value: authUser._id,
+        },
+      ],
+    })) as MemberDoc | null;
+
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const defaultThreadId = getMastraThreadId({
+      organizationId: args.organizationId,
+      userId: authUser._id,
+    });
+    const threadId = args.threadId ?? defaultThreadId;
+    const existingThread = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_threadId", (q) => q.eq("threadId", threadId))
+      .unique();
+    if (
+      existingThread &&
+      (existingThread.organizationId !== args.organizationId ||
+        existingThread.userId !== authUser._id)
+    ) {
+      throw new Error("You do not have access to this chat thread");
+    }
+
+    if (!existingThread) {
+      return null;
+    }
+
+    return {
+      threadId: existingThread.threadId,
+      threadUpdatedAt: existingThread.updatedAt,
+      lastSeenUpdatedAt: existingThread.lastSeenUpdatedAt ?? null,
+    };
+  },
+});
+
+export const markChatSeenState = mutation({
+  args: {
+    organizationId: v.string(),
+    threadId: v.optional(v.string()),
+    seenUpToUpdatedAt: v.number(),
+  },
+  returns: v.union(vChatSeenState, v.null()),
+  handler: async (ctx, args) => {
+    const authUser = await authComponent.safeGetAuthUser(ctx);
+    if (!authUser) {
+      throw new Error("You must be signed in");
+    }
+
+    const membership = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+      model: "member",
+      where: [
+        {
+          field: "organizationId",
+          operator: "eq",
+          value: args.organizationId,
+        },
+        {
+          field: "userId",
+          operator: "eq",
+          value: authUser._id,
+        },
+      ],
+    })) as MemberDoc | null;
+
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const defaultThreadId = getMastraThreadId({
+      organizationId: args.organizationId,
+      userId: authUser._id,
+    });
+    const threadId = args.threadId ?? defaultThreadId;
+    const existingThread = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_threadId", (q) => q.eq("threadId", threadId))
+      .unique();
+    if (
+      existingThread &&
+      (existingThread.organizationId !== args.organizationId ||
+        existingThread.userId !== authUser._id)
+    ) {
+      throw new Error("You do not have access to this chat thread");
+    }
+
+    if (!existingThread) {
+      return null;
+    }
+
+    const seenUpToUpdatedAt = Number.isFinite(args.seenUpToUpdatedAt)
+      ? args.seenUpToUpdatedAt
+      : 0;
+    const nextSeenTimestamp = Math.min(existingThread.updatedAt, seenUpToUpdatedAt);
+    const previousSeenTimestamp = existingThread.lastSeenUpdatedAt ?? 0;
+    const seenTimestamp = Math.max(previousSeenTimestamp, nextSeenTimestamp);
+
+    await ctx.db.patch(existingThread._id, {
+      lastSeenUpdatedAt: seenTimestamp,
+    });
+
+    return {
+      threadId,
+      threadUpdatedAt: existingThread.updatedAt,
+      lastSeenUpdatedAt: seenTimestamp,
+    };
   },
 });
 
@@ -772,8 +1069,9 @@ export const upsertGeneratedMessages = internalMutation({
     }
 
     if (existingThread) {
+      const nextUpdatedAt = getNextThreadUpdatedAt(existingThread.updatedAt, now);
       await ctx.db.patch(existingThread._id, {
-        updatedAt: now,
+        updatedAt: nextUpdatedAt,
         title: args.title ?? existingThread.title,
       });
     }
@@ -843,6 +1141,19 @@ export const upsertPendingDeleteOrganizationAction = internalMutation({
   }),
   handler: async (ctx, args) => {
     const now = Date.now();
+    const thread = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_threadId", (q) => q.eq("threadId", args.threadId))
+      .unique();
+
+    if (
+      thread &&
+      (thread.organizationId !== args.organizationId ||
+        thread.userId !== args.userId ||
+        thread.resourceId !== args.resourceId)
+    ) {
+      throw new Error("Invalid chat thread id");
+    }
 
     const existingPendingAction = await ctx.db
       .query("aiPendingActions")
@@ -862,6 +1173,12 @@ export const upsertPendingDeleteOrganizationAction = internalMutation({
         expiresAt: args.expiresAt,
         updatedAt: now,
       });
+      if (thread) {
+        const nextUpdatedAt = getNextThreadUpdatedAt(thread.updatedAt, now);
+        await ctx.db.patch(thread._id, {
+          updatedAt: nextUpdatedAt,
+        });
+      }
 
       return {
         pendingActionId: existingPendingAction._id,
@@ -889,6 +1206,12 @@ export const upsertPendingDeleteOrganizationAction = internalMutation({
       updatedAt: now,
       expiresAt: args.expiresAt,
     });
+    if (thread) {
+      const nextUpdatedAt = getNextThreadUpdatedAt(thread.updatedAt, now);
+      await ctx.db.patch(thread._id, {
+        updatedAt: nextUpdatedAt,
+      });
+    }
 
     return {
       pendingActionId,
@@ -957,11 +1280,293 @@ export const resolvePendingAction = internalMutation({
       return null;
     }
 
+    const now = Date.now();
     await ctx.db.patch(args.pendingActionId, {
       status: args.status,
-      updatedAt: Date.now(),
-      resolvedAt: Date.now(),
+      updatedAt: now,
+      resolvedAt: now,
     });
+    const thread = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_threadId", (q) => q.eq("threadId", pendingAction.threadId))
+      .unique();
+    if (thread) {
+      const nextUpdatedAt = getNextThreadUpdatedAt(thread.updatedAt, now);
+      await ctx.db.patch(thread._id, {
+        updatedAt: nextUpdatedAt,
+      });
+    }
+
+    return null;
+  },
+});
+
+export const upsertPendingClarificationSession = internalMutation({
+  args: {
+    threadId: v.string(),
+    resourceId: v.string(),
+    organizationId: v.string(),
+    userId: v.string(),
+    intent: vClarificationIntent,
+    contextVersion: v.string(),
+    prompt: v.string(),
+    title: v.string(),
+    description: v.string(),
+    assistantMessage: v.string(),
+    questions: v.array(vClarificationQuestion),
+    expiresAt: v.number(),
+  },
+  returns: v.object({
+    clarificationSessionId: v.id("aiClarificationSessions"),
+    expiresAt: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const thread = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_threadId", (q) => q.eq("threadId", args.threadId))
+      .unique();
+
+    if (
+      thread &&
+      (thread.organizationId !== args.organizationId ||
+        thread.userId !== args.userId ||
+        thread.resourceId !== args.resourceId)
+    ) {
+      throw new Error("Invalid chat thread id");
+    }
+
+    const existingPendingSession = await ctx.db
+      .query("aiClarificationSessions")
+      .withIndex("by_thread_status_createdAt", (q) =>
+        q.eq("threadId", args.threadId).eq("status", "pending"),
+      )
+      .order("desc")
+      .first();
+
+    if (existingPendingSession && existingPendingSession.expiresAt > now) {
+      await ctx.db.patch(existingPendingSession._id, {
+        intent: args.intent,
+        contextVersion: args.contextVersion,
+        prompt: args.prompt,
+        title: args.title,
+        description: args.description,
+        assistantMessage: args.assistantMessage,
+        questions: args.questions,
+        expiresAt: args.expiresAt,
+        updatedAt: now,
+      });
+      if (thread) {
+        const nextUpdatedAt = getNextThreadUpdatedAt(thread.updatedAt, now);
+        await ctx.db.patch(thread._id, {
+          updatedAt: nextUpdatedAt,
+        });
+      }
+
+      return {
+        clarificationSessionId: existingPendingSession._id,
+        expiresAt: args.expiresAt,
+      };
+    }
+
+    if (existingPendingSession && existingPendingSession.expiresAt <= now) {
+      await ctx.db.patch(existingPendingSession._id, {
+        status: "expired",
+        updatedAt: now,
+        resolvedAt: now,
+      });
+    }
+
+    const clarificationSessionId = await ctx.db.insert("aiClarificationSessions", {
+      threadId: args.threadId,
+      resourceId: args.resourceId,
+      organizationId: args.organizationId,
+      userId: args.userId,
+      status: "pending",
+      intent: args.intent,
+      contextVersion: args.contextVersion,
+      prompt: args.prompt,
+      title: args.title,
+      description: args.description,
+      assistantMessage: args.assistantMessage,
+      questions: args.questions,
+      createdAt: now,
+      updatedAt: now,
+      expiresAt: args.expiresAt,
+    });
+    if (thread) {
+      const nextUpdatedAt = getNextThreadUpdatedAt(thread.updatedAt, now);
+      await ctx.db.patch(thread._id, {
+        updatedAt: nextUpdatedAt,
+      });
+    }
+
+    return {
+      clarificationSessionId,
+      expiresAt: args.expiresAt,
+    };
+  },
+});
+
+export const getClarificationSessionById = internalQuery({
+  args: {
+    clarificationSessionId: v.id("aiClarificationSessions"),
+  },
+  returns: v.union(
+    v.object({
+      id: v.id("aiClarificationSessions"),
+      threadId: v.string(),
+      resourceId: v.string(),
+      organizationId: v.string(),
+      userId: v.string(),
+      status: vClarificationStatus,
+      intent: vClarificationIntent,
+      contextVersion: v.string(),
+      prompt: v.string(),
+      title: v.string(),
+      description: v.string(),
+      assistantMessage: v.string(),
+      questions: v.array(vClarificationQuestion),
+      answers: v.optional(v.record(v.string(), v.string())),
+      resumePrompt: v.optional(v.string()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+      expiresAt: v.number(),
+      resolvedAt: v.optional(v.number()),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const session = await ctx.db.get(args.clarificationSessionId);
+    if (!session) {
+      return null;
+    }
+
+    return {
+      id: session._id,
+      threadId: session.threadId,
+      resourceId: session.resourceId,
+      organizationId: session.organizationId,
+      userId: session.userId,
+      status: session.status,
+      intent: session.intent,
+      contextVersion: session.contextVersion,
+      prompt: session.prompt,
+      title: session.title,
+      description: session.description,
+      assistantMessage: session.assistantMessage,
+      questions: session.questions,
+      answers: session.answers,
+      resumePrompt: session.resumePrompt,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      expiresAt: session.expiresAt,
+      resolvedAt: session.resolvedAt,
+    };
+  },
+});
+
+export const getLatestPendingClarificationByThread = internalQuery({
+  args: {
+    threadId: v.string(),
+  },
+  returns: v.union(
+    v.object({
+      id: v.id("aiClarificationSessions"),
+      threadId: v.string(),
+      resourceId: v.string(),
+      organizationId: v.string(),
+      userId: v.string(),
+      status: vClarificationStatus,
+      intent: vClarificationIntent,
+      contextVersion: v.string(),
+      prompt: v.string(),
+      title: v.string(),
+      description: v.string(),
+      assistantMessage: v.string(),
+      questions: v.array(vClarificationQuestion),
+      answers: v.optional(v.record(v.string(), v.string())),
+      resumePrompt: v.optional(v.string()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+      expiresAt: v.number(),
+      resolvedAt: v.optional(v.number()),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, args) => {
+    const latestSession = await ctx.db
+      .query("aiClarificationSessions")
+      .withIndex("by_thread_status_createdAt", (q) =>
+        q.eq("threadId", args.threadId).eq("status", "pending"),
+      )
+      .order("desc")
+      .first();
+
+    if (!latestSession) {
+      return null;
+    }
+
+    return {
+      id: latestSession._id,
+      threadId: latestSession.threadId,
+      resourceId: latestSession.resourceId,
+      organizationId: latestSession.organizationId,
+      userId: latestSession.userId,
+      status: latestSession.status,
+      intent: latestSession.intent,
+      contextVersion: latestSession.contextVersion,
+      prompt: latestSession.prompt,
+      title: latestSession.title,
+      description: latestSession.description,
+      assistantMessage: latestSession.assistantMessage,
+      questions: latestSession.questions,
+      answers: latestSession.answers,
+      resumePrompt: latestSession.resumePrompt,
+      createdAt: latestSession.createdAt,
+      updatedAt: latestSession.updatedAt,
+      expiresAt: latestSession.expiresAt,
+      resolvedAt: latestSession.resolvedAt,
+    };
+  },
+});
+
+export const resolveClarificationSession = internalMutation({
+  args: {
+    clarificationSessionId: v.id("aiClarificationSessions"),
+    status: v.union(
+      v.literal("answered"),
+      v.literal("canceled"),
+      v.literal("expired"),
+    ),
+    answers: v.optional(v.record(v.string(), v.string())),
+    resumePrompt: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const session = await ctx.db.get(args.clarificationSessionId);
+    if (!session) {
+      return null;
+    }
+
+    const now = Date.now();
+    await ctx.db.patch(args.clarificationSessionId, {
+      status: args.status,
+      answers: args.answers,
+      resumePrompt: args.resumePrompt,
+      updatedAt: now,
+      resolvedAt: now,
+    });
+    const thread = await ctx.db
+      .query("agentChatThreads")
+      .withIndex("by_threadId", (q) => q.eq("threadId", session.threadId))
+      .unique();
+    if (thread) {
+      const nextUpdatedAt = getNextThreadUpdatedAt(thread.updatedAt, now);
+      await ctx.db.patch(thread._id, {
+        updatedAt: nextUpdatedAt,
+      });
+    }
 
     return null;
   },
@@ -1031,6 +1636,14 @@ export const clearChatHistory = mutation({
       .collect();
     await Promise.all(
       pendingActions.map((pendingAction) => ctx.db.delete(pendingAction._id)),
+    );
+
+    const clarificationSessions = await ctx.db
+      .query("aiClarificationSessions")
+      .withIndex("by_thread_status", (q) => q.eq("threadId", threadId))
+      .collect();
+    await Promise.all(
+      clarificationSessions.map((session) => ctx.db.delete(session._id)),
     );
 
     return null;

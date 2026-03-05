@@ -26,205 +26,87 @@ import {
   type KeyboardEvent,
 } from "react";
 import ReactMarkdown from "react-markdown";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/sonner";
 
 import { useI18n } from "@/lib/i18n-provider";
 import { cn } from "@/lib/utils";
 
-import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
-import { Button } from "./ui/button";
+import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
+import { Button } from "../ui/button";
 import {
   Dialog,
+  DialogClose,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "./ui/dialog";
+} from "../ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "./ui/dropdown-menu";
-import { Input } from "./ui/input";
-import { Textarea } from "./ui/textarea";
-
-type ChatRole = "system" | "user" | "assistant" | "tool";
-
-type ChatMessageType = "text" | "tool-call" | "tool-result";
-
-type ChatMessage = {
-  id: string;
-  role: ChatRole;
-  type: ChatMessageType;
-  content: string;
-  rawContent?: unknown;
-  createdAt: number;
-  attachmentNames: string[];
-  isOptimistic?: boolean;
-};
-
-type ChatTimelineRow =
-  | {
-      kind: "day-separator";
-      id: string;
-      label: string;
-    }
-  | {
-      kind: "message";
-      id: string;
-      message: ChatMessage;
-    };
-
-type PendingAttachment = {
-  id: string;
-  name: string;
-  contentType: string;
-  dataUrl: string;
-};
-
-type ChatThreadSummary = {
-  threadId: string;
-  title: string | null;
-  createdAt: number;
-  updatedAt: number;
-};
-
-type AgentChatPanelProps = {
-  organizationId: string | null;
-  agentName: string;
-  agentAvatarSrc?: string | null;
-  onOpenSettings: () => void;
-};
-
-type WebSpeechRecognitionEvent = Event & {
-  resultIndex: number;
-  results: SpeechRecognitionResultList;
-};
-
-type WebSpeechRecognitionErrorEvent = Event & {
-  error: string;
-};
-
-type WebSpeechRecognition = EventTarget & {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  maxAlternatives: number;
-  onresult: ((event: WebSpeechRecognitionEvent) => void) | null;
-  onerror: ((event: WebSpeechRecognitionErrorEvent) => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-};
-
-type WebSpeechRecognitionConstructor = new () => WebSpeechRecognition;
-
-type WindowWithSpeechRecognition = Window & {
-  SpeechRecognition?: WebSpeechRecognitionConstructor;
-  webkitSpeechRecognition?: WebSpeechRecognitionConstructor;
-};
-
-type DictationSession = {
-  prefix: string;
-  suffix: string;
-  finalTranscript: string;
-  interimTranscript: string;
-};
-
-const MAX_ATTACHMENTS = 3;
-const MAX_ATTACHMENT_BYTES = 4 * 1024 * 1024;
-const AUTO_SCROLL_THRESHOLD_PX = 32;
-const TOP_LOAD_THRESHOLD_PX = 120;
-const INITIAL_PAGE_SIZE = 40;
-const OLDER_PAGE_SIZE = 30;
-
-function resolveSpeechRecognitionConstructor() {
-  if (typeof window === "undefined") {
-    return null;
-  }
-
-  const speechWindow = window as WindowWithSpeechRecognition;
-  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
-}
-
-function createMessageId() {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-
-  return Math.random().toString(36).slice(2);
-}
-
-function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        resolve(reader.result);
-        return;
-      }
-
-      reject(new Error("Unable to read file"));
-    };
-    reader.onerror = () => reject(new Error("Unable to read file"));
-    reader.readAsDataURL(file);
-  });
-}
-
-function buildAttachmentPrompt(attachmentNames: string[]) {
-  if (attachmentNames.length === 0) {
-    return "";
-  }
-
-  const fileList = attachmentNames.join(", ");
-  return `Please analyze the attached file(s): ${fileList}`;
-}
-
-function getLocalDayKey(timestamp: number) {
-  const date = new Date(timestamp);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function formatThoughtDurationLabel(durationMs: number, locale: string) {
-  if (durationMs < 60_000) {
-    const seconds = Math.max(1, Math.round(durationMs / 1000));
-    return `${seconds}s`;
-  }
-
-  const minutes = durationMs / 60_000;
-  const roundedMinutes = Math.max(0.1, Math.round(minutes * 10) / 10);
-  const hasFraction = roundedMinutes % 1 !== 0;
-  const formatter = new Intl.NumberFormat(locale, {
-    minimumFractionDigits: hasFraction ? 1 : 0,
-    maximumFractionDigits: 1,
-  });
-  return `${formatter.format(roundedMinutes)}m`;
-}
-
-function formatThreadRangeLabel(
-  thread: ChatThreadSummary,
-  formatter: Intl.DateTimeFormat,
-) {
-  const startLabel = formatter.format(new Date(thread.createdAt));
-  const endLabel = formatter.format(new Date(thread.updatedAt));
-  return `${startLabel} - ${endLabel}`;
-}
+} from "../ui/dropdown-menu";
+import { Input } from "../ui/input";
+import { Textarea } from "../ui/textarea";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "../ui/tooltip";
+import {
+  AUTO_SCROLL_THRESHOLD_PX,
+  INITIAL_PAGE_SIZE,
+  MAX_ATTACHMENTS,
+  MAX_ATTACHMENT_BYTES,
+  OLDER_PAGE_SIZE,
+  TOP_LOAD_THRESHOLD_PX,
+} from "./constants";
+import type {
+  AgentChatPanelProps,
+  ChatMessage,
+  ChatThreadSummary,
+  ChatTimelineRow,
+  DictationSession,
+  PendingAttachment,
+  TimelineAttachment,
+  WebSpeechRecognition,
+} from "./types";
+import {
+  buildAttachmentPrompt,
+  createMessageId,
+  extractTimelineAttachments,
+  formatThreadRangeLabel,
+  formatThoughtDurationLabel,
+  getLocalDayKey,
+  getStorageIdFromUploadResult,
+  resolveSpeechRecognitionConstructor,
+} from "./utils";
 
 export function AgentChatPanel({
   organizationId,
   agentName,
   agentAvatarSrc,
   onOpenSettings,
+  pageContext,
 }: AgentChatPanelProps) {
   const { locale, t } = useI18n();
-  const chat = useAction(api.ai.chat);
+  const aiActions = api.ai as any;
+  const chat = useAction(aiActions.chat as any) as any;
+  const submitClarificationAnswers = useAction(
+    aiActions.submitClarificationAnswers as any,
+  ) as any;
+  const cancelClarificationSession = useAction(api.ai.cancelClarificationSession);
+  const resumeFromClarification = useAction(
+    aiActions.resumeFromClarification as any,
+  ) as any;
   const confirmPendingAction = useAction(api.ai.confirmPendingAction);
   const cancelPendingAction = useAction(api.ai.cancelPendingAction);
   const createChatThread = useMutation(api.aiState.createChatThread);
+  const markChatSeenState = useMutation(api.aiState.markChatSeenState);
+  const generateUploadUrl = useMutation(api.aiAttachments.generateUploadUrl);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const chatThreads = useQuery(
     api.aiState.listChatThreads,
@@ -233,6 +115,14 @@ export function AgentChatPanel({
           organizationId,
         }
       : "skip",
+  );
+  const hasUnreadChatUpdates = useQuery(
+    api.aiState.hasUnreadChatUpdates,
+    organizationId
+      ? {
+          organizationId,
+        }
+      : {},
   );
   const chatRuntimeState = useQuery(
     api.aiState.getChatRuntimeState,
@@ -257,8 +147,10 @@ export function AgentChatPanel({
   );
   const [isOpen, setIsOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
   const [isCreatingThread, setIsCreatingThread] = useState(false);
   const [isResolvingPendingAction, setIsResolvingPendingAction] = useState(false);
+  const [isResolvingClarification, setIsResolvingClarification] = useState(false);
   const [isHistoryDialogOpen, setIsHistoryDialogOpen] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isNearTop, setIsNearTop] = useState(false);
@@ -266,6 +158,23 @@ export function AgentChatPanel({
   const [isVoiceSupported, setIsVoiceSupported] = useState<boolean | null>(null);
   const [historySearchQuery, setHistorySearchQuery] = useState("");
   const [inputValue, setInputValue] = useState("");
+  const [expandedImageAttachment, setExpandedImageAttachment] = useState<{
+    src: string;
+    name: string;
+  } | null>(null);
+  const [clarificationAnswers, setClarificationAnswers] = useState<
+    Record<
+      string,
+      {
+        optionId: string | null;
+        otherText: string;
+      }
+    >
+  >({});
+  const [clarificationQuestionIndex, setClarificationQuestionIndex] = useState(0);
+  const [missingClarificationQuestionId, setMissingClarificationQuestionId] = useState<
+    string | null
+  >(null);
   const [optimisticMessages, setOptimisticMessages] = useState<ChatMessage[]>([]);
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>(
     [],
@@ -284,6 +193,15 @@ export function AgentChatPanel({
   const previousScrollTopRef = useRef(0);
   const measuredRowSizeCacheRef = useRef(new Map<string, number>());
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
+  const clarificationAnswersRef = useRef<
+    Record<
+      string,
+      {
+        optionId: string | null;
+        otherText: string;
+      }
+    >
+  >({});
   const pendingPrependAnchorRef = useRef<{
     previousHeight: number;
     previousTop: number;
@@ -295,6 +213,8 @@ export function AgentChatPanel({
   const recognitionRef = useRef<WebSpeechRecognition | null>(null);
   const dictationSessionRef = useRef<DictationSession | null>(null);
   const manualStopRef = useRef(false);
+  const markSeenInFlightForUpdatedAtRef = useRef<string | null>(null);
+  const hasUserOpenedPanelRef = useRef(false);
   const agentInitial = agentName.trim().charAt(0).toUpperCase() || "A";
   const dateLabelFormatter = useMemo(
     () =>
@@ -341,6 +261,13 @@ export function AgentChatPanel({
     normalizedHistorySearchQuery,
     threadRangeFormatter,
   ]);
+  const activeChatThread = useMemo(
+    () =>
+      activeThreadId
+        ? availableChatThreads.find((thread) => thread.threadId === activeThreadId) ?? null
+        : null,
+    [activeThreadId, availableChatThreads],
+  );
 
   const messages = useMemo<ChatMessage[]>(() => {
     const normalizedPersisted = persistedMessagesDesc
@@ -464,6 +391,27 @@ export function AgentChatPanel({
     return rows;
   }, [dateLabelFormatter, messages, t]);
 
+  const timelineAttachmentsByMessageId = useMemo(() => {
+    const attachmentMap = new Map<string, TimelineAttachment[]>();
+
+    for (const message of messages) {
+      if (message.attachmentNames.length === 0) {
+        continue;
+      }
+
+      const extractedAttachments = extractTimelineAttachments({
+        rawContent: message.rawContent,
+        attachmentNames: message.attachmentNames,
+      });
+
+      if (extractedAttachments.length > 0) {
+        attachmentMap.set(message.id, extractedAttachments);
+      }
+    }
+
+    return attachmentMap;
+  }, [messages]);
+
   const estimateTimelineRowSize = useCallback(
     (index: number) => {
       const row = timelineRows[index];
@@ -471,13 +419,13 @@ export function AgentChatPanel({
         return 96;
       }
 
-      if (row.kind === "day-separator") {
-        return 32;
-      }
-
       const cachedSize = measuredRowSizeCacheRef.current.get(row.id);
       if (cachedSize) {
         return cachedSize;
+      }
+
+      if (row.kind === "day-separator") {
+        return 80;
       }
 
       const isUserMessage = row.message.role === "user";
@@ -489,11 +437,20 @@ export function AgentChatPanel({
       );
       const explicitLineCount = row.message.content.split(/\r?\n/).length;
       const effectiveLineCount = Math.max(estimatedLineCount, explicitLineCount);
-      const attachmentHeight = row.message.attachmentNames.length > 0 ? 28 : 0;
+      const timelineAttachments =
+        timelineAttachmentsByMessageId.get(row.message.id) ?? [];
+      const hasImageAttachments = timelineAttachments.some(
+        (attachment) => attachment.imageSrc !== null,
+      );
+      const hasFileAttachments = timelineAttachments.some(
+        (attachment) => attachment.imageSrc === null,
+      );
+      const attachmentHeight =
+        (hasImageAttachments ? 76 : 0) + (hasFileAttachments ? 30 : 0);
       const baseHeight = isUserMessage ? 44 : 52;
       return Math.min(420, baseHeight + attachmentHeight + effectiveLineCount * 18);
     },
-    [timelineRows],
+    [timelineAttachmentsByMessageId, timelineRows],
   );
 
   const measureTimelineRow = useCallback(
@@ -782,12 +739,24 @@ export function AgentChatPanel({
   };
 
   const isServerRunning = chatRuntimeState?.runStatus === "running";
+  const pendingAction = chatRuntimeState?.pendingAction ?? null;
+  const pendingClarification = chatRuntimeState?.pendingClarification ?? null;
+  const clarificationQuestions = pendingClarification?.questions ?? [];
+  const clarificationQuestionCount = clarificationQuestions.length;
+  const activeClarificationQuestion = clarificationQuestions[clarificationQuestionIndex] ?? null;
+  const isFirstClarificationQuestion = clarificationQuestionIndex <= 0;
+  const isLastClarificationQuestion =
+    clarificationQuestionCount === 0 ||
+    clarificationQuestionIndex >= clarificationQuestionCount - 1;
   const isBusy =
     isSubmitting ||
+    isUploadingAttachments ||
     isCreatingThread ||
     isServerRunning ||
-    isResolvingPendingAction;
-  const isInputDisabled = !organizationId || isBusy;
+    isResolvingPendingAction ||
+    isResolvingClarification;
+  const hasPendingClarification = !!pendingClarification;
+  const isInputDisabled = !organizationId || isBusy || hasPendingClarification;
   const shouldShowStreamingStatus = isSubmitting || isServerRunning;
   const isWakingAgent = isSubmitting && !isServerRunning;
   const isWaitingForAgentResponse =
@@ -796,13 +765,26 @@ export function AgentChatPanel({
     (chatRuntimeState?.streamingText?.trim().length ?? 0) === 0;
   const supportsVoiceInput = isVoiceSupported === true;
   const isVoiceUnsupported = isVoiceSupported === false;
-  const isVoiceControlDisabled = !organizationId || isBusy || !supportsVoiceInput;
+  const isVoiceControlDisabled =
+    !organizationId || isBusy || !supportsVoiceInput || hasPendingClarification;
   const voiceButtonLabel = !supportsVoiceInput
     ? t("app.chat.voiceUnsupported")
     : isListening
       ? t("app.chat.voiceStop")
       : t("app.chat.voiceStart");
-  const pendingAction = chatRuntimeState?.pendingAction ?? null;
+  const streamActor = chatRuntimeState?.streamActor ?? "main";
+  const streamPhase = chatRuntimeState?.streamPhase ?? "idle";
+  const shouldShimmerStreamLabel =
+    shouldShowStreamingStatus &&
+    (streamPhase === "thinking" ||
+      streamPhase === "delegating" ||
+      streamPhase === "tool");
+  const thinkingStatusLabel =
+    streamActor === "organization"
+      ? t("app.chat.stream.organizationWorking")
+      : streamActor === "user"
+        ? t("app.chat.stream.userWorking")
+      : t("app.chat.thinking");
   const thoughtDurationLabel =
     lastThoughtDurationMs === null
       ? null
@@ -889,6 +871,7 @@ export function AgentChatPanel({
       shouldAutoScrollRef.current = true;
       previousMessageCountRef.current = 0;
       previousVirtualSizeRef.current = 0;
+      hasUserOpenedPanelRef.current = true;
       setIsOpen(true);
     } catch {
       toast.error(t("app.chat.error"));
@@ -902,6 +885,7 @@ export function AgentChatPanel({
     setActiveThreadId(threadId);
     setIsHistoryDialogOpen(false);
     setHistorySearchQuery("");
+    hasUserOpenedPanelRef.current = true;
     setIsOpen(true);
   };
 
@@ -1025,9 +1009,11 @@ export function AgentChatPanel({
     setOptimisticMessages([]);
     setPendingAttachments([]);
     setInputValue("");
+    setClarificationAnswers({});
     setLastThoughtDurationMs(null);
     setIsCreatingThread(false);
     setIsResolvingPendingAction(false);
+    setIsResolvingClarification(false);
     setIsHistoryDialogOpen(false);
     setHistorySearchQuery("");
     setIsNearTop(false);
@@ -1040,6 +1026,8 @@ export function AgentChatPanel({
     hasCapturedThoughtDurationRef.current = false;
     wasThinkingRef.current = false;
     lastServerErrorRef.current = null;
+    markSeenInFlightForUpdatedAtRef.current = null;
+    hasUserOpenedPanelRef.current = false;
   }, [organizationId]);
 
   useEffect(() => {
@@ -1052,8 +1040,10 @@ export function AgentChatPanel({
     setOptimisticMessages([]);
     setPendingAttachments([]);
     setInputValue("");
+    setClarificationAnswers({});
     setLastThoughtDurationMs(null);
     setIsResolvingPendingAction(false);
+    setIsResolvingClarification(false);
     setIsNearTop(false);
     setShowInputBottomFade(false);
     pendingPrependAnchorRef.current = null;
@@ -1064,7 +1054,48 @@ export function AgentChatPanel({
     hasCapturedThoughtDurationRef.current = false;
     wasThinkingRef.current = false;
     lastServerErrorRef.current = null;
+    markSeenInFlightForUpdatedAtRef.current = null;
   }, [activeThreadId]);
+
+  const markThreadAsSeen = useCallback(
+    (thread: ChatThreadSummary | null) => {
+      if (!organizationId || !thread) {
+        return;
+      }
+
+      const seenUpdatedAt = thread.lastSeenUpdatedAt ?? 0;
+      const threadUpdatedAt = thread.updatedAt;
+      if (threadUpdatedAt <= seenUpdatedAt) {
+        markSeenInFlightForUpdatedAtRef.current = null;
+        return;
+      }
+
+      const markSeenRequestKey = `${thread.threadId}:${threadUpdatedAt}`;
+      if (markSeenInFlightForUpdatedAtRef.current === markSeenRequestKey) {
+        return;
+      }
+
+      markSeenInFlightForUpdatedAtRef.current = markSeenRequestKey;
+      void markChatSeenState({
+        organizationId,
+        threadId: thread.threadId,
+        seenUpToUpdatedAt: threadUpdatedAt,
+      }).catch(() => {
+        if (markSeenInFlightForUpdatedAtRef.current === markSeenRequestKey) {
+          markSeenInFlightForUpdatedAtRef.current = null;
+        }
+      });
+    },
+    [markChatSeenState, organizationId],
+  );
+
+  useEffect(() => {
+    if (!isOpen || !hasUserOpenedPanelRef.current) {
+      return;
+    }
+
+    markThreadAsSeen(activeChatThread);
+  }, [activeChatThread, isOpen, markThreadAsSeen]);
 
   useEffect(() => {
     const validRowIds = new Set(timelineRows.map((row) => row.id));
@@ -1096,6 +1127,82 @@ export function AgentChatPanel({
 
     setActiveThreadId(chatThreads[0]?.threadId ?? null);
   }, [activeThreadId, chatThreads, organizationId]);
+
+  useEffect(() => {
+    if (!pendingClarification) {
+      setClarificationAnswers({});
+      clarificationAnswersRef.current = {};
+      setClarificationQuestionIndex(0);
+      setMissingClarificationQuestionId(null);
+      return;
+    }
+
+    setClarificationAnswers((current) => {
+      const nextAnswers: Record<
+        string,
+        {
+          optionId: string | null;
+          otherText: string;
+        }
+      > = {};
+
+      pendingClarification.questions.forEach((question) => {
+        nextAnswers[question.id] = {
+          optionId: current[question.id]?.optionId ?? null,
+          otherText: current[question.id]?.otherText ?? "",
+        };
+      });
+
+      clarificationAnswersRef.current = nextAnswers;
+      return nextAnswers;
+    });
+
+    setClarificationQuestionIndex((current) =>
+      current >= pendingClarification.questions.length ? 0 : current,
+    );
+  }, [pendingClarification]);
+
+  const isClarificationQuestionAnswered = useCallback(
+    (
+      question: {
+        id: string;
+        required: boolean;
+      },
+      answers: Record<
+        string,
+        {
+          optionId: string | null;
+          otherText: string;
+        }
+      >,
+    ) => {
+      if (!question.required) {
+        return true;
+      }
+
+      const answer = answers[question.id];
+      if (!answer) {
+        return false;
+      }
+
+      const hasOption = !!answer.optionId;
+      const hasOtherText = answer.otherText.trim().length > 0;
+      return hasOption || hasOtherText;
+    },
+    [],
+  );
+
+  const handleNextClarificationQuestion = useCallback(() => {
+    setMissingClarificationQuestionId(null);
+    setClarificationQuestionIndex((current) =>
+      Math.min(current + 1, Math.max(0, clarificationQuestionCount - 1)),
+    );
+  }, [clarificationQuestionCount]);
+
+  const handlePreviousClarificationQuestion = useCallback(() => {
+    setMissingClarificationQuestionId(null);
+    setClarificationQuestionIndex((current) => Math.max(0, current - 1));
+  }, []);
 
   useEffect(() => {
     const streamingText = chatRuntimeState?.streamingText?.trim() ?? "";
@@ -1205,9 +1312,15 @@ export function AgentChatPanel({
     !!organizationId &&
     (inputValue.trim().length > 0 || pendingAttachments.length > 0) &&
     !isBusy &&
-    !isListening;
+    !isListening &&
+    !hasPendingClarification;
 
   const handleFileSelection = async (event: ChangeEvent<HTMLInputElement>) => {
+    if (!organizationId || isBusy) {
+      event.target.value = "";
+      return;
+    }
+
     const selectedFiles = Array.from(event.target.files ?? []);
     event.target.value = "";
 
@@ -1227,31 +1340,57 @@ export function AgentChatPanel({
 
     const filesToProcess = selectedFiles.slice(0, availableSlots);
     const processedFiles: PendingAttachment[] = [];
+    setIsUploadingAttachments(true);
+    try {
+      for (const file of filesToProcess) {
+        if (file.size > MAX_ATTACHMENT_BYTES) {
+          toast.error(t("app.chat.fileTooLarge"));
+          continue;
+        }
 
-    for (const file of filesToProcess) {
-      if (file.size > MAX_ATTACHMENT_BYTES) {
-        toast.error(t("app.chat.fileTooLarge"));
-        continue;
+        const contentType = file.type || "application/octet-stream";
+
+        try {
+          const uploadUrl = await generateUploadUrl({
+            organizationId,
+          });
+          const uploadResponse = await fetch(uploadUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": contentType,
+            },
+            body: file,
+          });
+
+          if (!uploadResponse.ok) {
+            throw new Error("Upload failed");
+          }
+
+          const uploadResult = await uploadResponse.json();
+          const storageId = getStorageIdFromUploadResult(uploadResult);
+          if (!storageId) {
+            throw new Error("Missing storage id");
+          }
+
+          processedFiles.push({
+            id: createMessageId(),
+            name: file.name,
+            contentType,
+            storageId,
+          });
+        } catch {
+          toast.error(t("app.chat.fileReadError"));
+        }
       }
 
-      try {
-        const dataUrl = await readFileAsDataUrl(file);
-        processedFiles.push({
-          id: createMessageId(),
-          name: file.name,
-          contentType: file.type || "application/octet-stream",
-          dataUrl,
-        });
-      } catch {
-        toast.error(t("app.chat.fileReadError"));
+      if (processedFiles.length === 0) {
+        return;
       }
-    }
 
-    if (processedFiles.length === 0) {
-      return;
+      setPendingAttachments((current) => [...current, ...processedFiles]);
+    } finally {
+      setIsUploadingAttachments(false);
     }
-
-    setPendingAttachments((current) => [...current, ...processedFiles]);
   };
 
   const submitMessage = async (event: FormEvent<HTMLFormElement>) => {
@@ -1272,22 +1411,37 @@ export function AgentChatPanel({
     const userMessageContent = content || fallbackContent;
     const prompt = content || buildAttachmentPrompt(attachmentNames);
 
+    const attachmentsForSend = pendingAttachments.map((attachment) => ({
+      name: attachment.name,
+      contentType: attachment.contentType,
+      storageId: attachment.storageId,
+    }));
+
+    const optimisticRawContent =
+      attachmentsForSend.length === 0
+        ? userMessageContent
+        : [
+            ...(content ? [{ type: "text" as const, text: content }] : []),
+            ...attachmentsForSend.map((attachment) => ({
+              type: attachment.contentType.startsWith("image/")
+                ? ("image-file" as const)
+                : ("file" as const),
+              mimeType: attachment.contentType,
+              filename: attachment.name,
+              storageId: attachment.storageId,
+            })),
+          ];
+
     const optimisticMessage: ChatMessage = {
       id: createMessageId(),
       role: "user",
       type: "text",
       content: userMessageContent,
-      rawContent: userMessageContent,
+      rawContent: optimisticRawContent,
       createdAt: Date.now(),
       attachmentNames,
       isOptimistic: true,
     };
-
-    const attachmentsForSend = pendingAttachments.map((attachment) => ({
-      name: attachment.name,
-      contentType: attachment.contentType,
-      dataUrl: attachment.dataUrl,
-    }));
 
     shouldAutoScrollRef.current = true;
     previousMessageCountRef.current = messages.length;
@@ -1311,6 +1465,7 @@ export function AgentChatPanel({
         locale,
         prompt,
         attachments: attachmentsForSend,
+        pageContext: pageContext ?? undefined,
       });
     } catch {
       toast.error(t("app.chat.error"));
@@ -1394,6 +1549,177 @@ export function AgentChatPanel({
     }
   };
 
+  const handleClarificationOptionSelect = (questionId: string, optionId: string) => {
+    setClarificationAnswers((current) => {
+      const nextAnswers = {
+        ...current,
+        [questionId]: {
+          optionId,
+          otherText: current[questionId]?.otherText ?? "",
+        },
+      };
+      clarificationAnswersRef.current = nextAnswers;
+      return nextAnswers;
+    });
+
+    if (missingClarificationQuestionId === questionId) {
+      setMissingClarificationQuestionId(null);
+    }
+  };
+
+  const handleClarificationOtherTextChange = (
+    questionId: string,
+    otherText: string,
+  ) => {
+    setClarificationAnswers((current) => {
+      const nextAnswers = {
+        ...current,
+        [questionId]: {
+          optionId: current[questionId]?.optionId ?? null,
+          otherText,
+        },
+      };
+      clarificationAnswersRef.current = nextAnswers;
+      return nextAnswers;
+    });
+
+    if (missingClarificationQuestionId === questionId) {
+      setMissingClarificationQuestionId(null);
+    }
+  };
+
+  const handleSubmitClarification = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!organizationId || !pendingClarification || isBusy) {
+      return;
+    }
+
+    if (!isLastClarificationQuestion) {
+      handleNextClarificationQuestion();
+      return;
+    }
+
+    const currentAnswers = clarificationAnswersRef.current;
+    const answers = pendingClarification.questions.map((question) => ({
+      questionId: question.id,
+      optionId: currentAnswers[question.id]?.optionId ?? undefined,
+      otherText: currentAnswers[question.id]?.otherText?.trim() || undefined,
+    }));
+
+    const firstMissingRequiredQuestionIndex = pendingClarification.questions.findIndex(
+      (question) => !isClarificationQuestionAnswered(question, currentAnswers),
+    );
+
+    if (firstMissingRequiredQuestionIndex >= 0) {
+      setClarificationQuestionIndex(firstMissingRequiredQuestionIndex);
+      setMissingClarificationQuestionId(
+        pendingClarification.questions[firstMissingRequiredQuestionIndex]?.id ?? null,
+      );
+      return;
+    }
+
+    setIsResolvingClarification(true);
+    try {
+      const submitResult = await submitClarificationAnswers({
+        organizationId,
+        clarificationSessionId: pendingClarification.id,
+        locale,
+        answers,
+      });
+
+      if (submitResult.status !== "answered") {
+        if (submitResult.status === "error") {
+          const firstMissingAfterSubmitIndex = pendingClarification.questions.findIndex(
+            (question) => !isClarificationQuestionAnswered(question, currentAnswers),
+          );
+          const normalizedErrorText = submitResult.text.toLowerCase();
+          const isRequiredClarificationError =
+            normalizedErrorText.includes("clarification questions") ||
+            normalizedErrorText.includes("rückfragen beantworten");
+          if (firstMissingAfterSubmitIndex >= 0) {
+            setClarificationQuestionIndex(firstMissingAfterSubmitIndex);
+            setMissingClarificationQuestionId(
+              pendingClarification.questions[firstMissingAfterSubmitIndex]?.id ?? null,
+            );
+          } else if (isRequiredClarificationError) {
+            setMissingClarificationQuestionId(activeClarificationQuestion?.id ?? null);
+          } else {
+            toast.error(submitResult.text);
+          }
+        } else {
+          appendOptimisticAssistantMessage(submitResult.text);
+        }
+        return;
+      }
+
+      const resumeResult = await resumeFromClarification({
+        organizationId,
+        clarificationSessionId: pendingClarification.id,
+        locale,
+      });
+
+      if (resumeResult.status === "error") {
+        toast.error(resumeResult.text);
+        return;
+      }
+
+      if (resumeResult.status === "resumed") {
+        if (!resumeResult.resumePrompt || !resumeResult.threadId) {
+          appendOptimisticAssistantMessage(resumeResult.text);
+          return;
+        }
+
+        setIsSubmitting(true);
+        try {
+          await chat({
+            organizationId,
+            threadId: resumeResult.threadId,
+            locale,
+            prompt: resumeResult.resumePrompt,
+            pageContext: pageContext ?? undefined,
+          });
+        } catch {
+          toast.error(t("app.chat.error"));
+        } finally {
+          setIsSubmitting(false);
+        }
+        return;
+      }
+
+      if (resumeResult.status === "expired" || resumeResult.status === "missing") {
+        appendOptimisticAssistantMessage(resumeResult.text);
+      }
+    } catch {
+      toast.error(t("app.chat.error"));
+    } finally {
+      setIsResolvingClarification(false);
+    }
+  };
+
+  const handleCancelClarification = async () => {
+    if (!organizationId || !pendingClarification || isBusy) {
+      return;
+    }
+
+    setIsResolvingClarification(true);
+    try {
+      const result = await cancelClarificationSession({
+        organizationId,
+        clarificationSessionId: pendingClarification.id,
+        locale,
+      });
+      appendOptimisticAssistantMessage(result.text);
+      if (result.status === "error") {
+        toast.error(result.text);
+      }
+    } catch {
+      toast.error(t("app.chat.error"));
+    } finally {
+      setIsResolvingClarification(false);
+    }
+  };
+
   const handleTextareaKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (isListening && event.key === "Enter") {
       event.preventDefault();
@@ -1415,6 +1741,8 @@ export function AgentChatPanel({
   const isLoadingOlder = paginationStatus === "LoadingMore";
   const showLoadOlderButton =
     !!organizationId && isNearTop && (canLoadOlder || isLoadingOlder);
+  const hasUnseenAgentEvent = hasUnreadChatUpdates === true;
+  const shouldBlinkChatBubble = !isOpen && hasUnseenAgentEvent;
 
   return (
     <>
@@ -1423,10 +1751,20 @@ export function AgentChatPanel({
         size="icon-lg"
         variant="outline"
         className={cn(
-          "fixed right-6 bottom-6 z-[80] size-14 rounded-full border-zinc-300 bg-white text-zinc-700 shadow-xl transition-all duration-200 hover:bg-zinc-100 hover:text-zinc-900 focus-visible:border-zinc-400 focus-visible:ring-zinc-300 dark:border-zinc-500 dark:bg-zinc-200 dark:text-zinc-900 dark:hover:bg-zinc-100",
+          "fixed right-6 bottom-6 z-[80] size-14 rounded-full border-zinc-300 bg-white text-zinc-700 shadow-xl transition-all duration-200 hover:bg-zinc-100 hover:text-zinc-900 focus-visible:border-zinc-400 focus-visible:ring-zinc-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800",
           isOpen ? "scale-95" : "scale-100",
+          shouldBlinkChatBubble && "chat-bubble-blink",
         )}
-        onClick={() => setIsOpen((previous) => !previous)}
+        onClick={() =>
+          setIsOpen((previous) => {
+            const next = !previous;
+            if (previous && !next) {
+              markThreadAsSeen(activeChatThread);
+            }
+            hasUserOpenedPanelRef.current = next;
+            return next;
+          })
+        }
         aria-label={isOpen ? t("common.actions.close") : t("app.chat.open")}
       >
         {isOpen ? (
@@ -1437,15 +1775,17 @@ export function AgentChatPanel({
       </Button>
 
       <div className="pointer-events-none fixed inset-x-4 top-10 bottom-24 z-[70] flex justify-end sm:top-14 sm:right-6 sm:bottom-24 sm:left-auto sm:w-[23rem]">
-        <section
-          aria-hidden={!isOpen}
-          className={cn(
-            "relative flex h-full w-full flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl origin-bottom-right transition-all duration-300 ease-out",
-            isOpen
-              ? "pointer-events-auto translate-y-0 opacity-100"
-              : "pointer-events-none translate-y-4 opacity-0",
-          )}
-        >
+        <TooltipProvider>
+          <section
+            aria-hidden={!isOpen}
+            inert={!isOpen}
+            className={cn(
+              "relative flex h-full w-full flex-col overflow-hidden rounded-2xl border bg-background shadow-2xl origin-bottom-right transition-all duration-300 ease-out",
+              isOpen
+                ? "pointer-events-auto translate-y-0 opacity-100"
+                : "pointer-events-none translate-y-4 opacity-0",
+            )}
+          >
           <div
             ref={messagesContainerRef}
             className="flex-1 overflow-y-auto"
@@ -1506,7 +1846,7 @@ export function AgentChatPanel({
                           }}
                         >
                           {row.kind === "day-separator" ? (
-                            <div className="py-2">
+                            <div className="py-8">
                               <div className="flex items-center gap-2 text-[10px] font-semibold tracking-wide text-muted-foreground uppercase">
                                 <span className="h-px flex-1 bg-border/70" />
                                 <span>{row.label}</span>
@@ -1515,15 +1855,22 @@ export function AgentChatPanel({
                             </div>
                           ) : (() => {
                             const message = row.message;
+                            const timelineAttachments =
+                              timelineAttachmentsByMessageId.get(message.id) ?? [];
+                            const imageAttachments = timelineAttachments.filter(
+                              (attachment) => attachment.imageSrc !== null,
+                            );
+                            const fileAttachments = timelineAttachments.filter(
+                              (attachment) => attachment.imageSrc === null,
+                            );
                             const isUserMessage = message.role === "user";
                             const isStreamingAssistantMessage =
                               !isUserMessage &&
                               shouldShowStreamingStatus &&
                               message.id === "streaming-assistant";
                             const showInlineThinking =
-                              isStreamingAssistantMessage && isWaitingForAgentResponse;
-                            const showInlineWaking =
-                              isStreamingAssistantMessage && isWakingAgent;
+                              isStreamingAssistantMessage &&
+                              (isWaitingForAgentResponse || isWakingAgent);
                             const showInlineThoughtDuration =
                               !isUserMessage &&
                               !!thoughtDurationLabel &&
@@ -1536,24 +1883,67 @@ export function AgentChatPanel({
                                   isUserMessage ? "items-end" : "items-start",
                                 )}
                               >
-                                {message.attachmentNames.length > 0 ? (
+                                {timelineAttachments.length > 0 ? (
                                   <div
                                     className={cn(
-                                      "max-w-[80%] flex flex-wrap gap-1",
-                                      isUserMessage ? "justify-end" : "justify-start",
+                                      "max-w-[80%] space-y-1.5",
+                                      isUserMessage ? "text-right" : "text-left",
                                     )}
                                   >
-                                    {message.attachmentNames.map((attachmentName, index) => (
-                                      <span
-                                        key={`${message.id}-attachment-${index}`}
-                                        className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-zinc-200 bg-zinc-50/90 px-2.5 py-1 text-[11px] text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900/70 dark:text-zinc-300"
+                                    {imageAttachments.length > 0 ? (
+                                      <div
+                                        className={cn(
+                                          "flex flex-wrap gap-1.5",
+                                          isUserMessage ? "justify-end" : "justify-start",
+                                        )}
                                       >
-                                        <RiAttachment2 className="size-3 shrink-0 opacity-70" />
-                                        <span className="max-w-[10.5rem] truncate">
-                                          {attachmentName}
-                                        </span>
-                                      </span>
-                                    ))}
+                                        {imageAttachments.map((attachment) => (
+                                          <button
+                                            key={`${message.id}-image-${attachment.id}`}
+                                            type="button"
+                                            className="group relative size-16 overflow-hidden rounded-md border border-border/70 bg-background"
+                                            onClick={() => {
+                                              if (!attachment.imageSrc) {
+                                                return;
+                                              }
+
+                                              setExpandedImageAttachment({
+                                                src: attachment.imageSrc,
+                                                name: attachment.name,
+                                              });
+                                            }}
+                                            aria-label={attachment.name}
+                                          >
+                                            <img
+                                              src={attachment.imageSrc ?? undefined}
+                                              alt={attachment.name}
+                                              loading="lazy"
+                                              className="size-full object-cover transition-transform duration-150 group-hover:scale-[1.03]"
+                                            />
+                                          </button>
+                                        ))}
+                                      </div>
+                                    ) : null}
+                                    {fileAttachments.length > 0 ? (
+                                      <div
+                                        className={cn(
+                                          "flex flex-wrap gap-1.5",
+                                          isUserMessage ? "justify-end" : "justify-start",
+                                        )}
+                                      >
+                                        {fileAttachments.map((attachment) => (
+                                          <span
+                                            key={`${message.id}-file-${attachment.id}`}
+                                            className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border/70 bg-background/80 px-2 py-1 text-[11px] text-muted-foreground"
+                                          >
+                                            <RiAttachment2 className="size-3 shrink-0 opacity-70" />
+                                            <span className="max-w-[10.5rem] truncate">
+                                              {attachment.name}
+                                            </span>
+                                          </span>
+                                        ))}
+                                      </div>
+                                    ) : null}
                                   </div>
                                 ) : null}
                                 <div
@@ -1564,17 +1954,14 @@ export function AgentChatPanel({
                                       : "w-full bg-transparent px-0 py-1 text-foreground",
                                   )}
                                 >
-                                  {showInlineWaking ? (
-                                    <p className="chat-shimmer-text pb-1 text-xs text-muted-foreground">
-                                      {t("app.chat.wakingAgent", {
-                                        agentName,
-                                      })}
-                                    </p>
-                                  ) : null}
-
                                   {showInlineThinking ? (
-                                    <p className="chat-shimmer-text pb-1 text-xs text-muted-foreground">
-                                      {t("app.chat.thinking")}
+                                    <p
+                                      className={cn(
+                                        "pb-1 text-xs text-muted-foreground",
+                                        shouldShimmerStreamLabel && "chat-shimmer-text",
+                                      )}
+                                    >
+                                      {thinkingStatusLabel}
                                     </p>
                                   ) : null}
 
@@ -1734,35 +2121,44 @@ export function AgentChatPanel({
                   <p className="truncate text-xs font-medium text-foreground">{agentName}</p>
                 </div>
                 <div className="flex items-center gap-1">
-                  <Button
-                    type="button"
-                    size="icon-sm"
-                    variant="ghost"
-                    className="size-7"
-                    onClick={() => {
-                      void handleCreateNewChat();
-                    }}
-                    disabled={!organizationId || isBusy}
-                    aria-label={t("app.chat.menu.newChat")}
-                    title={t("app.chat.menu.newChat")}
-                  >
-                    <RiAddLine className="size-4" />
-                  </Button>
+                  <Tooltip>
+                    <TooltipTrigger render={<span className="inline-flex" />}>
+                      <Button
+                        type="button"
+                        size="icon-sm"
+                        variant="ghost"
+                        className="size-7"
+                        onClick={() => {
+                          void handleCreateNewChat();
+                        }}
+                        disabled={!organizationId || isBusy}
+                        aria-label={t("app.chat.menu.newChat")}
+                      >
+                        <RiAddLine className="size-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">{t("app.chat.menu.newChat")}</TooltipContent>
+                  </Tooltip>
                   <DropdownMenu>
-                    <DropdownMenuTrigger
-                      render={
-                        <Button
-                          type="button"
-                          size="icon-sm"
-                          variant="ghost"
-                          className="size-7"
-                          aria-label={t("app.chat.menu.open")}
-                        />
-                      }
-                      disabled={!organizationId}
-                    >
-                      <RiMore2Fill className="size-4" />
-                    </DropdownMenuTrigger>
+                    <Tooltip>
+                      <TooltipTrigger render={<span className="inline-flex" />}>
+                        <DropdownMenuTrigger
+                          render={
+                            <Button
+                              type="button"
+                              size="icon-sm"
+                              variant="ghost"
+                              className="size-7"
+                              aria-label={t("app.chat.menu.open")}
+                            />
+                          }
+                          disabled={!organizationId}
+                        >
+                          <RiMore2Fill className="size-4" />
+                        </DropdownMenuTrigger>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">{t("app.chat.menu.open")}</TooltipContent>
+                    </Tooltip>
                     <DropdownMenuContent
                       align="end"
                       side="bottom"
@@ -1795,147 +2191,346 @@ export function AgentChatPanel({
 
           <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-white/76 backdrop-blur-xl supports-[backdrop-filter]:bg-white/70 dark:bg-zinc-950/78 dark:supports-[backdrop-filter]:bg-zinc-950/72">
             <div className="h-px bg-border/70" />
-            <form
-              onSubmit={submitMessage}
-              className={cn(
-                "space-y-2 px-4 pt-3 pb-0",
-                isOpen ? "pointer-events-auto" : "pointer-events-none",
-              )}
-            >
-              {pendingAttachments.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {pendingAttachments.map((attachment) => (
-                    <div
-                      key={attachment.id}
-                      className="inline-flex max-w-full items-center gap-1 rounded-full border bg-muted px-2 py-1 text-xs"
-                    >
-                      <span className="truncate">{attachment.name}</span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-xs"
-                        className="size-5"
-                        onClick={() => {
-                          setPendingAttachments((current) =>
-                            current.filter((item) => item.id !== attachment.id),
-                          );
-                        }}
-                        aria-label={t("app.chat.removeFile")}
-                        disabled={isBusy || isListening}
-                      >
-                        <RiCloseLine className="size-3" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              <div
+            {hasPendingClarification && pendingClarification ? (
+              <form
+                onSubmit={handleSubmitClarification}
                 className={cn(
-                  "relative overflow-hidden rounded-lg border border-input",
-                  isInputDisabled ? "bg-input/50 dark:bg-input/80" : "bg-white dark:bg-zinc-900",
+                  "space-y-2 px-4 pt-3 pb-0",
+                  isOpen ? "pointer-events-auto" : "pointer-events-none",
                 )}
               >
-                <Textarea
-                  ref={inputRef}
-                  rows={2}
-                  value={inputValue}
-                  onChange={handleInputValueChange}
-                  onScroll={handleInputScroll}
-                  onKeyDown={handleTextareaKeyDown}
-                  placeholder={t("app.chat.inputPlaceholder")}
-                  className={cn(
-                    "field-sizing-content min-h-16 max-h-[13rem] resize-none overflow-y-auto border-0 bg-transparent px-3 pb-2 shadow-none focus-visible:border-transparent focus-visible:ring-0 dark:bg-transparent",
-                    isListening
-                      ? "text-zinc-500 dark:text-zinc-400"
-                      : "text-zinc-900 dark:text-zinc-100",
-                  )}
-                  disabled={isInputDisabled}
-                  readOnly={isListening}
-                  aria-busy={isListening}
-                />
+                <div className="rounded-xl border bg-card/70 p-3">
+                  {activeClarificationQuestion ? (
+                    <div className="space-y-2.5">
+                      <p className="text-sm font-medium leading-snug text-foreground">
+                        {activeClarificationQuestion.prompt}
+                      </p>
+
+                      {missingClarificationQuestionId === activeClarificationQuestion.id ? (
+                        <p className="text-xs text-destructive">
+                          {t("app.chat.clarification.completeRequired")}
+                        </p>
+                      ) : null}
+
+                      <div className="space-y-1.5">
+                        {activeClarificationQuestion.options.map((option) => {
+                          const selectedOptionId =
+                            clarificationAnswers[activeClarificationQuestion.id]?.optionId ??
+                            null;
+
+                          return (
+                            <button
+                              key={option.id}
+                              type="button"
+                              onClick={() =>
+                                handleClarificationOptionSelect(
+                                  activeClarificationQuestion.id,
+                                  option.id,
+                                )
+                              }
+                              className={cn(
+                                "w-full rounded-md border px-3 py-2 text-left text-sm transition-colors",
+                                selectedOptionId === option.id
+                                  ? "border-zinc-400 bg-zinc-100 text-zinc-900 dark:border-zinc-500 dark:bg-zinc-800 dark:text-zinc-100"
+                                  : "border-border/80 text-foreground hover:border-zinc-300 dark:hover:border-zinc-600",
+                              )}
+                              disabled={isBusy}
+                            >
+                              {option.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {activeClarificationQuestion.allowOther ? (
+                        <Input
+                          value={
+                            clarificationAnswers[activeClarificationQuestion.id]?.otherText ??
+                            ""
+                          }
+                          onChange={(event) =>
+                            handleClarificationOtherTextChange(
+                              activeClarificationQuestion.id,
+                              event.target.value,
+                            )
+                          }
+                          placeholder={t("app.chat.clarification.otherPlaceholder")}
+                          disabled={isBusy}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  <div className="mt-3 grid grid-cols-[auto_1fr_auto] items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={isBusy}
+                      onClick={() => {
+                        void handleCancelClarification();
+                      }}
+                    >
+                      {t("common.actions.cancel")}
+                    </Button>
+
+                    {clarificationQuestionCount > 1 ? (
+                      <p className="text-center text-[11px] text-muted-foreground">
+                        {clarificationQuestionIndex + 1}/{clarificationQuestionCount}
+                      </p>
+                    ) : (
+                      <span />
+                    )}
+
+                    <div className="flex items-center gap-2">
+                      {clarificationQuestionCount > 1 ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={isBusy || isFirstClarificationQuestion}
+                          onClick={handlePreviousClarificationQuestion}
+                        >
+                          {t("common.actions.previous")}
+                        </Button>
+                      ) : null}
+
+                      {clarificationQuestionCount > 1 && !isLastClarificationQuestion ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={isBusy}
+                          onClick={handleNextClarificationQuestion}
+                        >
+                          {t("common.actions.next")}
+                        </Button>
+                      ) : (
+                        <Button type="submit" size="sm" disabled={isBusy}>
+                          {t("app.chat.clarification.continue")}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <p className="pb-2 text-center text-[11px] leading-relaxed text-muted-foreground">
+                  {t("app.chat.disclaimer", {
+                    agentName,
+                  })}
+                </p>
+              </form>
+            ) : (
+              <form
+                onSubmit={submitMessage}
+                className={cn(
+                  "space-y-2 px-4 pt-3 pb-0",
+                  isOpen ? "pointer-events-auto" : "pointer-events-none",
+                )}
+              >
+                {pendingAttachments.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {pendingAttachments.map((attachment) => (
+                      <div
+                        key={attachment.id}
+                        className="inline-flex max-w-full items-center gap-1 rounded-full border bg-muted px-2 py-1 text-xs"
+                      >
+                        <span className="truncate">{attachment.name}</span>
+                        <Tooltip>
+                          <TooltipTrigger render={<span className="inline-flex" />}>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon-xs"
+                              className="size-5"
+                              onClick={() => {
+                                setPendingAttachments((current) =>
+                                  current.filter((item) => item.id !== attachment.id),
+                                );
+                              }}
+                              aria-label={t("app.chat.removeFile")}
+                              disabled={isBusy || isListening}
+                            >
+                              <RiCloseLine className="size-3" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>{t("app.chat.removeFile")}</TooltipContent>
+                        </Tooltip>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
                 <div
                   className={cn(
-                    "pointer-events-none relative z-10 flex items-center gap-1.5 px-2 pb-2",
-                    isInputDisabled
-                      ? "bg-input/50 dark:bg-input/80 [&>[data-slot=button]]:disabled:border-input [&>[data-slot=button]]:disabled:bg-transparent [&>[data-slot=button]]:disabled:text-muted-foreground"
-                      : "bg-white dark:bg-zinc-900",
+                    "relative overflow-hidden rounded-lg border border-input",
+                    isInputDisabled ? "bg-input/50 dark:bg-input/80" : "bg-white dark:bg-zinc-900",
                   )}
                 >
-                  {showInputBottomFade ? (
-                    <div className="pointer-events-none absolute inset-x-0 bottom-full h-12 bg-gradient-to-b from-transparent via-white/70 to-white dark:via-zinc-900/70 dark:to-zinc-900" />
-                  ) : null}
-                  <Button
-                    type="button"
-                    size="icon-sm"
-                    variant="outline"
-                    className="pointer-events-auto"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={!organizationId || isBusy || isListening}
-                    aria-label={t("app.chat.attach")}
-                    title={t("app.chat.attach")}
-                  >
-                    <RiAttachment2 />
-                  </Button>
-                  <div className="flex-1" />
-                  <Button
-                    type="button"
-                    size="icon-sm"
-                    variant={isListening ? "destructive" : "outline"}
-                    className="pointer-events-auto"
-                    onClick={() => {
-                      if (isListening) {
-                        stopVoiceInput();
-                        return;
-                      }
-
-                      startVoiceInput();
-                    }}
-                    disabled={isVoiceControlDisabled}
-                    aria-label={voiceButtonLabel}
-                    title={voiceButtonLabel}
-                  >
-                    {isListening ? (
-                      <RiStopCircleLine />
-                    ) : (
-                      <RiMicLine />
+                  <Textarea
+                    ref={inputRef}
+                    rows={2}
+                    value={inputValue}
+                    onChange={handleInputValueChange}
+                    onScroll={handleInputScroll}
+                    onKeyDown={handleTextareaKeyDown}
+                    placeholder={t("app.chat.inputPlaceholder")}
+                    className={cn(
+                      "field-sizing-content min-h-16 max-h-[13rem] resize-none overflow-y-auto border-0 bg-transparent px-3 pb-2 shadow-none focus-visible:border-transparent focus-visible:ring-0 disabled:bg-transparent disabled:opacity-100 dark:bg-transparent dark:disabled:bg-transparent",
+                      isListening
+                        ? "text-zinc-500 dark:text-zinc-400"
+                        : "text-zinc-900 dark:text-zinc-100",
                     )}
-                  </Button>
-                  <Button
-                    type="submit"
-                    size="sm"
-                    className="pointer-events-auto"
-                    disabled={!isReadyToSend}
-                    aria-label={t("app.chat.send")}
-                    title={t("app.chat.send")}
+                    disabled={isInputDisabled}
+                    readOnly={isListening}
+                    aria-busy={isListening}
+                  />
+                  <div
+                    className={cn(
+                      "pointer-events-none relative z-10 flex items-center gap-1.5 px-2 pb-2",
+                      isInputDisabled
+                        ? "bg-transparent [&_[data-slot=button]:disabled]:border-input [&_[data-slot=button]:disabled]:bg-transparent [&_[data-slot=button]:disabled]:text-muted-foreground [&_[data-slot=button]:disabled]:opacity-100"
+                        : "bg-white dark:bg-zinc-900",
+                    )}
                   >
-                    <span>{t("app.chat.send")}</span>
-                    <RiArrowUpSLine />
-                  </Button>
+                    {showInputBottomFade ? (
+                      <div className="pointer-events-none absolute inset-x-0 bottom-full h-12 bg-gradient-to-b from-transparent via-white/70 to-white dark:via-zinc-900/70 dark:to-zinc-900" />
+                    ) : null}
+                    <Tooltip>
+                      <TooltipTrigger
+                        className="pointer-events-auto inline-flex"
+                        render={<span />}
+                      >
+                        <Button
+                          type="button"
+                          size="icon-sm"
+                          variant="outline"
+                          className={cn(
+                            "pointer-events-auto",
+                            isInputDisabled &&
+                              "border-input bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent",
+                          )}
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={!organizationId || isBusy || isListening}
+                          aria-label={t("app.chat.attach")}
+                        >
+                          <RiAttachment2 />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{t("app.chat.attach")}</TooltipContent>
+                    </Tooltip>
+                    <div className="flex-1" />
+                    <Tooltip>
+                      <TooltipTrigger
+                        className="pointer-events-auto inline-flex"
+                        render={<span />}
+                      >
+                        <Button
+                          type="button"
+                          size="icon-sm"
+                          variant={isListening ? "destructive" : "outline"}
+                          className={cn(
+                            "pointer-events-auto",
+                            isInputDisabled &&
+                              "border-input bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent",
+                          )}
+                          onClick={() => {
+                            if (isListening) {
+                              stopVoiceInput();
+                              return;
+                            }
+
+                            startVoiceInput();
+                          }}
+                          disabled={isVoiceControlDisabled}
+                          aria-label={voiceButtonLabel}
+                        >
+                          {isListening ? (
+                            <RiStopCircleLine />
+                          ) : (
+                            <RiMicLine />
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>{voiceButtonLabel}</TooltipContent>
+                    </Tooltip>
+                    <Button
+                      type="submit"
+                      size="sm"
+                      className="pointer-events-auto"
+                      disabled={!isReadyToSend}
+                      aria-label={t("app.chat.send")}
+                      title={t("app.chat.send")}
+                    >
+                      <span>{t("app.chat.send")}</span>
+                      <RiArrowUpSLine />
+                    </Button>
+                  </div>
                 </div>
-              </div>
-              {isVoiceUnsupported ? (
-                <p className="text-xs text-muted-foreground">{t("app.chat.voiceUnsupported")}</p>
-              ) : null}
-              <input
-                ref={fileInputRef}
-                type="file"
-                className="hidden"
-                multiple
-                onChange={(event) => {
-                  void handleFileSelection(event);
-                }}
-                disabled={!organizationId || isBusy || isListening}
-              />
-              <p className="pb-2 text-center text-[11px] leading-relaxed text-muted-foreground">
-                {t("app.chat.disclaimer", {
-                  agentName,
-                })}
-              </p>
-            </form>
+                {isVoiceUnsupported ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t("app.chat.voiceUnsupported")}
+                  </p>
+                ) : null}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  className="hidden"
+                  multiple
+                  onChange={(event) => {
+                    void handleFileSelection(event);
+                  }}
+                  disabled={!organizationId || isBusy || isListening}
+                />
+                <p className="pb-2 text-center text-[11px] leading-relaxed text-muted-foreground">
+                  {t("app.chat.disclaimer", {
+                    agentName,
+                  })}
+                </p>
+              </form>
+            )}
           </div>
-        </section>
+          </section>
+        </TooltipProvider>
       </div>
+
+      <Dialog
+        open={expandedImageAttachment !== null}
+        onOpenChange={(isOpen) => {
+          if (!isOpen) {
+            setExpandedImageAttachment(null);
+          }
+        }}
+      >
+        <DialogContent
+          showCloseButton={false}
+          className="w-[calc(100vw-2rem)] max-w-3xl gap-0"
+        >
+          <DialogHeader className="sr-only">
+            <DialogTitle>{expandedImageAttachment?.name ?? t("app.chat.attach")}</DialogTitle>
+          </DialogHeader>
+          {expandedImageAttachment ? (
+            <div className="space-y-2">
+              <img
+                src={expandedImageAttachment.src}
+                alt={expandedImageAttachment.name}
+                className="max-h-[80vh] w-full rounded-lg object-contain"
+              />
+              <DialogFooter className="mt-2 sm:items-center sm:justify-between">
+                <p className="truncate text-xs text-muted-foreground">
+                  {expandedImageAttachment.name}
+                </p>
+                <DialogClose
+                  render={
+                    <Button type="button" variant="outline" size="sm" className="shrink-0" />
+                  }
+                >
+                  {t("common.actions.close")}
+                </DialogClose>
+              </DialogFooter>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={isHistoryDialogOpen} onOpenChange={setIsHistoryDialogOpen}>
         <DialogContent className="sm:max-w-md">

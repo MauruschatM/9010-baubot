@@ -7,7 +7,7 @@ import { api } from "@mvp-template/backend/convex/_generated/api";
 import { createFileRoute, Link, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { useMemo, useState, type FormEvent } from "react";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/sonner";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";

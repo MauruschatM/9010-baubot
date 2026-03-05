@@ -22,7 +22,7 @@ import {
   type FormEvent,
 } from "react";
 import { useTheme } from "next-themes";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/sonner";
 import {
   RiArrowDownSLine,
   RiCheckLine,
@@ -96,7 +96,10 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { AgentChatPanel } from "@/components/agent-chat-panel";
+import {
+  AgentChatPanel,
+  type AgentChatPageContext,
+} from "@/components/agent-panel";
 import { authClient } from "@/lib/auth-client";
 import {
   ensureProviderErrorCoverage,
@@ -429,6 +432,8 @@ function AppRouteContent() {
   }>;
   const localePreference = useQuery(api.preferences.getMyLocale);
   const setMyLocale = useMutation(api.preferences.setMyLocale);
+  const themePreference = useQuery(api.preferences.getMyTheme);
+  const setMyTheme = useMutation(api.preferences.setMyTheme);
   const saveOrganizationAgentProfile = useMutation(
     api.organizationAgentProfiles.saveForOrganization,
   );
@@ -472,6 +477,7 @@ function AppRouteContent() {
     useState<InviteMemberRole>("member");
   const [isInvitingMember, setIsInvitingMember] = useState(false);
   const [isUpdatingLocale, setIsUpdatingLocale] = useState(false);
+  const [isUpdatingThemePreference, setIsUpdatingThemePreference] = useState(false);
   const inviteMemberRoleLabel = isInviteMemberRole(inviteMemberRole)
     ? t(`common.roles.${inviteMemberRole}`)
     : t("common.roles.member");
@@ -570,10 +576,77 @@ function AppRouteContent() {
     theme === "light" || theme === "dark" || theme === "system"
       ? theme
       : "system";
+  const selectedThemePreference =
+    themePreference === undefined ? selectedTheme : (themePreference ?? "system");
   const membersSearchQuery = useMemo(() => {
     const value = new URLSearchParams(locationSearch).get("search");
     return value ?? "";
   }, [locationSearch]);
+  const membersPageSnapshotForAgent = useQuery(
+    api.members.getLiveMembersPage,
+    isMembersPage && activeOrganization?.id
+      ? {
+          organizationId: activeOrganization.id,
+        }
+      : "skip",
+  );
+  const agentPanelPageContext = useMemo<AgentChatPageContext | null>(() => {
+    if (!isMembersPage) {
+      return null;
+    }
+
+    const normalizedSearchQuery = membersSearchQuery.trim();
+    const normalizedSearchQueryLower = normalizedSearchQuery.toLowerCase();
+    const members = membersPageSnapshotForAgent?.members ?? [];
+    const pendingInvitations = (membersPageSnapshotForAgent?.invitations ?? []).filter(
+      (invitation) => invitation.status === "pending",
+    );
+    const filteredMembers = members.filter((member) => {
+      if (!normalizedSearchQueryLower) {
+        return true;
+      }
+
+      return (
+        member.user.name.toLowerCase().includes(normalizedSearchQueryLower) ||
+        member.user.email.toLowerCase().includes(normalizedSearchQueryLower)
+      );
+    });
+    const filteredInvitations = pendingInvitations.filter((invitation) => {
+      if (!normalizedSearchQueryLower) {
+        return true;
+      }
+
+      return invitation.email.toLowerCase().includes(normalizedSearchQueryLower);
+    });
+
+    return {
+      routeId: "app.members",
+      routePath: pathname,
+      title: t("app.shell.members"),
+      searchQuery: normalizedSearchQuery || null,
+      members: {
+        totalCount: members.length,
+        filteredCount: filteredMembers.length,
+        pendingInvitationCount: pendingInvitations.length,
+        currentMemberRole: membersPageSnapshotForAgent?.currentMember.role ?? null,
+        visibleMembers: filteredMembers.slice(0, 12).map((member) => ({
+          name: member.user.name,
+          email: member.user.email,
+          role: member.role,
+        })),
+        visibleInvitations: filteredInvitations.slice(0, 8).map((invitation) => ({
+          email: invitation.email,
+          role: invitation.role,
+        })),
+      },
+    };
+  }, [
+    isMembersPage,
+    membersPageSnapshotForAgent,
+    membersSearchQuery,
+    pathname,
+    t,
+  ]);
 
   const handleMembersSearchChange = (value: string) => {
     void navigate({
@@ -642,6 +715,68 @@ function AppRouteContent() {
       setIsUpdatingLocale(false);
     }
   };
+
+  const handleThemeChange = async (nextThemePreference: string) => {
+    const normalizedTheme =
+      nextThemePreference === "light" ||
+      nextThemePreference === "dark" ||
+      nextThemePreference === "system"
+        ? nextThemePreference
+        : null;
+    if (!normalizedTheme) {
+      return;
+    }
+
+    if (normalizedTheme === selectedThemePreference) {
+      return;
+    }
+
+    setIsUpdatingThemePreference(true);
+    setTheme(normalizedTheme);
+
+    try {
+      await setMyTheme({
+        theme: normalizedTheme === "system" ? null : normalizedTheme,
+      });
+      toast.success(t("app.toasts.themeUpdated"));
+    } catch (error) {
+      toast.error(
+        getLocalizedAuthErrorMessage(t, error, "app.toasts.themeSaveFailed"),
+      );
+    } finally {
+      setIsUpdatingThemePreference(false);
+    }
+  };
+
+  useEffect(() => {
+    if (localePreference === undefined || isUpdatingLocale) {
+      return;
+    }
+
+    if (localePreference === null) {
+      const systemLocale = resolveSystemLocale(selectedLocale);
+      if (selectedLocale !== systemLocale) {
+        setLocale(systemLocale);
+      }
+      writeLocaleCookie(SYSTEM_LOCALE);
+      return;
+    }
+
+    if (selectedLocale !== localePreference) {
+      setLocale(localePreference);
+    }
+  }, [isUpdatingLocale, localePreference, selectedLocale, setLocale]);
+
+  useEffect(() => {
+    if (themePreference === undefined || isUpdatingThemePreference) {
+      return;
+    }
+
+    const resolvedTheme = themePreference ?? "system";
+    if (selectedTheme !== resolvedTheme) {
+      setTheme(resolvedTheme);
+    }
+  }, [isUpdatingThemePreference, selectedTheme, setTheme, themePreference]);
 
   const openUserSettings = () => {
     setUserName(user?.name ?? "");
@@ -1148,20 +1283,32 @@ function AppRouteContent() {
                         </DropdownMenuSubTrigger>
                         <DropdownMenuSubContent className="w-44">
                           <DropdownMenuRadioGroup
-                            value={selectedTheme}
+                            value={selectedThemePreference}
                             onValueChange={(value) => {
-                              setTheme(value as "light" | "dark" | "system");
+                              void handleThemeChange(value);
                             }}
                           >
-                            <DropdownMenuRadioItem className="min-h-8 pl-2 pr-8" value="system">
+                            <DropdownMenuRadioItem
+                              className="min-h-8 pl-2 pr-8"
+                              value="system"
+                              disabled={isUpdatingThemePreference}
+                            >
                               <RiComputerLine />
                               <span>{t("common.theme.system")}</span>
                             </DropdownMenuRadioItem>
-                            <DropdownMenuRadioItem className="min-h-8 pl-2 pr-8" value="light">
+                            <DropdownMenuRadioItem
+                              className="min-h-8 pl-2 pr-8"
+                              value="light"
+                              disabled={isUpdatingThemePreference}
+                            >
                               <RiSunLine />
                               <span>{t("common.theme.light")}</span>
                             </DropdownMenuRadioItem>
-                            <DropdownMenuRadioItem className="min-h-8 pl-2 pr-8" value="dark">
+                            <DropdownMenuRadioItem
+                              className="min-h-8 pl-2 pr-8"
+                              value="dark"
+                              disabled={isUpdatingThemePreference}
+                            >
                               <RiMoonLine />
                               <span>{t("common.theme.dark")}</span>
                             </DropdownMenuRadioItem>
@@ -1275,6 +1422,7 @@ function AppRouteContent() {
         agentName={activeAgentName}
         agentAvatarSrc={activeAgentStyleOption.imageSrc}
         onOpenSettings={openAiAgentSettings}
+        pageContext={agentPanelPageContext}
       />
 
       <Dialog
