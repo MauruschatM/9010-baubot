@@ -66,6 +66,13 @@ export function getMastraThreadId(options: {
   return `thread:${options.organizationId}:${options.userId}`;
 }
 
+export function getMastraWhatsAppThreadId(options: {
+  organizationId: string;
+  memberId: string;
+}) {
+  return `thread:${options.organizationId}:member:${options.memberId}:whatsapp`;
+}
+
 export function isMastraChatRole(value: unknown): value is MastraChatRole {
   return (
     value === "system" ||

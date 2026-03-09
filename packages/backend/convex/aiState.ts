@@ -60,6 +60,8 @@ const vChatMessage = v.object({
 
 const vChatThreadSummary = v.object({
   threadId: v.string(),
+  channel: v.union(v.literal("web"), v.literal("whatsapp")),
+  memberId: v.union(v.string(), v.null()),
   title: v.union(v.string(), v.null()),
   createdAt: v.number(),
   updatedAt: v.number(),
@@ -597,6 +599,7 @@ export const createChatThread = mutation({
       resourceId,
       organizationId: args.organizationId,
       userId: authUser._id,
+      channel: "web",
       lastSeenUpdatedAt: now,
       createdAt: now,
       updatedAt: now,
@@ -665,6 +668,8 @@ export const listChatThreads = query({
       })
       .map((thread) => ({
         threadId: thread.threadId,
+        channel: thread.channel ?? "web",
+        memberId: thread.memberId ?? null,
         title: thread.title ?? null,
         createdAt: thread.createdAt,
         updatedAt: thread.updatedAt,
@@ -710,6 +715,7 @@ export const hasUnreadChatUpdates = query({
     const scopedThreads = threads.filter(
       (thread) =>
         thread.userId === authUser._id &&
+        (thread.channel ?? "web") !== "whatsapp" &&
         (!args.organizationId || thread.organizationId === args.organizationId),
     );
 
@@ -883,6 +889,8 @@ export const getChatThreadById = internalQuery({
       resourceId: v.string(),
       organizationId: v.string(),
       userId: v.string(),
+      channel: v.union(v.literal("web"), v.literal("whatsapp")),
+      memberId: v.union(v.string(), v.null()),
       title: v.union(v.string(), v.null()),
       createdAt: v.number(),
       updatedAt: v.number(),
@@ -904,6 +912,8 @@ export const getChatThreadById = internalQuery({
       resourceId: thread.resourceId,
       organizationId: thread.organizationId,
       userId: thread.userId,
+      channel: thread.channel ?? "web",
+      memberId: thread.memberId ?? null,
       title: thread.title ?? null,
       createdAt: thread.createdAt,
       updatedAt: thread.updatedAt,
@@ -965,6 +975,8 @@ export const upsertGeneratedMessages = internalMutation({
     resourceId: v.string(),
     organizationId: v.string(),
     userId: v.string(),
+    channel: v.optional(v.union(v.literal("web"), v.literal("whatsapp"))),
+    memberId: v.optional(v.string()),
     title: v.optional(v.string()),
     messages: v.array(vPersistedMessageInput),
   },
@@ -981,7 +993,8 @@ export const upsertGeneratedMessages = internalMutation({
       existingThread &&
       (existingThread.organizationId !== args.organizationId ||
         existingThread.userId !== args.userId ||
-        existingThread.resourceId !== args.resourceId)
+        existingThread.resourceId !== args.resourceId ||
+        ((existingThread.channel ?? "web") !== (args.channel ?? "web")))
     ) {
       throw new Error("Invalid chat thread id");
     }
@@ -992,6 +1005,8 @@ export const upsertGeneratedMessages = internalMutation({
         resourceId: args.resourceId,
         organizationId: args.organizationId,
         userId: args.userId,
+        channel: args.channel ?? "web",
+        memberId: args.memberId,
         title: args.title,
         createdAt: now,
         updatedAt: now,
@@ -1072,6 +1087,8 @@ export const upsertGeneratedMessages = internalMutation({
       const nextUpdatedAt = getNextThreadUpdatedAt(existingThread.updatedAt, now);
       await ctx.db.patch(existingThread._id, {
         updatedAt: nextUpdatedAt,
+        channel: existingThread.channel ?? (args.channel ?? "web"),
+        memberId: existingThread.memberId ?? args.memberId,
         title: args.title ?? existingThread.title,
       });
     }

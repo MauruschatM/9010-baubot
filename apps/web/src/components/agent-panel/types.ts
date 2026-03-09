@@ -40,6 +40,8 @@ export type TimelineAttachment = {
 
 export type ChatThreadSummary = {
   threadId: string;
+  channel: "web" | "whatsapp";
+  memberId: string | null;
   title: string | null;
   createdAt: number;
   updatedAt: number;

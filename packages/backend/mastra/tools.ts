@@ -69,12 +69,38 @@ export type UserSettingsSummary = {
   };
 };
 
+export type ConnectedWhatsAppRecipient = {
+  memberId: string;
+  userId: string;
+  name: string;
+  email: string;
+  phoneNumberE164: string;
+  isCurrentUser: boolean;
+};
+
+export type ProactiveWhatsAppSendResult = {
+  requestedRecipientCount: number;
+  sentCount: number;
+  failedCount: number;
+  results: Array<{
+    memberId: string;
+    phoneNumberE164: string;
+    status: "sent" | "failed";
+    reason?: string;
+  }>;
+};
+
 export type CreateOrganizationToolsOptions = {
   getOrganizationSummary: () => Promise<OrganizationSummary>;
   listOrganizationMembers: () => Promise<OrganizationMember[]>;
   listOrganizationInvitations: (input?: { status?: string }) => Promise<
     OrganizationInvitation[]
   >;
+  listConnectedWhatsAppNumbers?: () => Promise<ConnectedWhatsAppRecipient[]>;
+  sendProactiveWhatsAppMessage?: (input: {
+    recipientMemberIds: string[];
+    message: string;
+  }) => Promise<ProactiveWhatsAppSendResult>;
   updateOrganization?: (input: {
     name?: string;
     slug?: string;
@@ -180,6 +206,22 @@ const userSettingsSchema = z.object({
     language: z.union([z.literal("en"), z.literal("de"), z.literal("system")]),
     theme: z.union([z.literal("light"), z.literal("dark"), z.literal("system")]),
   }),
+});
+
+const connectedWhatsAppRecipientSchema = z.object({
+  memberId: z.string(),
+  userId: z.string(),
+  name: z.string(),
+  email: z.string(),
+  phoneNumberE164: z.string(),
+  isCurrentUser: z.boolean(),
+});
+
+const proactiveWhatsAppSendResultSchema = z.object({
+  memberId: z.string(),
+  phoneNumberE164: z.string(),
+  status: z.union([z.literal("sent"), z.literal("failed")]),
+  reason: z.string().optional(),
 });
 
 export function createWorkspaceSnapshotTool(
@@ -295,6 +337,54 @@ export function createOrganizationTools(options: CreateOrganizationToolsOptions)
       },
     }),
   };
+
+  if (options.listConnectedWhatsAppNumbers) {
+    const listConnectedWhatsAppNumbers = options.listConnectedWhatsAppNumbers;
+    tools.listConnectedWhatsAppNumbers = createTool({
+      id: "listConnectedWhatsAppNumbers",
+      description:
+        "Lists all active WhatsApp-connected members in the active organization.",
+      inputSchema: z.object({}),
+      outputSchema: z.object({
+        count: z.number(),
+        recipients: z.array(connectedWhatsAppRecipientSchema),
+      }),
+      execute: async () => {
+        const recipients = await listConnectedWhatsAppNumbers();
+        return {
+          count: recipients.length,
+          recipients,
+        };
+      },
+    });
+  }
+
+  if (options.sendProactiveWhatsAppMessage) {
+    const sendProactiveWhatsAppMessage = options.sendProactiveWhatsAppMessage;
+    tools.sendProactiveWhatsAppMessage = createTool({
+      id: "sendProactiveWhatsAppMessage",
+      description:
+        "Sends a proactive WhatsApp message to one or more connected members in the active organization.",
+      inputSchema: z.object({
+        recipientMemberIds: z.array(z.string()).min(1).max(20),
+        message: z.string().min(1).max(6000),
+      }),
+      outputSchema: z.object({
+        status: z.literal("sent"),
+        requestedRecipientCount: z.number(),
+        sentCount: z.number(),
+        failedCount: z.number(),
+        results: z.array(proactiveWhatsAppSendResultSchema),
+      }),
+      execute: async (input) => {
+        const result = await sendProactiveWhatsAppMessage(input);
+        return {
+          status: "sent" as const,
+          ...result,
+        };
+      },
+    });
+  }
 
   if (options.updateOrganization) {
     const updateOrganization = options.updateOrganization;

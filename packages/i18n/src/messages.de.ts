@@ -43,6 +43,7 @@ export const messagesDe = {
       editRole: "Rolle bearbeiten",
       switchOrganization: "Organisation wechseln",
       removeMember: "Mitglied entfernen",
+      whatsappConnection: "WhatsApp Verbindung",
       close: "Schließen",
       previous: "Zurück",
       next: "Weiter",
@@ -184,6 +185,42 @@ export const messagesDe = {
       openInvitationActions: "Einladungsaktionen öffnen",
       openLanguageMenu: "Sprachmenü öffnen",
     },
+    whatsapp: {
+      sidebar: {
+        title: "WhatsApp verbinden",
+        description:
+          "Verbinde deine WhatsApp-Nummer, um Onboarding und Chat mit dem KI-Mitarbeiter zu starten.",
+      },
+      actions: {
+        openDialog: "Jetzt verbinden",
+        saveConnection: "Nummer speichern",
+        removeConnection: "Nummer entfernen",
+        openWhatsapp: "WhatsApp öffnen",
+      },
+      dialog: {
+        title: "WhatsApp Verbindung",
+        description:
+          "Setze eine WhatsApp-Nummer für dieses Mitglied und starte den Chat über den QR-Code.",
+        connectedNumberLabel: "Verbundene Nummer",
+        notConnected: "Keine WhatsApp-Nummer verbunden",
+        numberInputLabel: "WhatsApp-Nummer",
+        numberPlaceholder: "+49123456789",
+        qrTitle: "Chat per QR starten",
+        qrDescription:
+          "Scanne diesen QR-Code mit WhatsApp. Der Chat wird mit der initialen Nachricht geöffnet.",
+        qrUnavailable:
+          "QR-Setup ist nicht verfügbar. Setze WHATSAPP_AGENT_NUMBER und WHATSAPP_INITIAL_MESSAGE.",
+        agentNumberLabel: "Agent-Nummer",
+        initialMessageLabel: "Initiale Nachricht",
+      },
+      toasts: {
+        enterPhoneNumber: "Bitte gib eine WhatsApp-Nummer ein.",
+        connectionSaved: "WhatsApp-Verbindung gespeichert.",
+        failedSaveConnection: "WhatsApp-Verbindung konnte nicht gespeichert werden.",
+        connectionRemoved: "WhatsApp-Verbindung entfernt.",
+        failedRemoveConnection: "WhatsApp-Verbindung konnte nicht entfernt werden.",
+      },
+    },
     chat: {
       open: "Chat öffnen",
       menu: {
@@ -198,10 +235,14 @@ export const messagesDe = {
         searchPlaceholder: "Chats nach Datum und Uhrzeit suchen",
         empty: "Noch keine Chats vorhanden.",
         noResults: "Keine Chats für diese Suche gefunden.",
+        whatsappChannel: "WhatsApp Kanal",
       },
       title: "Agent-Chat",
       description: "Frage deinen Workspace-Assistenten.",
       inputPlaceholder: "Stelle eine Frage...",
+      readOnly: {
+        whatsapp: "Dieser WhatsApp Chat ist im Agent-Panel schreibgeschützt.",
+      },
       attach: "Datei anhängen",
       removeFile: "Datei entfernen",
       tooManyFiles: "Du kannst bis zu 3 Dateien anhängen.",
@@ -238,12 +279,12 @@ export const messagesDe = {
       },
       confirmation: {
         deleteOrganization: {
-          title: "Organisation loeschen?",
+          title: "Organisation löschen?",
           description:
-            "Diese Aktion ist dauerhaft. Bestaetige, um die aktive Organisation zu loeschen.",
+            "Diese Aktion ist dauerhaft. Bestätige, um die aktive Organisation zu löschen.",
           descriptionNamed:
-            "Diese Aktion ist dauerhaft. Bestaetige, um {organizationName} zu loeschen.",
-          confirm: "Bestaetigen",
+            "Diese Aktion ist dauerhaft. Bestätige, um {organizationName} zu löschen.",
+          confirm: "Bestätigen",
           cancel: "Abbrechen",
         },
       },
@@ -350,6 +391,23 @@ export const messagesDe = {
         "{memberName} ({memberEmail}) wird aus der Organisation entfernt.",
       removeMemberDescriptionDefault:
         "Dieses Mitglied wird aus der Organisation entfernt.",
+      whatsappConnected: "WhatsApp: {phoneNumber}",
+      whatsappNotConnected: "WhatsApp: nicht verbunden",
+      whatsappDialogDescriptionWithName:
+        "Verwalte die WhatsApp-Verbindung für {memberName}.",
+      whatsappGuidePreviewTitle: "E-Mail Vorschau",
+      whatsappGuidePreviewDescription:
+        "Das Mitglied erhält eine kurze WhatsApp-Anleitung an {memberEmail}.",
+      whatsappGuidePreviewSubjectLabel: "Betreff",
+      whatsappGuidePreviewSubject:
+        "WhatsApp Onboarding für {organizationName}",
+      whatsappGuidePreviewIntro:
+        "Hallo {memberName}, verbinde dein WhatsApp mit {agentName}, um das Onboarding zu starten.",
+      whatsappGuidePreviewAgentNumber:
+        "Nutze diese Nummer: {agentNumber}",
+      whatsappGuidePreviewInitialMessage:
+        "Sende zuerst diese Nachricht: \"{initialMessage}\"",
+      whatsappGuideSend: "Anleitung senden",
       toasts: {
         failedUpdateMemberRole:
           "Mitgliederrolle konnte nicht aktualisiert werden",
@@ -361,6 +419,9 @@ export const messagesDe = {
         memberRemoved: "Mitglied entfernt",
         failedRevokeInvitation: "Einladung konnte nicht widerrufen werden",
         invitationRevoked: "Einladung widerrufen",
+        whatsappGuideSent: "WhatsApp-Anleitung an {email} gesendet",
+        failedSendWhatsappGuide:
+          "WhatsApp-Anleitung konnte nicht gesendet werden",
       },
     },
     toasts: {

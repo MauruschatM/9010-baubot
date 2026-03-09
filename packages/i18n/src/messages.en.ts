@@ -43,6 +43,7 @@ export const messagesEn = {
       editRole: "Edit role",
       switchOrganization: "Switch organization",
       removeMember: "Remove member",
+      whatsappConnection: "WhatsApp Connection",
       close: "Close",
       previous: "Previous",
       next: "Next",
@@ -181,6 +182,42 @@ export const messagesEn = {
       openInvitationActions: "Open invitation actions",
       openLanguageMenu: "Open language menu",
     },
+    whatsapp: {
+      sidebar: {
+        title: "Connect WhatsApp",
+        description:
+          "Connect your WhatsApp number to onboard and chat with your AI agent.",
+      },
+      actions: {
+        openDialog: "Connect now",
+        saveConnection: "Save number",
+        removeConnection: "Remove number",
+        openWhatsapp: "Open WhatsApp",
+      },
+      dialog: {
+        title: "WhatsApp Connection",
+        description:
+          "Set a WhatsApp number for this member and use the QR code to start onboarding chat.",
+        connectedNumberLabel: "Connected number",
+        notConnected: "No WhatsApp number connected",
+        numberInputLabel: "WhatsApp number",
+        numberPlaceholder: "+49123456789",
+        qrTitle: "Start chat via QR",
+        qrDescription:
+          "Scan this QR code with WhatsApp. It opens a chat with the configured initial message.",
+        qrUnavailable:
+          "QR setup is unavailable. Configure WHATSAPP_AGENT_NUMBER and WHATSAPP_INITIAL_MESSAGE.",
+        agentNumberLabel: "Agent number",
+        initialMessageLabel: "Initial message",
+      },
+      toasts: {
+        enterPhoneNumber: "Enter a WhatsApp phone number.",
+        connectionSaved: "WhatsApp connection saved.",
+        failedSaveConnection: "Failed to save WhatsApp connection.",
+        connectionRemoved: "WhatsApp connection removed.",
+        failedRemoveConnection: "Failed to remove WhatsApp connection.",
+      },
+    },
     chat: {
       open: "Open chat",
       menu: {
@@ -195,10 +232,14 @@ export const messagesEn = {
         searchPlaceholder: "Search chats by date and time",
         empty: "No chats yet.",
         noResults: "No chats match your search.",
+        whatsappChannel: "WhatsApp Channel",
       },
       title: "Agent Chat",
       description: "Ask your workspace assistant anything.",
       inputPlaceholder: "Ask a question...",
+      readOnly: {
+        whatsapp: "This WhatsApp chat is read-only in the agent panel.",
+      },
       attach: "Attach file",
       removeFile: "Remove file",
       tooManyFiles: "You can attach up to 3 files.",
@@ -343,6 +384,23 @@ export const messagesEn = {
         "This will remove {memberName} ({memberEmail}) from the organization.",
       removeMemberDescriptionDefault:
         "This member will be removed from the organization.",
+      whatsappConnected: "WhatsApp: {phoneNumber}",
+      whatsappNotConnected: "WhatsApp: not connected",
+      whatsappDialogDescriptionWithName:
+        "Manage WhatsApp connection for {memberName}.",
+      whatsappGuidePreviewTitle: "Email preview",
+      whatsappGuidePreviewDescription:
+        "The member will receive a short WhatsApp setup guide at {memberEmail}.",
+      whatsappGuidePreviewSubjectLabel: "Subject",
+      whatsappGuidePreviewSubject:
+        "WhatsApp onboarding for {organizationName}",
+      whatsappGuidePreviewIntro:
+        "Hi {memberName}, connect your WhatsApp with {agentName} to start onboarding.",
+      whatsappGuidePreviewAgentNumber:
+        "Use this number: {agentNumber}",
+      whatsappGuidePreviewInitialMessage:
+        "Send this first message: \"{initialMessage}\"",
+      whatsappGuideSend: "Send guide",
       toasts: {
         failedUpdateMemberRole: "Failed to update member role",
         memberRoleUpdated: "Member role updated",
@@ -352,6 +410,8 @@ export const messagesEn = {
         memberRemoved: "Member removed",
         failedRevokeInvitation: "Failed to revoke invitation",
         invitationRevoked: "Invitation revoked",
+        whatsappGuideSent: "WhatsApp guide sent to {email}",
+        failedSendWhatsappGuide: "Failed to send WhatsApp guide",
       },
     },
     toasts: {

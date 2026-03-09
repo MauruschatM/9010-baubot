@@ -2,10 +2,11 @@ import {
   RiMoreFill,
   RiShieldUserLine,
   RiUserUnfollowLine,
+  RiWhatsappLine,
 } from "@remixicon/react";
 import { api } from "@mvp-template/backend/convex/_generated/api";
 import { createFileRoute, Link, useRouterState } from "@tanstack/react-router";
-import { useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { useMemo, useState, type FormEvent } from "react";
 import { toast } from "@/components/ui/sonner";
 
@@ -102,6 +103,29 @@ function MembersRoute() {
         }
       : "skip",
   );
+  const whatsappSetupInfo = useQuery(api.whatsappData.getConnectionSetupInfo);
+  const organizationAgentProfile = useQuery(
+    api.organizationAgentProfiles.getForOrganization,
+    activeOrganization?.id
+      ? {
+          organizationId: activeOrganization.id,
+        }
+      : "skip",
+  );
+  const organizationConnections = useQuery(
+    api.whatsappData.getOrganizationConnections,
+    activeOrganization?.id
+      ? {
+          organizationId: activeOrganization.id,
+        }
+      : "skip",
+  );
+  const removeMemberWhatsappConnection = useMutation(
+    api.whatsappData.removeMemberConnection,
+  );
+  const sendMemberWhatsappGuideEmail = useAction(
+    api.whatsappData.sendMemberActivationGuideEmail,
+  );
   const locationSearch = useRouterState({
     select: (state) => state.location.search,
   });
@@ -130,7 +154,30 @@ function MembersRoute() {
     name: string;
     email: string;
   } | null>(null);
+  const [isWhatsappDialogOpen, setIsWhatsappDialogOpen] = useState(false);
+  const [whatsappDialogMember, setWhatsappDialogMember] = useState<{
+    id: string;
+    name: string;
+    email: string;
+  } | null>(null);
+  const [isRemovingWhatsappConnection, setIsRemovingWhatsappConnection] =
+    useState(false);
+  const [isSendingWhatsappGuide, setIsSendingWhatsappGuide] = useState(false);
   const currentMemberId = liveMembersPage?.currentMember.id ?? null;
+  const activeAgentName =
+    organizationAgentProfile?.name ?? t("app.dialogs.aiAgent.defaultName");
+  const previewInitialMessage =
+    whatsappSetupInfo?.initialMessage ?? "Hi, I am your ai agent for the trades!";
+  const connectionByMemberId = useMemo(
+    () =>
+      new Map(
+        (organizationConnections?.connections ?? []).map((connection) => [
+          connection.memberId,
+          connection,
+        ]),
+      ),
+    [organizationConnections],
+  );
 
   if (isPending || (activeOrganization && liveMembersPage === undefined)) {
     return (
@@ -218,6 +265,9 @@ function MembersRoute() {
 
       return invitationA.email.toLowerCase().localeCompare(invitationB.email.toLowerCase());
     });
+  const canManageMemberActions =
+    liveMembersPage.currentMember.role === "owner" ||
+    liveMembersPage.currentMember.role === "admin";
 
   const closeEditRoleDialog = () => {
     setEditingMember(null);
@@ -237,6 +287,59 @@ function MembersRoute() {
     });
     setNextMemberRole(isMemberRole(member.role) ? member.role : "member");
     setIsEditRoleDialogOpen(true);
+  };
+
+  const openWhatsappDialog = (member: (typeof filteredMembers)[number]) => {
+    const memberName = member.user.name.trim() || member.user.email;
+
+    setWhatsappDialogMember({
+      id: member.id,
+      name: memberName,
+      email: member.user.email,
+    });
+    setIsWhatsappDialogOpen(true);
+  };
+
+  const handleRemoveWhatsappConnection = async () => {
+    if (!activeOrganization.id || !whatsappDialogMember) {
+      return;
+    }
+
+    setIsRemovingWhatsappConnection(true);
+    try {
+      await removeMemberWhatsappConnection({
+        organizationId: activeOrganization.id,
+        memberId: whatsappDialogMember.id,
+      });
+      toast.success(t("app.whatsapp.toasts.connectionRemoved"));
+    } catch (error) {
+      toast.error(t("app.whatsapp.toasts.failedRemoveConnection"));
+    } finally {
+      setIsRemovingWhatsappConnection(false);
+    }
+  };
+
+  const handleSendWhatsappGuide = async () => {
+    if (!activeOrganization.id || !whatsappDialogMember) {
+      return;
+    }
+
+    setIsSendingWhatsappGuide(true);
+    try {
+      const result = await sendMemberWhatsappGuideEmail({
+        organizationId: activeOrganization.id,
+        memberId: whatsappDialogMember.id,
+      });
+      toast.success(
+        t("app.members.toasts.whatsappGuideSent", {
+          email: result.email,
+        }),
+      );
+    } catch (error) {
+      toast.error(t("app.members.toasts.failedSendWhatsappGuide"));
+    } finally {
+      setIsSendingWhatsappGuide(false);
+    }
   };
 
   const handleUpdateMemberRole = async (event: FormEvent<HTMLFormElement>) => {
@@ -376,7 +479,7 @@ function MembersRoute() {
                         >
                           {getRoleLabel(member.role, t)}
                         </Badge>
-                        {!isCurrentMember ? (
+                        {!isCurrentMember && canManageMemberActions ? (
                           <DropdownMenu>
                             <DropdownMenuTrigger
                               render={
@@ -385,7 +488,10 @@ function MembersRoute() {
                                   variant="ghost"
                                   size="icon-sm"
                                   disabled={
-                                    isUpdatingMemberRole || removingMemberId === member.id
+                                    isUpdatingMemberRole ||
+                                    removingMemberId === member.id ||
+                                    isRemovingWhatsappConnection ||
+                                    isSendingWhatsappGuide
                                   }
                                 />
                               }
@@ -395,7 +501,11 @@ function MembersRoute() {
                                 {t("app.shell.openMemberActions")}
                               </span>
                             </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuContent align="end" className="w-52">
+                              <DropdownMenuItem onClick={() => openWhatsappDialog(member)}>
+                                <RiWhatsappLine />
+                                <span>{t("common.actions.whatsappConnection")}</span>
+                              </DropdownMenuItem>
                               <DropdownMenuItem
                                 onClick={() => openEditRoleDialog(member)}
                                 disabled={
@@ -473,39 +583,41 @@ function MembersRoute() {
                         >
                           {getRoleLabel(invitation.role, t)}
                         </Badge>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger
-                            render={
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon-sm"
-                                disabled={revokingInvitationId === invitation.id}
-                              />
-                            }
-                          >
-                            <RiMoreFill className="size-4" />
-                            <span className="sr-only">
-                              {t("app.shell.openInvitationActions")}
-                            </span>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end" className="w-44">
-                            <DropdownMenuItem
-                              variant="destructive"
-                              onClick={() =>
-                                void handleRevokeInvitation(invitation.id)
+                        {canManageMemberActions ? (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger
+                              render={
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  disabled={revokingInvitationId === invitation.id}
+                                />
                               }
-                              disabled={revokingInvitationId === invitation.id}
                             >
-                              <RiUserUnfollowLine />
-                              <span>
-                                {revokingInvitationId === invitation.id
-                                  ? t("common.state.revoking")
-                                  : t("common.actions.revoke")}
+                              <RiMoreFill className="size-4" />
+                              <span className="sr-only">
+                                {t("app.shell.openInvitationActions")}
                               </span>
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-44">
+                              <DropdownMenuItem
+                                variant="destructive"
+                                onClick={() =>
+                                  void handleRevokeInvitation(invitation.id)
+                                }
+                                disabled={revokingInvitationId === invitation.id}
+                              >
+                                <RiUserUnfollowLine />
+                                <span>
+                                  {revokingInvitationId === invitation.id
+                                    ? t("common.state.revoking")
+                                    : t("common.actions.revoke")}
+                                </span>
+                              </DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        ) : null}
                       </div>
                     </div>
                   </li>
@@ -515,6 +627,118 @@ function MembersRoute() {
           )}
         </section>
       </div>
+
+      <Dialog
+        open={isWhatsappDialogOpen}
+        onOpenChange={(open) => {
+          if (!open && !isRemovingWhatsappConnection && !isSendingWhatsappGuide) {
+            setWhatsappDialogMember(null);
+          }
+
+          setIsWhatsappDialogOpen(open);
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("app.whatsapp.dialog.title")}</DialogTitle>
+            <DialogDescription>
+              {whatsappDialogMember
+                ? t("app.members.whatsappDialogDescriptionWithName", {
+                    memberName: whatsappDialogMember.name,
+                  })
+                : t("app.whatsapp.dialog.description")}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                {t("app.whatsapp.dialog.connectedNumberLabel")}
+              </p>
+              <p className="mt-1 text-sm font-medium">
+                {whatsappDialogMember
+                  ? (connectionByMemberId.get(whatsappDialogMember.id)?.phoneNumberE164 ??
+                    t("app.whatsapp.dialog.notConnected"))
+                  : t("app.whatsapp.dialog.notConnected")}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                {t("app.members.whatsappGuidePreviewTitle")}
+              </p>
+              <div className="mt-2 rounded-md border bg-card p-3">
+                <div className="rounded-md bg-muted/30 p-2.5 text-xs">
+                  <p>
+                    <span className="font-medium">{t("common.labels.email")}:</span>{" "}
+                    {whatsappDialogMember?.email ?? t("common.misc.unknown")}
+                  </p>
+                  <p className="mt-1">
+                    <span className="font-medium">
+                      {t("app.members.whatsappGuidePreviewSubjectLabel")}:
+                    </span>{" "}
+                    {t("app.members.whatsappGuidePreviewSubject", {
+                      organizationName:
+                        activeOrganization?.name ?? t("common.misc.untitledWorkspace"),
+                    })}
+                  </p>
+                  <p className="mt-2 text-muted-foreground">
+                    {t("app.members.whatsappGuidePreviewIntro", {
+                      memberName: whatsappDialogMember?.name ?? t("common.misc.user"),
+                      agentName: activeAgentName,
+                    })}
+                  </p>
+                  <p className="mt-1 text-muted-foreground">
+                    {t("app.members.whatsappGuidePreviewAgentNumber", {
+                      agentNumber:
+                        whatsappSetupInfo?.phoneNumberE164 ?? t("common.misc.unknown"),
+                    })}
+                  </p>
+                  <p className="mt-1 text-muted-foreground">
+                    {t("app.members.whatsappGuidePreviewInitialMessage", {
+                      initialMessage: previewInitialMessage,
+                    })}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsWhatsappDialogOpen(false)}
+              disabled={isRemovingWhatsappConnection || isSendingWhatsappGuide}
+            >
+              {t("common.actions.cancel")}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => {
+                void handleSendWhatsappGuide();
+              }}
+              disabled={!whatsappDialogMember || isRemovingWhatsappConnection || isSendingWhatsappGuide}
+            >
+              {isSendingWhatsappGuide
+                ? t("common.state.sending")
+                : t("app.members.whatsappGuideSend")}
+            </Button>
+            {whatsappDialogMember &&
+            connectionByMemberId.has(whatsappDialogMember.id) ? (
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => {
+                  void handleRemoveWhatsappConnection();
+                }}
+                disabled={isRemovingWhatsappConnection || isSendingWhatsappGuide}
+              >
+                {isRemovingWhatsappConnection
+                  ? t("common.state.removing")
+                  : t("app.whatsapp.actions.removeConnection")}
+              </Button>
+            ) : null}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={isEditRoleDialogOpen}

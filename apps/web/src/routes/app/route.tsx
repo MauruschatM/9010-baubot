@@ -39,6 +39,7 @@ import {
   RiSparklingLine,
   RiSunLine,
   RiTeamLine,
+  RiWhatsappLine,
 } from "@remixicon/react";
 
 import { Button } from "@/components/ui/button";
@@ -445,6 +446,15 @@ function AppRouteContent() {
         }
       : "skip",
   );
+  const whatsappSetupInfo = useQuery(api.whatsappData.getConnectionSetupInfo);
+  const myWhatsappConnection = useQuery(
+    api.whatsappData.getMyConnection,
+    activeOrganization?.id
+      ? {
+          organizationId: activeOrganization.id,
+        }
+      : "skip",
+  );
 
   const user = useQuery(api.auth.getCurrentUser);
   const [userName, setUserName] = useState("");
@@ -476,6 +486,8 @@ function AppRouteContent() {
   const [inviteMemberRole, setInviteMemberRole] =
     useState<InviteMemberRole>("member");
   const [isInvitingMember, setIsInvitingMember] = useState(false);
+  const [isWhatsappConnectionDialogOpen, setIsWhatsappConnectionDialogOpen] =
+    useState(false);
   const [isUpdatingLocale, setIsUpdatingLocale] = useState(false);
   const [isUpdatingThemePreference, setIsUpdatingThemePreference] = useState(false);
   const inviteMemberRoleLabel = isInviteMemberRole(inviteMemberRole)
@@ -571,6 +583,11 @@ function AppRouteContent() {
   const isOwner = activeMember?.role === "owner";
   const userDisplayName = user?.name?.trim() || t("common.misc.user");
   const userInitial = userDisplayName.charAt(0).toUpperCase() || "U";
+  const shouldShowWhatsappPromptCard = Boolean(
+    activeOrganization?.id &&
+      myWhatsappConnection &&
+      myWhatsappConnection.connection === null,
+  );
   const isMembersPage = pathname.startsWith("/app/members");
   const selectedTheme =
     theme === "light" || theme === "dark" || theme === "system"
@@ -782,6 +799,13 @@ function AppRouteContent() {
     setUserName(user?.name ?? "");
     setUserImage(user?.image ?? "");
     setIsUserDialogOpen(true);
+  };
+
+  const openWhatsappConnectionDialog = () => {
+    if (!activeOrganization?.id) {
+      return;
+    }
+    setIsWhatsappConnectionDialogOpen(true);
   };
 
   const handleUpdateUser = async (event: FormEvent<HTMLFormElement>) => {
@@ -1235,6 +1259,33 @@ function AppRouteContent() {
           </SidebarMenu>
 
           <div className="flex-1" />
+
+          {shouldShowWhatsappPromptCard ? (
+            <div className="mx-3 mb-3 rounded-lg border bg-card p-3">
+              <div className="space-y-3">
+                <div className="flex items-start gap-2">
+                  <div className="mt-0.5 rounded-md bg-muted p-1.5 text-muted-foreground">
+                    <RiWhatsappLine className="size-4" />
+                  </div>
+                  <div className="min-w-0 space-y-1">
+                    <p className="text-sm font-medium">{t("app.whatsapp.sidebar.title")}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {t("app.whatsapp.sidebar.description")}
+                    </p>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="w-full"
+                  onClick={openWhatsappConnectionDialog}
+                  disabled={!activeOrganization?.id}
+                >
+                  {t("app.whatsapp.actions.openDialog")}
+                </Button>
+              </div>
+            </div>
+          ) : null}
         </SidebarContent>
 
         <SidebarFooter className="gap-0 p-0">
@@ -1275,6 +1326,14 @@ function AppRouteContent() {
                       >
                         <RiSettings4Line />
                         <span>{t("common.actions.settings")}</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="min-h-8 px-2"
+                        onClick={openWhatsappConnectionDialog}
+                        disabled={!activeOrganization?.id}
+                      >
+                        <RiWhatsappLine />
+                        <span>{t("common.actions.whatsappConnection")}</span>
                       </DropdownMenuItem>
                       <DropdownMenuSub>
                         <DropdownMenuSubTrigger className="min-h-8 px-2">
@@ -1499,6 +1558,66 @@ function AppRouteContent() {
               </Button>
             </DialogFooter>
           </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={isWhatsappConnectionDialogOpen}
+        onOpenChange={setIsWhatsappConnectionDialogOpen}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("app.whatsapp.dialog.title")}</DialogTitle>
+            <DialogDescription>
+              {t("app.whatsapp.dialog.description")}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 sm:grid-cols-[1fr_220px] sm:items-start">
+            <div>
+              {whatsappSetupInfo?.waLink ? (
+                <img
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(whatsappSetupInfo.waLink)}`}
+                  alt={t("app.whatsapp.dialog.qrTitle")}
+                  className="mx-auto aspect-square w-full max-w-64 rounded-md border bg-white p-2 object-contain"
+                />
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  {t("app.whatsapp.dialog.qrUnavailable")}
+                </p>
+              )}
+            </div>
+            <div className="rounded-md border p-3">
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                {t("common.labels.name")}
+              </p>
+              <p className="mt-1 text-sm font-medium">{activeAgentName}</p>
+              <p className="mt-3 text-xs uppercase tracking-wide text-muted-foreground">
+                {t("app.whatsapp.dialog.agentNumberLabel")}
+              </p>
+              <p className="mt-1 text-sm font-medium">
+                {whatsappSetupInfo?.phoneNumberE164 ?? t("common.misc.unknown")}
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setIsWhatsappConnectionDialogOpen(false)}
+            >
+              {t("common.actions.cancel")}
+            </Button>
+            {whatsappSetupInfo?.waLink ? (
+              <Button
+                type="button"
+                onClick={() => {
+                  window.open(whatsappSetupInfo.waLink ?? "", "_blank", "noopener,noreferrer");
+                }}
+              >
+                {t("app.whatsapp.actions.openWhatsapp")}
+              </Button>
+            ) : null}
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

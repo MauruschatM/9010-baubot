@@ -85,6 +85,11 @@ import {
   resolveSpeechRecognitionConstructor,
 } from "./utils";
 
+const ACTIVE_THREAD_STORAGE_KEY_PREFIX = "agent-panel-active-thread";
+
+const getActiveThreadStorageKey = (organizationId: string) =>
+  `${ACTIVE_THREAD_STORAGE_KEY_PREFIX}:${organizationId}`;
+
 export function AgentChatPanel({
   organizationId,
   agentName,
@@ -108,6 +113,12 @@ export function AgentChatPanel({
   const markChatSeenState = useMutation(api.aiState.markChatSeenState);
   const generateUploadUrl = useMutation(api.aiAttachments.generateUploadUrl);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [persistedActiveThreadId, setPersistedActiveThreadId] = useState<
+    string | null
+  >(null);
+  const [hydratedPersistedThreadOrgId, setHydratedPersistedThreadOrgId] = useState<
+    string | null
+  >(null);
   const chatThreads = useQuery(
     api.aiState.listChatThreads,
     organizationId
@@ -239,8 +250,11 @@ export function AgentChatPanel({
   const paginationStatus = paginatedMessages.status;
   const persistedMessagesDesc = paginatedMessages.results;
   const availableChatThreads = chatThreads ?? [];
+  type LabeledChatThread = (typeof availableChatThreads)[number] & {
+    label: string;
+  };
   const normalizedHistorySearchQuery = historySearchQuery.trim().toLowerCase();
-  const filteredChatThreads = useMemo(() => {
+  const filteredChatThreads = useMemo<LabeledChatThread[]>(() => {
     const withLabels = availableChatThreads.map((thread) => {
       const label = formatThreadRangeLabel(thread, threadRangeFormatter);
       return {
@@ -253,9 +267,16 @@ export function AgentChatPanel({
       return withLabels;
     }
 
-    return withLabels.filter((thread) =>
-      thread.label.toLowerCase().includes(normalizedHistorySearchQuery),
-    );
+    return withLabels.filter((thread) => {
+      const normalizedTitle = thread.title?.toLowerCase() ?? "";
+      const normalizedChannelLabel =
+        thread.channel === "whatsapp" ? "whatsapp" : "web";
+      return (
+        thread.label.toLowerCase().includes(normalizedHistorySearchQuery) ||
+        normalizedTitle.includes(normalizedHistorySearchQuery) ||
+        normalizedChannelLabel.includes(normalizedHistorySearchQuery)
+      );
+    });
   }, [
     availableChatThreads,
     normalizedHistorySearchQuery,
@@ -268,6 +289,22 @@ export function AgentChatPanel({
         : null,
     [activeThreadId, availableChatThreads],
   );
+  const filteredWebChatThreads = useMemo(
+    () =>
+      filteredChatThreads.filter(
+        (thread) => (thread.channel ?? "web") !== "whatsapp",
+      ),
+    [filteredChatThreads],
+  );
+  const filteredWhatsappChatThreads = useMemo(
+    () =>
+      filteredChatThreads.filter(
+        (thread) => (thread.channel ?? "web") === "whatsapp",
+      ),
+    [filteredChatThreads],
+  );
+  const hasFilteredChatThreads = filteredChatThreads.length > 0;
+  const isReadOnlyThread = (activeChatThread?.channel ?? "web") === "whatsapp";
 
   const messages = useMemo<ChatMessage[]>(() => {
     const normalizedPersisted = persistedMessagesDesc
@@ -756,7 +793,11 @@ export function AgentChatPanel({
     isResolvingPendingAction ||
     isResolvingClarification;
   const hasPendingClarification = !!pendingClarification;
-  const isInputDisabled = !organizationId || isBusy || hasPendingClarification;
+  const isInputDisabled =
+    !organizationId ||
+    isBusy ||
+    hasPendingClarification ||
+    isReadOnlyThread;
   const shouldShowStreamingStatus = isSubmitting || isServerRunning;
   const isWakingAgent = isSubmitting && !isServerRunning;
   const isWaitingForAgentResponse =
@@ -766,7 +807,11 @@ export function AgentChatPanel({
   const supportsVoiceInput = isVoiceSupported === true;
   const isVoiceUnsupported = isVoiceSupported === false;
   const isVoiceControlDisabled =
-    !organizationId || isBusy || !supportsVoiceInput || hasPendingClarification;
+    !organizationId ||
+    isBusy ||
+    !supportsVoiceInput ||
+    hasPendingClarification ||
+    isReadOnlyThread;
   const voiceButtonLabel = !supportsVoiceInput
     ? t("app.chat.voiceUnsupported")
     : isListening
@@ -890,7 +935,7 @@ export function AgentChatPanel({
   };
 
   const startVoiceInput = () => {
-    if (!organizationId || isBusy || isListening) {
+    if (!organizationId || isBusy || isListening || isReadOnlyThread) {
       return;
     }
 
@@ -1057,6 +1102,43 @@ export function AgentChatPanel({
     markSeenInFlightForUpdatedAtRef.current = null;
   }, [activeThreadId]);
 
+  useEffect(() => {
+    if (!organizationId) {
+      setPersistedActiveThreadId(null);
+      setHydratedPersistedThreadOrgId(null);
+      return;
+    }
+
+    let nextPersistedThreadId: string | null = null;
+    try {
+      const storedThreadId = window.localStorage.getItem(
+        getActiveThreadStorageKey(organizationId),
+      );
+      nextPersistedThreadId =
+        storedThreadId && storedThreadId.trim().length > 0 ? storedThreadId : null;
+    } catch {
+      nextPersistedThreadId = null;
+    }
+
+    setPersistedActiveThreadId(nextPersistedThreadId);
+    setHydratedPersistedThreadOrgId(organizationId);
+  }, [organizationId]);
+
+  useEffect(() => {
+    if (!organizationId || !activeThreadId) {
+      return;
+    }
+
+    try {
+      window.localStorage.setItem(
+        getActiveThreadStorageKey(organizationId),
+        activeThreadId,
+      );
+    } catch {
+      // Ignore storage write failures (e.g. private mode restrictions).
+    }
+  }, [activeThreadId, organizationId]);
+
   const markThreadAsSeen = useCallback(
     (thread: ChatThreadSummary | null) => {
       if (!organizationId || !thread) {
@@ -1111,6 +1193,10 @@ export function AgentChatPanel({
       return;
     }
 
+    if (hydratedPersistedThreadOrgId !== organizationId) {
+      return;
+    }
+
     if (chatThreads.length === 0) {
       if (activeThreadId !== null) {
         setActiveThreadId(null);
@@ -1125,8 +1211,20 @@ export function AgentChatPanel({
       return;
     }
 
-    setActiveThreadId(chatThreads[0]?.threadId ?? null);
-  }, [activeThreadId, chatThreads, organizationId]);
+    const nextPersistedThreadId =
+      persistedActiveThreadId &&
+      chatThreads.some((thread) => thread.threadId === persistedActiveThreadId)
+        ? persistedActiveThreadId
+        : null;
+
+    setActiveThreadId(nextPersistedThreadId ?? chatThreads[0]?.threadId ?? null);
+  }, [
+    activeThreadId,
+    chatThreads,
+    hydratedPersistedThreadOrgId,
+    organizationId,
+    persistedActiveThreadId,
+  ]);
 
   useEffect(() => {
     if (!pendingClarification) {
@@ -1255,14 +1353,20 @@ export function AgentChatPanel({
   }, []);
 
   useEffect(() => {
-    if (!isOpen || !organizationId || isBusy || isListening) {
+    if (
+      !isOpen ||
+      !organizationId ||
+      isBusy ||
+      isListening ||
+      isReadOnlyThread
+    ) {
       return;
     }
 
     requestAnimationFrame(() => {
       inputRef.current?.focus();
     });
-  }, [isBusy, isListening, isOpen, organizationId]);
+  }, [isBusy, isListening, isOpen, isReadOnlyThread, organizationId]);
 
   useEffect(() => {
     if (isOpen || !recognitionRef.current) {
@@ -1313,10 +1417,11 @@ export function AgentChatPanel({
     (inputValue.trim().length > 0 || pendingAttachments.length > 0) &&
     !isBusy &&
     !isListening &&
-    !hasPendingClarification;
+    !hasPendingClarification &&
+    !isReadOnlyThread;
 
   const handleFileSelection = async (event: ChangeEvent<HTMLInputElement>) => {
-    if (!organizationId || isBusy) {
+    if (!organizationId || isBusy || isReadOnlyThread) {
       event.target.value = "";
       return;
     }
@@ -1396,7 +1501,7 @@ export function AgentChatPanel({
   const submitMessage = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    if (!organizationId || isBusy || isListening) {
+    if (!organizationId || isBusy || isListening || isReadOnlyThread) {
       return;
     }
 
@@ -1500,7 +1605,7 @@ export function AgentChatPanel({
   };
 
   const handleConfirmPendingAction = async () => {
-    if (!organizationId || !pendingAction) {
+    if (!organizationId || !pendingAction || isReadOnlyThread) {
       return;
     }
 
@@ -1525,7 +1630,7 @@ export function AgentChatPanel({
   };
 
   const handleCancelPendingAction = async () => {
-    if (!organizationId || !pendingAction) {
+    if (!organizationId || !pendingAction || isReadOnlyThread) {
       return;
     }
 
@@ -1550,6 +1655,10 @@ export function AgentChatPanel({
   };
 
   const handleClarificationOptionSelect = (questionId: string, optionId: string) => {
+    if (isReadOnlyThread) {
+      return;
+    }
+
     setClarificationAnswers((current) => {
       const nextAnswers = {
         ...current,
@@ -1571,6 +1680,10 @@ export function AgentChatPanel({
     questionId: string,
     otherText: string,
   ) => {
+    if (isReadOnlyThread) {
+      return;
+    }
+
     setClarificationAnswers((current) => {
       const nextAnswers = {
         ...current,
@@ -1591,7 +1704,7 @@ export function AgentChatPanel({
   const handleSubmitClarification = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    if (!organizationId || !pendingClarification || isBusy) {
+    if (!organizationId || !pendingClarification || isBusy || isReadOnlyThread) {
       return;
     }
 
@@ -1698,7 +1811,7 @@ export function AgentChatPanel({
   };
 
   const handleCancelClarification = async () => {
-    if (!organizationId || !pendingClarification || isBusy) {
+    if (!organizationId || !pendingClarification || isBusy || isReadOnlyThread) {
       return;
     }
 
@@ -1743,6 +1856,21 @@ export function AgentChatPanel({
     !!organizationId && isNearTop && (canLoadOlder || isLoadingOlder);
   const hasUnseenAgentEvent = hasUnreadChatUpdates === true;
   const shouldBlinkChatBubble = !isOpen && hasUnseenAgentEvent;
+  const renderHistoryThreadButton = (thread: LabeledChatThread) => (
+    <button
+      key={thread.threadId}
+      type="button"
+      onClick={() => handleSelectHistoryThread(thread.threadId)}
+      className={cn(
+        "flex w-full items-center justify-start rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
+        activeThreadId === thread.threadId
+          ? "bg-muted font-medium text-foreground"
+          : "text-muted-foreground",
+      )}
+    >
+      {thread.label}
+    </button>
+  );
 
   return (
     <>
@@ -2078,7 +2206,7 @@ export function AgentChatPanel({
                       type="button"
                       size="sm"
                       variant="destructive"
-                      disabled={isResolvingPendingAction}
+                      disabled={isResolvingPendingAction || isReadOnlyThread}
                       onClick={() => {
                         void handleConfirmPendingAction();
                       }}
@@ -2089,7 +2217,7 @@ export function AgentChatPanel({
                       type="button"
                       size="sm"
                       variant="outline"
-                      disabled={isResolvingPendingAction}
+                      disabled={isResolvingPendingAction || isReadOnlyThread}
                       onClick={() => {
                         void handleCancelPendingAction();
                       }}
@@ -2234,7 +2362,7 @@ export function AgentChatPanel({
                                   ? "border-zinc-400 bg-zinc-100 text-zinc-900 dark:border-zinc-500 dark:bg-zinc-800 dark:text-zinc-100"
                                   : "border-border/80 text-foreground hover:border-zinc-300 dark:hover:border-zinc-600",
                               )}
-                              disabled={isBusy}
+                              disabled={isBusy || isReadOnlyThread}
                             >
                               {option.label}
                             </button>
@@ -2255,7 +2383,7 @@ export function AgentChatPanel({
                             )
                           }
                           placeholder={t("app.chat.clarification.otherPlaceholder")}
-                          disabled={isBusy}
+                          disabled={isBusy || isReadOnlyThread}
                         />
                       ) : null}
                     </div>
@@ -2266,7 +2394,7 @@ export function AgentChatPanel({
                       type="button"
                       size="sm"
                       variant="outline"
-                      disabled={isBusy}
+                      disabled={isBusy || isReadOnlyThread}
                       onClick={() => {
                         void handleCancelClarification();
                       }}
@@ -2288,7 +2416,11 @@ export function AgentChatPanel({
                           type="button"
                           size="sm"
                           variant="outline"
-                          disabled={isBusy || isFirstClarificationQuestion}
+                          disabled={
+                            isBusy ||
+                            isReadOnlyThread ||
+                            isFirstClarificationQuestion
+                          }
                           onClick={handlePreviousClarificationQuestion}
                         >
                           {t("common.actions.previous")}
@@ -2299,13 +2431,17 @@ export function AgentChatPanel({
                         <Button
                           type="button"
                           size="sm"
-                          disabled={isBusy}
+                          disabled={isBusy || isReadOnlyThread}
                           onClick={handleNextClarificationQuestion}
                         >
                           {t("common.actions.next")}
                         </Button>
                       ) : (
-                        <Button type="submit" size="sm" disabled={isBusy}>
+                        <Button
+                          type="submit"
+                          size="sm"
+                          disabled={isBusy || isReadOnlyThread}
+                        >
                           {t("app.chat.clarification.continue")}
                         </Button>
                       )}
@@ -2348,7 +2484,7 @@ export function AgentChatPanel({
                                 );
                               }}
                               aria-label={t("app.chat.removeFile")}
-                              disabled={isBusy || isListening}
+                              disabled={isInputDisabled || isListening}
                             >
                               <RiCloseLine className="size-3" />
                             </Button>
@@ -2410,7 +2546,7 @@ export function AgentChatPanel({
                               "border-input bg-transparent hover:bg-transparent dark:bg-transparent dark:hover:bg-transparent",
                           )}
                           onClick={() => fileInputRef.current?.click()}
-                          disabled={!organizationId || isBusy || isListening}
+                          disabled={isInputDisabled || isListening}
                           aria-label={t("app.chat.attach")}
                         >
                           <RiAttachment2 />
@@ -2466,7 +2602,12 @@ export function AgentChatPanel({
                     </Button>
                   </div>
                 </div>
-                {isVoiceUnsupported ? (
+                {isReadOnlyThread ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t("app.chat.readOnly.whatsapp")}
+                  </p>
+                ) : null}
+                {!isReadOnlyThread && isVoiceUnsupported ? (
                   <p className="text-xs text-muted-foreground">
                     {t("app.chat.voiceUnsupported")}
                   </p>
@@ -2479,7 +2620,7 @@ export function AgentChatPanel({
                   onChange={(event) => {
                     void handleFileSelection(event);
                   }}
-                  disabled={!organizationId || isBusy || isListening}
+                  disabled={isInputDisabled || isListening}
                 />
                 <p className="pb-2 text-center text-[11px] leading-relaxed text-muted-foreground">
                   {t("app.chat.disclaimer", {
@@ -2565,27 +2706,19 @@ export function AgentChatPanel({
               <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
                 {t("app.chat.history.empty")}
               </p>
-            ) : filteredChatThreads.length === 0 ? (
+            ) : !hasFilteredChatThreads ? (
               <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
                 {t("app.chat.history.noResults")}
               </p>
             ) : (
               <div className="max-h-72 space-y-1 overflow-y-auto rounded-lg border p-1">
-                {filteredChatThreads.map((thread) => (
-                  <button
-                    key={thread.threadId}
-                    type="button"
-                    onClick={() => handleSelectHistoryThread(thread.threadId)}
-                    className={cn(
-                      "flex w-full items-center justify-start rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-muted",
-                      activeThreadId === thread.threadId
-                        ? "bg-muted font-medium text-foreground"
-                        : "text-muted-foreground",
-                    )}
-                  >
-                    {thread.label}
-                  </button>
-                ))}
+                {filteredWebChatThreads.map(renderHistoryThreadButton)}
+                {filteredWhatsappChatThreads.length > 0 ? (
+                  <div className="mt-1 border-t px-2 pt-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    {t("app.chat.history.whatsappChannel")}
+                  </div>
+                ) : null}
+                {filteredWhatsappChatThreads.map(renderHistoryThreadButton)}
               </div>
             )}
           </div>

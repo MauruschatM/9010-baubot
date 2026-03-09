@@ -71,6 +71,11 @@
       "sourceType": "github",
       "computedHash": "eae9b802b0a1457ab2d33bdd49dee8f6f64da47143323bc885aa50d98284a25e"
     },
+    "twilio-api": {
+      "source": "tdimino/claude-code-minoan",
+      "sourceType": "github",
+      "computedHash": "6a44a765924b907213f004515d670902f5a51b09d0d5f80b509d7247ff8e3fc2"
+    },
     "vercel-composition-patterns": {
       "source": "vercel-labs/agent-skills",
       "sourceType": "github",

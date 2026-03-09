@@ -8,13 +8,13 @@ import { action } from "./_generated/server";
 import {
   compileAgentContextPacket,
   formatContextPacketForInstructions,
-} from "./agentContext/compiler";
-import { runClarificationGate } from "./agentContext/gates";
+} from "../mastra/agentContext/compiler";
+import { runClarificationGate } from "../mastra/agentContext/gates";
 import type {
   AgentContextPageContext,
   AgentResponseKind,
   ClarificationQuestion,
-} from "./agentContext/types";
+} from "../mastra/agentContext/types";
 import { authComponent, createAuth } from "./auth";
 import {
   MAX_ATTACHMENTS,
@@ -35,14 +35,17 @@ import {
 import {
   createWorkspaceAgent,
   DEFAULT_AI_GATEWAY_MODEL,
-} from "./mastra/agent";
+} from "../mastra/agent";
 import type {
+  ConnectedWhatsAppRecipient,
   OrganizationInvitation,
   OrganizationMember,
   OrganizationSummary,
+  ProactiveWhatsAppSendResult,
   UserSettingsSummary,
   WorkspaceSnapshot,
-} from "./mastra/tools";
+} from "../mastra/tools";
+import { hasExplicitProactiveSendIntent } from "./whatsapp/normalize";
 
 type MemberDoc = {
   _id: string;
@@ -62,6 +65,19 @@ type InvitationDoc = {
   email: string;
   role?: string | null;
   status: string;
+};
+
+type WhatsAppConnectionDoc = {
+  _id: Id<"whatsappConnections">;
+  organizationId: string;
+  memberId: string;
+  userId: string;
+  phoneNumberE164: string;
+  phoneNumberDigits: string;
+  status: "active" | "disconnected";
+  createdAt: number;
+  updatedAt: number;
+  disconnectedAt?: number;
 };
 
 type ChatAttachment = {
@@ -1462,6 +1478,151 @@ export const chat: any = action({
       return invitations.filter((invitation) => invitation.status === input.status);
     };
 
+    const getConnectedRecipientState = async () => {
+      const [members, connections] = await Promise.all([
+        listOrganizationMembers(),
+        ctx.runQuery(internal.whatsappData.getActiveConnectionsByOrganization, {
+          organizationId: args.organizationId,
+        }) as Promise<WhatsAppConnectionDoc[]>,
+      ]);
+
+      const memberById = new Map(members.map((entry) => [entry.id, entry]));
+      const connectionByMemberId = new Map<string, WhatsAppConnectionDoc>();
+      const recipients: ConnectedWhatsAppRecipient[] = [];
+
+      for (const connection of connections) {
+        const member = memberById.get(connection.memberId);
+        if (!member) {
+          continue;
+        }
+
+        connectionByMemberId.set(connection.memberId, connection);
+        recipients.push({
+          memberId: connection.memberId,
+          userId: member.userId,
+          name: member.name,
+          email: member.email,
+          phoneNumberE164: connection.phoneNumberE164,
+          isCurrentUser: member.userId === authUser._id,
+        });
+      }
+
+      recipients.sort((entryA, entryB) => {
+        const nameComparison = entryA.name.localeCompare(entryB.name, undefined, {
+          sensitivity: "base",
+        });
+        if (nameComparison !== 0) {
+          return nameComparison;
+        }
+        return entryA.email.localeCompare(entryB.email, undefined, {
+          sensitivity: "base",
+        });
+      });
+
+      return {
+        recipients,
+        connectionByMemberId,
+      };
+    };
+
+    const listConnectedWhatsAppNumbers = async (): Promise<ConnectedWhatsAppRecipient[]> => {
+      const state = await getConnectedRecipientState();
+      return state.recipients;
+    };
+
+    const sendProactiveWhatsAppMessage = async (input: {
+      recipientMemberIds: string[];
+      message: string;
+    }): Promise<ProactiveWhatsAppSendResult> => {
+      if (!hasExplicitProactiveSendIntent(prompt)) {
+        throw new Error(
+          locale === "de"
+            ? "Ich kann proaktive WhatsApp-Nachrichten nur senden, wenn du es in dieser Nachricht ausdrücklich verlangst."
+            : "I can send proactive WhatsApp messages only when you explicitly ask for sending in this request.",
+        );
+      }
+
+      const accountSid = process.env.TWILIO_ACCOUNT_SID;
+      const authToken = process.env.TWILIO_AUTH_TOKEN;
+      const fromNumber = process.env.TWILIO_WHATSAPP_FROM_NUMBER;
+      if (!accountSid || !authToken || !fromNumber) {
+        throw new Error(
+          locale === "de"
+            ? "WhatsApp-Versand ist nicht konfiguriert."
+            : "WhatsApp outbound messaging is not configured.",
+        );
+      }
+
+      const messageText = input.message.trim();
+      if (!messageText) {
+        throw new Error(
+          locale === "de" ? "Nachricht darf nicht leer sein." : "Message cannot be empty.",
+        );
+      }
+
+      const recipientMemberIds = [...new Set(
+        input.recipientMemberIds.map((entry) => entry.trim()).filter((entry) => entry.length > 0),
+      )];
+      if (recipientMemberIds.length === 0) {
+        throw new Error(
+          locale === "de"
+            ? "Mindestens ein Zielmitglied ist erforderlich."
+            : "At least one recipient is required.",
+        );
+      }
+
+      const { connectionByMemberId } = await getConnectedRecipientState();
+      const results: ProactiveWhatsAppSendResult["results"] = [];
+
+      for (const memberId of recipientMemberIds) {
+        const connection = connectionByMemberId.get(memberId);
+        if (!connection) {
+          results.push({
+            memberId,
+            phoneNumberE164: "",
+            status: "failed",
+            reason:
+              locale === "de"
+                ? "Keine aktive WhatsApp-Verbindung gefunden."
+                : "No active WhatsApp connection found.",
+          });
+          continue;
+        }
+
+        try {
+          await ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+            phoneNumberE164: connection.phoneNumberE164,
+            locale,
+            text: messageText,
+            connectionId: connection._id,
+          });
+
+          results.push({
+            memberId,
+            phoneNumberE164: connection.phoneNumberE164,
+            status: "sent",
+          });
+        } catch (error) {
+          results.push({
+            memberId,
+            phoneNumberE164: connection.phoneNumberE164,
+            status: "failed",
+            reason: errorMessageFromUnknown(error),
+          });
+        }
+      }
+
+      const sentCount = results.filter((entry) => entry.status === "sent").length;
+      const failedCount = results.length - sentCount;
+
+      return {
+        requestedRecipientCount: recipientMemberIds.length,
+        sentCount,
+        failedCount,
+        results,
+      };
+    };
+
     const getOrganizationSummary = async (): Promise<OrganizationSummary> => {
       const [organizationResult, members, invitations] = await Promise.all([
         callAuthApi(auth, "getFullOrganization", {
@@ -1714,12 +1875,15 @@ export const chat: any = action({
       organizationId: args.organizationId,
       modelId,
       locale,
+      responseFormat: "panel_markdown",
       contextPacket: formatContextPacketForInstructions(contextPacket),
       readWorkspaceSnapshot,
       organizationTools: {
         getOrganizationSummary,
         listOrganizationMembers,
         listOrganizationInvitations,
+        listConnectedWhatsAppNumbers,
+        sendProactiveWhatsAppMessage,
         updateOrganization: permissionFlags.canUpdateOrganization
           ? async (input) => {
               const data: Record<string, string> = {};

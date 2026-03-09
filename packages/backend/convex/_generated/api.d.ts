@@ -8,10 +8,6 @@
  * @module
  */
 
-import type * as agentContext_compiler from "../agentContext/compiler.js";
-import type * as agentContext_gates from "../agentContext/gates.js";
-import type * as agentContext_types from "../agentContext/types.js";
-import type * as agentContext_version from "../agentContext/version.js";
 import type * as ai from "../ai.js";
 import type * as aiAttachments from "../aiAttachments.js";
 import type * as aiState from "../aiState.js";
@@ -21,14 +17,21 @@ import type * as emails_otpEmail from "../emails/otpEmail.js";
 import type * as healthCheck from "../healthCheck.js";
 import type * as http from "../http.js";
 import type * as lib_resend from "../lib/resend.js";
-import type * as mastra_agent from "../mastra/agent.js";
-import type * as mastra_tools from "../mastra/tools.js";
 import type * as mastraComponent_constants from "../mastraComponent/constants.js";
 import type * as mastraComponent_serialization from "../mastraComponent/serialization.js";
 import type * as members from "../members.js";
 import type * as organizationAgentProfiles from "../organizationAgentProfiles.js";
 import type * as preferences from "../preferences.js";
 import type * as privateData from "../privateData.js";
+import type * as whatsapp from "../whatsapp.js";
+import type * as whatsapp_constants from "../whatsapp/constants.js";
+import type * as whatsapp_messages from "../whatsapp/messages.js";
+import type * as whatsapp_normalize from "../whatsapp/normalize.js";
+import type * as whatsapp_transcription from "../whatsapp/transcription.js";
+import type * as whatsapp_turnDetection from "../whatsapp/turnDetection.js";
+import type * as whatsapp_twilio from "../whatsapp/twilio.js";
+import type * as whatsapp_types from "../whatsapp/types.js";
+import type * as whatsappData from "../whatsappData.js";
 
 import type {
   ApiFromModules,
@@ -37,10 +40,6 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
-  "agentContext/compiler": typeof agentContext_compiler;
-  "agentContext/gates": typeof agentContext_gates;
-  "agentContext/types": typeof agentContext_types;
-  "agentContext/version": typeof agentContext_version;
   ai: typeof ai;
   aiAttachments: typeof aiAttachments;
   aiState: typeof aiState;
@@ -50,14 +49,21 @@ declare const fullApi: ApiFromModules<{
   healthCheck: typeof healthCheck;
   http: typeof http;
   "lib/resend": typeof lib_resend;
-  "mastra/agent": typeof mastra_agent;
-  "mastra/tools": typeof mastra_tools;
   "mastraComponent/constants": typeof mastraComponent_constants;
   "mastraComponent/serialization": typeof mastraComponent_serialization;
   members: typeof members;
   organizationAgentProfiles: typeof organizationAgentProfiles;
   preferences: typeof preferences;
   privateData: typeof privateData;
+  whatsapp: typeof whatsapp;
+  "whatsapp/constants": typeof whatsapp_constants;
+  "whatsapp/messages": typeof whatsapp_messages;
+  "whatsapp/normalize": typeof whatsapp_normalize;
+  "whatsapp/transcription": typeof whatsapp_transcription;
+  "whatsapp/turnDetection": typeof whatsapp_turnDetection;
+  "whatsapp/twilio": typeof whatsapp_twilio;
+  "whatsapp/types": typeof whatsapp_types;
+  whatsappData: typeof whatsappData;
 }>;
 
 /**
