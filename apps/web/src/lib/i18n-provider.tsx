@@ -1,10 +1,11 @@
 import {
   DEFAULT_LOCALE,
+  getLocaleDirection,
   LOCALE_COOKIE_NAME,
   SYSTEM_LOCALE,
   createTranslator,
   getMessagesForLocale,
-  normalizeLocale,
+  normalizeTranslatedLocale,
   type AppLocale,
   type LocalePreference,
   type Messages,
@@ -47,17 +48,18 @@ export function I18nProvider({
   initialLocale: AppLocale;
 }>) {
   const [locale, setLocaleState] = useState<AppLocale>(
-    normalizeLocale(initialLocale) ?? DEFAULT_LOCALE,
+    normalizeTranslatedLocale(initialLocale) ?? DEFAULT_LOCALE,
   );
 
   useEffect(() => {
-    const normalizedInitial = normalizeLocale(initialLocale) ?? DEFAULT_LOCALE;
+    const normalizedInitial = normalizeTranslatedLocale(initialLocale) ?? DEFAULT_LOCALE;
     setLocaleState((current) => (current === normalizedInitial ? current : normalizedInitial));
   }, [initialLocale]);
 
   useEffect(() => {
     if (typeof document !== "undefined") {
       document.documentElement.lang = locale;
+      document.documentElement.dir = getLocaleDirection(locale);
     }
   }, [locale]);
 
@@ -70,7 +72,7 @@ export function I18nProvider({
       messages,
       t,
       setLocale: (nextLocale) => {
-        const normalized = normalizeLocale(nextLocale) ?? DEFAULT_LOCALE;
+        const normalized = normalizeTranslatedLocale(nextLocale) ?? DEFAULT_LOCALE;
         setLocaleState(normalized);
         writeLocaleCookie(normalized);
       },

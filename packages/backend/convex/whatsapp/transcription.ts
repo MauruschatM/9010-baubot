@@ -1,3 +1,4 @@
+import type { AppLocale } from "@mvp-template/i18n";
 import { experimental_transcribe as transcribe } from "ai";
 import { groq } from "@ai-sdk/groq";
 
@@ -6,16 +7,13 @@ import { WHATSAPP_TRANSCRIPTION_MODEL } from "./constants";
 const MAX_TRANSCRIBE_BYTES = 25 * 1024 * 1024;
 
 function supportsTranscription(contentType: string) {
-  return (
-    contentType.startsWith("audio/") ||
-    contentType.startsWith("video/")
-  );
+  return contentType.startsWith("audio/") || contentType.startsWith("video/");
 }
 
 export async function transcribeWhatsAppMedia(options: {
   fileBytes: Uint8Array;
   contentType: string;
-  locale: "en" | "de";
+  locale: AppLocale;
 }) {
   if (!process.env.GROQ_API_KEY) {
     return null;

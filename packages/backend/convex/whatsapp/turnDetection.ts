@@ -1,3 +1,4 @@
+import type { AppLocale } from "@mvp-template/i18n";
 import { generateObject } from "ai";
 import { gateway } from "@ai-sdk/gateway";
 import { z } from "zod";
@@ -29,6 +30,10 @@ function containsQuestionOrAction(text: string) {
   );
 }
 
+function toBinaryLocale(locale: AppLocale): "en" | "de" {
+  return locale === "de" ? "de" : "en";
+}
+
 export function runTurnDetectionFallback(options: {
   text: string;
   hasMedia: boolean;
@@ -39,8 +44,7 @@ export function runTurnDetectionFallback(options: {
   const normalizedText = options.text.trim();
   const hasQuestionLikeText = containsQuestionOrAction(normalizedText);
   const hasQuestionLikeTranscription =
-    options.transcriptionText !== null &&
-    containsQuestionOrAction(options.transcriptionText);
+    options.transcriptionText !== null && containsQuestionOrAction(options.transcriptionText);
 
   if (!options.hasMedia && normalizedText.length > 0) {
     return {
@@ -74,7 +78,7 @@ export function runTurnDetectionFallback(options: {
 }
 
 export async function detectTurnReadiness(options: {
-  locale: "en" | "de";
+  locale: AppLocale;
   text: string;
   hasMedia: boolean;
   mediaOnly: boolean;
@@ -83,6 +87,7 @@ export async function detectTurnReadiness(options: {
 }) {
   const turnModel = process.env.AI_GATEWAY_TURN_MODEL ?? WHATSAPP_TURN_DETECTION_MODEL;
   const fallback = runTurnDetectionFallback(options);
+  const locale = toBinaryLocale(options.locale);
   if (!process.env.AI_GATEWAY_API_KEY) {
     return fallback;
   }
@@ -92,7 +97,7 @@ export async function detectTurnReadiness(options: {
       model: gateway(turnModel),
       schema: turnDetectionSchema,
       prompt:
-        options.locale === "de"
+        locale === "de"
           ? `Bewerte, ob die Nachricht jetzt an den Agenten gesendet werden soll.\nText: ${options.text || "<leer>"}\nHat Medien: ${options.hasMedia}\nNur Medien: ${options.mediaOnly}\nTranskription: ${options.transcriptionText ?? "<keine>"}\nNachrichten im Buffer: ${options.messageCountInBuffer}\nRegeln: Normale Textnachrichten meist sofort senden. Einzelnes Bild/Video ohne Text meist nicht senden. Wenn unsicher, lieber nicht senden und ggf. Bereitheitsfrage stellen.`
           : `Decide if the buffered turn should be sent to the agent now.\nText: ${options.text || "<empty>"}\nHas media: ${options.hasMedia}\nMedia-only: ${options.mediaOnly}\nTranscription: ${options.transcriptionText ?? "<none>"}\nMessages in buffer: ${options.messageCountInBuffer}\nRules: Most plain text messages should send immediately. Most single image/video messages without text should not send yet. If uncertain, prefer not sending and ask readiness.`,
     });

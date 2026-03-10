@@ -29,6 +29,11 @@ import {
   toDisplayText,
   toGenerationContent,
 } from "./mastraComponent/serialization";
+import {
+  vPendingActionPayload,
+  vPendingActionStatus,
+  vPendingActionType,
+} from "./aiPendingActions";
 
 type MemberDoc = {
   _id: string;
@@ -66,18 +71,6 @@ const vChatThreadSummary = v.object({
   createdAt: v.number(),
   updatedAt: v.number(),
   lastSeenUpdatedAt: v.union(v.number(), v.null()),
-});
-
-const vPendingActionType = v.literal("delete-organization");
-const vPendingActionStatus = v.union(
-  v.literal("pending"),
-  v.literal("confirmed"),
-  v.literal("canceled"),
-  v.literal("expired"),
-);
-const vPendingActionPayload = v.object({
-  organizationId: v.string(),
-  organizationName: v.optional(v.string()),
 });
 
 const vPendingAction = v.object({
@@ -1143,12 +1136,13 @@ export const setChatThreadState = internalMutation({
   },
 });
 
-export const upsertPendingDeleteOrganizationAction = internalMutation({
+export const upsertPendingAction = internalMutation({
   args: {
     threadId: v.string(),
     resourceId: v.string(),
     organizationId: v.string(),
     userId: v.string(),
+    actionType: vPendingActionType,
     payload: vPendingActionPayload,
     expiresAt: v.number(),
   },
@@ -1182,7 +1176,7 @@ export const upsertPendingDeleteOrganizationAction = internalMutation({
 
     if (
       existingPendingAction &&
-      existingPendingAction.actionType === "delete-organization" &&
+      existingPendingAction.actionType === args.actionType &&
       existingPendingAction.expiresAt > now
     ) {
       await ctx.db.patch(existingPendingAction._id, {
@@ -1203,9 +1197,9 @@ export const upsertPendingDeleteOrganizationAction = internalMutation({
       };
     }
 
-    if (existingPendingAction && existingPendingAction.expiresAt <= now) {
+    if (existingPendingAction) {
       await ctx.db.patch(existingPendingAction._id, {
-        status: "expired",
+        status: existingPendingAction.expiresAt <= now ? "expired" : "canceled",
         updatedAt: now,
         resolvedAt: now,
       });
@@ -1216,7 +1210,7 @@ export const upsertPendingDeleteOrganizationAction = internalMutation({
       resourceId: args.resourceId,
       organizationId: args.organizationId,
       userId: args.userId,
-      actionType: "delete-organization",
+      actionType: args.actionType,
       status: "pending",
       payload: args.payload,
       createdAt: now,

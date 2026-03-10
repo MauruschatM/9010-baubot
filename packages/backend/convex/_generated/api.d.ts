@@ -8,21 +8,42 @@
  * @module
  */
 
+import type * as agentRuntime from "../agentRuntime.js";
 import type * as ai from "../ai.js";
 import type * as aiAttachments from "../aiAttachments.js";
+import type * as aiPendingActions from "../aiPendingActions.js";
 import type * as aiState from "../aiState.js";
 import type * as auth from "../auth.js";
+import type * as authhelpers from "../authhelpers.js";
+import type * as customerFields from "../customerFields.js";
+import type * as customers from "../customers.js";
+import type * as documentationSearch from "../documentationSearch.js";
+import type * as documentationSearchData from "../documentationSearchData.js";
 import type * as emails_organizationInvitationEmail from "../emails/organizationInvitationEmail.js";
-import type * as emails_otpEmail from "../emails/otpEmail.js";
+import type * as emails_passwordResetEmail from "../emails/passwordResetEmail.js";
+import type * as emails_projectTimelineUpdateEmail from "../emails/projectTimelineUpdateEmail.js";
+import type * as exports from "../exports.js";
 import type * as healthCheck from "../healthCheck.js";
 import type * as http from "../http.js";
+import type * as i18nCore from "../i18nCore.js";
+import type * as lib_locales from "../lib/locales.js";
 import type * as lib_resend from "../lib/resend.js";
+import type * as lib_voyage from "../lib/voyage.js";
 import type * as mastraComponent_constants from "../mastraComponent/constants.js";
 import type * as mastraComponent_serialization from "../mastraComponent/serialization.js";
+import type * as memberProfiles from "../memberProfiles.js";
 import type * as members from "../members.js";
 import type * as organizationAgentProfiles from "../organizationAgentProfiles.js";
+import type * as organizationSettings from "../organizationSettings.js";
 import type * as preferences from "../preferences.js";
 import type * as privateData from "../privateData.js";
+import type * as projectEmails from "../projectEmails.js";
+import type * as projectEmailsData from "../projectEmailsData.js";
+import type * as projectStatus from "../projectStatus.js";
+import type * as projectTranslations from "../projectTranslations.js";
+import type * as projectTranslationsData from "../projectTranslationsData.js";
+import type * as projects from "../projects.js";
+import type * as serviceSessions from "../serviceSessions.js";
 import type * as whatsapp from "../whatsapp.js";
 import type * as whatsapp_constants from "../whatsapp/constants.js";
 import type * as whatsapp_messages from "../whatsapp/messages.js";
@@ -32,6 +53,8 @@ import type * as whatsapp_turnDetection from "../whatsapp/turnDetection.js";
 import type * as whatsapp_twilio from "../whatsapp/twilio.js";
 import type * as whatsapp_types from "../whatsapp/types.js";
 import type * as whatsappData from "../whatsappData.js";
+import type * as whatsappProcessing from "../whatsappProcessing.js";
+import type * as whatsappProcessingData from "../whatsappProcessingData.js";
 
 import type {
   ApiFromModules,
@@ -40,21 +63,42 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  agentRuntime: typeof agentRuntime;
   ai: typeof ai;
   aiAttachments: typeof aiAttachments;
+  aiPendingActions: typeof aiPendingActions;
   aiState: typeof aiState;
   auth: typeof auth;
+  authhelpers: typeof authhelpers;
+  customerFields: typeof customerFields;
+  customers: typeof customers;
+  documentationSearch: typeof documentationSearch;
+  documentationSearchData: typeof documentationSearchData;
   "emails/organizationInvitationEmail": typeof emails_organizationInvitationEmail;
-  "emails/otpEmail": typeof emails_otpEmail;
+  "emails/passwordResetEmail": typeof emails_passwordResetEmail;
+  "emails/projectTimelineUpdateEmail": typeof emails_projectTimelineUpdateEmail;
+  exports: typeof exports;
   healthCheck: typeof healthCheck;
   http: typeof http;
+  i18nCore: typeof i18nCore;
+  "lib/locales": typeof lib_locales;
   "lib/resend": typeof lib_resend;
+  "lib/voyage": typeof lib_voyage;
   "mastraComponent/constants": typeof mastraComponent_constants;
   "mastraComponent/serialization": typeof mastraComponent_serialization;
+  memberProfiles: typeof memberProfiles;
   members: typeof members;
   organizationAgentProfiles: typeof organizationAgentProfiles;
+  organizationSettings: typeof organizationSettings;
   preferences: typeof preferences;
   privateData: typeof privateData;
+  projectEmails: typeof projectEmails;
+  projectEmailsData: typeof projectEmailsData;
+  projectStatus: typeof projectStatus;
+  projectTranslations: typeof projectTranslations;
+  projectTranslationsData: typeof projectTranslationsData;
+  projects: typeof projects;
+  serviceSessions: typeof serviceSessions;
   whatsapp: typeof whatsapp;
   "whatsapp/constants": typeof whatsapp_constants;
   "whatsapp/messages": typeof whatsapp_messages;
@@ -64,6 +108,8 @@ declare const fullApi: ApiFromModules<{
   "whatsapp/twilio": typeof whatsapp_twilio;
   "whatsapp/types": typeof whatsapp_types;
   whatsappData: typeof whatsappData;
+  whatsappProcessing: typeof whatsappProcessing;
+  whatsappProcessingData: typeof whatsappProcessingData;
 }>;
 
 /**

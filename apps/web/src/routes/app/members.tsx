@@ -1,3 +1,4 @@
+import type { Translator } from "@mvp-template/i18n";
 import {
   RiMoreFill,
   RiShieldUserLine,
@@ -7,7 +8,8 @@ import {
 import { api } from "@mvp-template/backend/convex/_generated/api";
 import { createFileRoute, Link, useRouterState } from "@tanstack/react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { toast } from "@/components/ui/sonner";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -37,6 +39,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -71,7 +74,7 @@ function isMemberRole(value: string | null): value is MemberRole {
   return memberRoleValues.some((roleValue) => roleValue === value);
 }
 
-function getRoleLabel(role: string | string[], t: (key: string) => string) {
+function getRoleLabel(role: string | string[], t: Translator) {
   if (Array.isArray(role)) {
     return role
       .map((singleRole) =>
@@ -90,6 +93,46 @@ function getRoleSortOrder(role: string | string[]) {
   }
 
   return memberRoleSortOrder[normalizedRole];
+}
+
+type MembersPageMember = {
+  id: string;
+  organizationId: string;
+  userId: string;
+  role: string;
+  createdAt: number;
+  displayName: string;
+  email: string | null;
+  phoneNumberE164: string | null;
+  image: string | null;
+  memberType: "standard" | "phone_only";
+  canWebSignIn: boolean;
+};
+
+type EditableMember = {
+  id: string;
+  role: string;
+  displayName: string;
+  email: string | null;
+};
+
+type MemberPendingRemoval = {
+  id: string;
+  name: string;
+  identifier: string | null;
+  memberType: "standard" | "phone_only";
+};
+
+function errorMessageFromUnknown(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  return null;
 }
 
 function MembersRoute() {
@@ -112,15 +155,10 @@ function MembersRoute() {
         }
       : "skip",
   );
-  const organizationConnections = useQuery(
-    api.whatsappData.getOrganizationConnections,
-    activeOrganization?.id
-      ? {
-          organizationId: activeOrganization.id,
-        }
-      : "skip",
-  );
-  const removeMemberWhatsappConnection = useMutation(
+  const createPhoneOnlyMember = useAction(api.members.createPhoneOnlyMember);
+  const removePhoneOnlyMember = useAction(api.members.removePhoneOnlyMember);
+  const saveMemberWhatsappConnection = useMutation(api.whatsappData.setMemberConnection);
+  const removeMemberWhatsappConnection = useAction(
     api.whatsappData.removeMemberConnection,
   );
   const sendMemberWhatsappGuideEmail = useAction(
@@ -134,32 +172,28 @@ function MembersRoute() {
     return value?.trim().toLowerCase() ?? "";
   }, [locationSearch]);
   const [isEditRoleDialogOpen, setIsEditRoleDialogOpen] = useState(false);
-  const [editingMember, setEditingMember] = useState<{
-    id: string;
-    role: string;
-    user: {
-      name: string;
-      email: string;
-      image?: string | null;
-    };
-  } | null>(null);
+  const [editingMember, setEditingMember] = useState<EditableMember | null>(null);
   const [nextMemberRole, setNextMemberRole] = useState<MemberRole>("member");
   const [isUpdatingMemberRole, setIsUpdatingMemberRole] = useState(false);
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [revokingInvitationId, setRevokingInvitationId] = useState<string | null>(
     null,
   );
-  const [memberPendingRemoval, setMemberPendingRemoval] = useState<{
-    id: string;
-    name: string;
-    email: string;
-  } | null>(null);
+  const [memberPendingRemoval, setMemberPendingRemoval] =
+    useState<MemberPendingRemoval | null>(null);
+  const [isAddWhatsappMemberDialogOpen, setIsAddWhatsappMemberDialogOpen] =
+    useState(false);
+  const [membersHeaderActionsRoot, setMembersHeaderActionsRoot] =
+    useState<HTMLElement | null>(null);
+  const [phoneOnlyMemberName, setPhoneOnlyMemberName] = useState("");
+  const [phoneOnlyMemberPhoneNumber, setPhoneOnlyMemberPhoneNumber] = useState("");
+  const [isCreatingPhoneOnlyMember, setIsCreatingPhoneOnlyMember] = useState(false);
   const [isWhatsappDialogOpen, setIsWhatsappDialogOpen] = useState(false);
-  const [whatsappDialogMember, setWhatsappDialogMember] = useState<{
-    id: string;
-    name: string;
-    email: string;
-  } | null>(null);
+  const [whatsappDialogMemberId, setWhatsappDialogMemberId] = useState<string | null>(
+    null,
+  );
+  const [whatsappPhoneNumber, setWhatsappPhoneNumber] = useState("");
+  const [isSavingWhatsappConnection, setIsSavingWhatsappConnection] = useState(false);
   const [isRemovingWhatsappConnection, setIsRemovingWhatsappConnection] =
     useState(false);
   const [isSendingWhatsappGuide, setIsSendingWhatsappGuide] = useState(false);
@@ -168,16 +202,22 @@ function MembersRoute() {
     organizationAgentProfile?.name ?? t("app.dialogs.aiAgent.defaultName");
   const previewInitialMessage =
     whatsappSetupInfo?.initialMessage ?? "Hi, I am your ai agent for the trades!";
-  const connectionByMemberId = useMemo(
+  const memberById = useMemo(
     () =>
       new Map(
-        (organizationConnections?.connections ?? []).map((connection) => [
-          connection.memberId,
-          connection,
-        ]),
+        (liveMembersPage?.members ?? []).map((member) => [member.id, member as MembersPageMember]),
       ),
-    [organizationConnections],
+    [liveMembersPage?.members],
   );
+  const whatsappDialogMember = whatsappDialogMemberId
+    ? (memberById.get(whatsappDialogMemberId) ?? null)
+    : null;
+
+  useEffect(() => {
+    setMembersHeaderActionsRoot(
+      document.getElementById("app-members-header-actions"),
+    );
+  }, []);
 
   if (isPending || (activeOrganization && liveMembersPage === undefined)) {
     return (
@@ -234,12 +274,14 @@ function MembersRoute() {
         return true;
       }
 
-      const searchableName = member.user.name.toLowerCase();
-      const searchableEmail = member.user.email.toLowerCase();
+      const searchableName = member.displayName.toLowerCase();
+      const searchableEmail = (member.email ?? "").toLowerCase();
+      const searchablePhone = (member.phoneNumberE164 ?? "").toLowerCase();
 
       return (
         searchableName.includes(membersSearchQuery) ||
-        searchableEmail.includes(membersSearchQuery)
+        searchableEmail.includes(membersSearchQuery) ||
+        searchablePhone.includes(membersSearchQuery)
       );
     })
     .sort((memberA, memberB) => {
@@ -249,8 +291,18 @@ function MembersRoute() {
         return roleDifference;
       }
 
-      const memberNameA = (memberA.user.name.trim() || memberA.user.email).toLowerCase();
-      const memberNameB = (memberB.user.name.trim() || memberB.user.email).toLowerCase();
+      const memberNameA = (
+        memberA.displayName.trim() ||
+        memberA.email ||
+        memberA.phoneNumberE164 ||
+        ""
+      ).toLowerCase();
+      const memberNameB = (
+        memberB.displayName.trim() ||
+        memberB.email ||
+        memberB.phoneNumberE164 ||
+        ""
+      ).toLowerCase();
 
       return memberNameA.localeCompare(memberNameB);
     });
@@ -275,29 +327,97 @@ function MembersRoute() {
     setIsEditRoleDialogOpen(false);
   };
 
-  const openEditRoleDialog = (member: (typeof filteredMembers)[number]) => {
+  const openEditRoleDialog = (member: MembersPageMember) => {
     setEditingMember({
       id: member.id,
       role: member.role,
-      user: {
-        name: member.user.name,
-        email: member.user.email,
-        image: member.user.image,
-      },
+      displayName: member.displayName,
+      email: member.email,
     });
     setNextMemberRole(isMemberRole(member.role) ? member.role : "member");
     setIsEditRoleDialogOpen(true);
   };
 
-  const openWhatsappDialog = (member: (typeof filteredMembers)[number]) => {
-    const memberName = member.user.name.trim() || member.user.email;
-
-    setWhatsappDialogMember({
-      id: member.id,
-      name: memberName,
-      email: member.user.email,
-    });
+  const openWhatsappDialog = (member: MembersPageMember) => {
+    setWhatsappDialogMemberId(member.id);
+    setWhatsappPhoneNumber(member.phoneNumberE164 ?? "");
     setIsWhatsappDialogOpen(true);
+  };
+
+  const closeWhatsappDialog = () => {
+    setWhatsappDialogMemberId(null);
+    setWhatsappPhoneNumber("");
+    setIsWhatsappDialogOpen(false);
+  };
+
+  const handleCreateWhatsappMember = async (
+    event: FormEvent<HTMLFormElement>,
+  ) => {
+    event.preventDefault();
+
+    if (!activeOrganization.id) {
+      return;
+    }
+
+    const displayName = phoneOnlyMemberName.trim();
+    const phoneNumber = phoneOnlyMemberPhoneNumber.trim();
+
+    if (displayName.length < 2) {
+      toast.error(t("app.toasts.userNameMinLength"));
+      return;
+    }
+
+    if (!phoneNumber) {
+      toast.error(t("app.whatsapp.toasts.enterPhoneNumber"));
+      return;
+    }
+
+    setIsCreatingPhoneOnlyMember(true);
+    try {
+      await createPhoneOnlyMember({
+        organizationId: activeOrganization.id,
+        name: displayName,
+        phoneNumber,
+      });
+      toast.success(t("app.members.toasts.phoneOnlyMemberCreated"));
+      setPhoneOnlyMemberName("");
+      setPhoneOnlyMemberPhoneNumber("");
+      setIsAddWhatsappMemberDialogOpen(false);
+    } catch (error) {
+      toast.error(
+        errorMessageFromUnknown(error) ?? t("app.members.toasts.failedCreatePhoneOnlyMember"),
+      );
+    } finally {
+      setIsCreatingPhoneOnlyMember(false);
+    }
+  };
+
+  const handleSaveWhatsappConnection = async () => {
+    if (!activeOrganization.id || !whatsappDialogMember) {
+      return;
+    }
+
+    const phoneNumber = whatsappPhoneNumber.trim();
+    if (!phoneNumber) {
+      toast.error(t("app.whatsapp.toasts.enterPhoneNumber"));
+      return;
+    }
+
+    setIsSavingWhatsappConnection(true);
+    try {
+      await saveMemberWhatsappConnection({
+        organizationId: activeOrganization.id,
+        memberId: whatsappDialogMember.id,
+        phoneNumber,
+      });
+      toast.success(t("app.whatsapp.toasts.connectionSaved"));
+    } catch (error) {
+      toast.error(
+        errorMessageFromUnknown(error) ?? t("app.whatsapp.toasts.failedSaveConnection"),
+      );
+    } finally {
+      setIsSavingWhatsappConnection(false);
+    }
   };
 
   const handleRemoveWhatsappConnection = async () => {
@@ -311,16 +431,24 @@ function MembersRoute() {
         organizationId: activeOrganization.id,
         memberId: whatsappDialogMember.id,
       });
+      setWhatsappPhoneNumber("");
       toast.success(t("app.whatsapp.toasts.connectionRemoved"));
     } catch (error) {
-      toast.error(t("app.whatsapp.toasts.failedRemoveConnection"));
+      toast.error(
+        errorMessageFromUnknown(error) ?? t("app.whatsapp.toasts.failedRemoveConnection"),
+      );
     } finally {
       setIsRemovingWhatsappConnection(false);
     }
   };
 
   const handleSendWhatsappGuide = async () => {
-    if (!activeOrganization.id || !whatsappDialogMember) {
+    if (
+      !activeOrganization.id ||
+      !whatsappDialogMember ||
+      !whatsappDialogMember.canWebSignIn ||
+      !whatsappDialogMember.email
+    ) {
       return;
     }
 
@@ -336,7 +464,9 @@ function MembersRoute() {
         }),
       );
     } catch (error) {
-      toast.error(t("app.members.toasts.failedSendWhatsappGuide"));
+      toast.error(
+        errorMessageFromUnknown(error) ?? t("app.members.toasts.failedSendWhatsappGuide"),
+      );
     } finally {
       setIsSendingWhatsappGuide(false);
     }
@@ -377,37 +507,46 @@ function MembersRoute() {
     }
   };
 
-  const handleRemoveMember = async (memberId: string) => {
+  const handleRemoveMember = async (member: MemberPendingRemoval) => {
     if (!activeOrganization.id) {
       return;
     }
 
-    if (currentMemberId === memberId) {
+    if (currentMemberId === member.id) {
       toast.error(t("app.members.toasts.cannotRemoveSelf"));
       return;
     }
 
-    setRemovingMemberId(memberId);
+    setRemovingMemberId(member.id);
     try {
-      const { error } = await authClient.organization.removeMember({
-        memberIdOrEmail: memberId,
-        organizationId: activeOrganization.id,
-      });
+      if (member.memberType === "phone_only") {
+        await removePhoneOnlyMember({
+          organizationId: activeOrganization.id,
+          memberId: member.id,
+        });
+      } else {
+        const { error } = await authClient.organization.removeMember({
+          memberIdOrEmail: member.id,
+          organizationId: activeOrganization.id,
+        });
 
-      if (error) {
-        toast.error(
-          getLocalizedAuthErrorMessage(
-            t,
-            error,
-            "app.members.toasts.failedRemoveMember",
-          ),
-        );
-        return;
+        if (error) {
+          toast.error(
+            getLocalizedAuthErrorMessage(
+              t,
+              error,
+              "app.members.toasts.failedRemoveMember",
+            ),
+          );
+          return;
+        }
       }
 
       toast.success(t("app.members.toasts.memberRemoved"));
     } catch (error) {
-      toast.error(t("app.members.toasts.failedRemoveMember"));
+      toast.error(
+        errorMessageFromUnknown(error) ?? t("app.members.toasts.failedRemoveMember"),
+      );
     } finally {
       setRemovingMemberId(null);
     }
@@ -441,6 +580,20 @@ function MembersRoute() {
 
   return (
     <>
+      {canManageMemberActions && membersHeaderActionsRoot
+        ? createPortal(
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setIsAddWhatsappMemberDialogOpen(true)}
+            >
+              <RiWhatsappLine className="size-4" />
+              <span>{t("app.members.addPhoneOnlyMemberAction")}</span>
+            </Button>,
+            membersHeaderActionsRoot,
+          )
+        : null}
       <div className="space-y-5">
         <section className="space-y-2">
           {filteredMembers.length === 0 ? (
@@ -452,27 +605,42 @@ function MembersRoute() {
           ) : (
             <ul className="space-y-2">
               {filteredMembers.map((member) => {
-                const memberName = member.user.name.trim() || member.user.email;
+                const memberName =
+                  member.displayName.trim() ||
+                  member.email ||
+                  member.phoneNumberE164 ||
+                  t("common.misc.unknown");
                 const memberInitial =
                   memberName.trim().charAt(0).toUpperCase() || "U";
                 const isCurrentMember = currentMemberId === member.id;
+                const memberSecondaryText =
+                  member.email ??
+                  member.phoneNumberE164 ??
+                  (member.memberType === "phone_only"
+                    ? t("app.whatsapp.dialog.notConnected")
+                    : t("common.misc.unknown"));
 
                 return (
                   <li key={member.id} className="rounded-md border p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex min-w-0 items-start gap-3">
                         <Avatar className="size-9">
-                          <AvatarImage src={member.user.image ?? undefined} />
+                          <AvatarImage src={member.image ?? undefined} />
                           <AvatarFallback>{memberInitial}</AvatarFallback>
                         </Avatar>
                         <div className="min-w-0">
                           <p className="truncate text-sm font-medium">{memberName}</p>
                           <p className="truncate text-xs text-muted-foreground">
-                            {member.user.email}
+                            {memberSecondaryText}
                           </p>
                         </div>
                       </div>
                       <div className="flex items-center gap-2 self-start">
+                        {member.memberType === "phone_only" ? (
+                          <Badge variant="secondary">
+                            {t("app.members.phoneOnlyBadge")}
+                          </Badge>
+                        ) : null}
                         <Badge
                           variant="outline"
                           className="border-border/70 bg-muted text-muted-foreground"
@@ -506,22 +674,27 @@ function MembersRoute() {
                                 <RiWhatsappLine />
                                 <span>{t("common.actions.whatsappConnection")}</span>
                               </DropdownMenuItem>
-                              <DropdownMenuItem
-                                onClick={() => openEditRoleDialog(member)}
-                                disabled={
-                                  isUpdatingMemberRole || removingMemberId === member.id
-                                }
-                              >
-                                <RiShieldUserLine />
-                                <span>{t("common.actions.editRole")}</span>
-                              </DropdownMenuItem>
+                              {member.memberType === "standard" ? (
+                                <DropdownMenuItem
+                                  onClick={() => openEditRoleDialog(member)}
+                                  disabled={
+                                    isUpdatingMemberRole ||
+                                    removingMemberId === member.id
+                                  }
+                                >
+                                  <RiShieldUserLine />
+                                  <span>{t("common.actions.editRole")}</span>
+                                </DropdownMenuItem>
+                              ) : null}
                               <DropdownMenuItem
                                 variant="destructive"
                                 onClick={() =>
                                   setMemberPendingRemoval({
                                     id: member.id,
                                     name: memberName,
-                                    email: member.user.email,
+                                    identifier:
+                                      member.email ?? member.phoneNumberE164 ?? null,
+                                    memberType: member.memberType,
                                   })
                                 }
                                 disabled={
@@ -629,10 +802,81 @@ function MembersRoute() {
       </div>
 
       <Dialog
+        open={isAddWhatsappMemberDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            if (isCreatingPhoneOnlyMember) {
+              return;
+            }
+            setPhoneOnlyMemberName("");
+            setPhoneOnlyMemberPhoneNumber("");
+          }
+
+          setIsAddWhatsappMemberDialogOpen(open);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t("app.members.addPhoneOnlyMemberTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("app.members.addPhoneOnlyMemberDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <form className="space-y-4" onSubmit={handleCreateWhatsappMember}>
+            <div className="space-y-2">
+              <Label htmlFor="phone-only-member-name">{t("common.labels.name")}</Label>
+              <Input
+                id="phone-only-member-name"
+                value={phoneOnlyMemberName}
+                onChange={(event) => setPhoneOnlyMemberName(event.target.value)}
+                placeholder={t("app.members.phoneOnlyNamePlaceholder")}
+                disabled={isCreatingPhoneOnlyMember}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="phone-only-member-phone">
+                {t("app.whatsapp.dialog.numberInputLabel")}
+              </Label>
+              <Input
+                id="phone-only-member-phone"
+                value={phoneOnlyMemberPhoneNumber}
+                onChange={(event) => setPhoneOnlyMemberPhoneNumber(event.target.value)}
+                placeholder={t("app.whatsapp.dialog.numberPlaceholder")}
+                disabled={isCreatingPhoneOnlyMember}
+              />
+            </div>
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsAddWhatsappMemberDialogOpen(false)}
+                disabled={isCreatingPhoneOnlyMember}
+              >
+                {t("common.actions.cancel")}
+              </Button>
+              <Button type="submit" disabled={isCreatingPhoneOnlyMember}>
+                {isCreatingPhoneOnlyMember
+                  ? t("common.state.creating")
+                  : t("app.members.addPhoneOnlyMemberSubmit")}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
         open={isWhatsappDialogOpen}
         onOpenChange={(open) => {
-          if (!open && !isRemovingWhatsappConnection && !isSendingWhatsappGuide) {
-            setWhatsappDialogMember(null);
+          if (!open) {
+            if (
+              isSavingWhatsappConnection ||
+              isRemovingWhatsappConnection ||
+              isSendingWhatsappGuide
+            ) {
+              return;
+            }
+            closeWhatsappDialog();
+            return;
           }
 
           setIsWhatsappDialogOpen(open);
@@ -644,7 +888,7 @@ function MembersRoute() {
             <DialogDescription>
               {whatsappDialogMember
                 ? t("app.members.whatsappDialogDescriptionWithName", {
-                    memberName: whatsappDialogMember.name,
+                    memberName: whatsappDialogMember.displayName,
                   })
                 : t("app.whatsapp.dialog.description")}
             </DialogDescription>
@@ -656,80 +900,139 @@ function MembersRoute() {
               </p>
               <p className="mt-1 text-sm font-medium">
                 {whatsappDialogMember
-                  ? (connectionByMemberId.get(whatsappDialogMember.id)?.phoneNumberE164 ??
+                  ? (whatsappDialogMember.phoneNumberE164 ??
                     t("app.whatsapp.dialog.notConnected"))
                   : t("app.whatsapp.dialog.notConnected")}
               </p>
             </div>
-            <div>
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">
-                {t("app.members.whatsappGuidePreviewTitle")}
+            <div className="space-y-2">
+              <Label htmlFor="member-whatsapp-number">
+                {t("app.whatsapp.dialog.numberInputLabel")}
+              </Label>
+              <Input
+                id="member-whatsapp-number"
+                value={whatsappPhoneNumber}
+                onChange={(event) => setWhatsappPhoneNumber(event.target.value)}
+                placeholder={t("app.whatsapp.dialog.numberPlaceholder")}
+                disabled={
+                  !whatsappDialogMember ||
+                  isSavingWhatsappConnection ||
+                  isRemovingWhatsappConnection ||
+                  isSendingWhatsappGuide
+                }
+              />
+            </div>
+            {whatsappDialogMember?.memberType === "phone_only" ? (
+              <p className="text-sm text-muted-foreground">
+                {t("app.members.phoneOnlyDescription")}
               </p>
-              <div className="mt-2 rounded-md border bg-card p-3">
-                <div className="rounded-md bg-muted/30 p-2.5 text-xs">
-                  <p>
-                    <span className="font-medium">{t("common.labels.email")}:</span>{" "}
-                    {whatsappDialogMember?.email ?? t("common.misc.unknown")}
-                  </p>
-                  <p className="mt-1">
-                    <span className="font-medium">
-                      {t("app.members.whatsappGuidePreviewSubjectLabel")}:
-                    </span>{" "}
-                    {t("app.members.whatsappGuidePreviewSubject", {
-                      organizationName:
-                        activeOrganization?.name ?? t("common.misc.untitledWorkspace"),
-                    })}
-                  </p>
-                  <p className="mt-2 text-muted-foreground">
-                    {t("app.members.whatsappGuidePreviewIntro", {
-                      memberName: whatsappDialogMember?.name ?? t("common.misc.user"),
-                      agentName: activeAgentName,
-                    })}
-                  </p>
-                  <p className="mt-1 text-muted-foreground">
-                    {t("app.members.whatsappGuidePreviewAgentNumber", {
-                      agentNumber:
-                        whatsappSetupInfo?.phoneNumberE164 ?? t("common.misc.unknown"),
-                    })}
-                  </p>
-                  <p className="mt-1 text-muted-foreground">
-                    {t("app.members.whatsappGuidePreviewInitialMessage", {
-                      initialMessage: previewInitialMessage,
-                    })}
-                  </p>
+            ) : null}
+            {whatsappDialogMember?.canWebSignIn && whatsappDialogMember.email ? (
+              <div>
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                  {t("app.members.whatsappGuidePreviewTitle")}
+                </p>
+                <div className="mt-2 rounded-md border bg-card p-3">
+                  <div className="rounded-md bg-muted/30 p-2.5 text-xs">
+                    <p>
+                      <span className="font-medium">{t("common.labels.email")}:</span>{" "}
+                      {whatsappDialogMember.email}
+                    </p>
+                    <p className="mt-1">
+                      <span className="font-medium">
+                        {t("app.members.whatsappGuidePreviewSubjectLabel")}:
+                      </span>{" "}
+                      {t("app.members.whatsappGuidePreviewSubject", {
+                        organizationName:
+                          activeOrganization?.name ?? t("common.misc.untitledWorkspace"),
+                      })}
+                    </p>
+                    <p className="mt-2 text-muted-foreground">
+                      {t("app.members.whatsappGuidePreviewIntro", {
+                        memberName:
+                          whatsappDialogMember.displayName ?? t("common.misc.user"),
+                        agentName: activeAgentName,
+                      })}
+                    </p>
+                    <p className="mt-1 text-muted-foreground">
+                      {t("app.members.whatsappGuidePreviewAgentNumber", {
+                        agentNumber:
+                          whatsappSetupInfo?.phoneNumberE164 ?? t("common.misc.unknown"),
+                      })}
+                    </p>
+                    <p className="mt-1 text-muted-foreground">
+                      {t("app.members.whatsappGuidePreviewInitialMessage", {
+                        initialMessage: previewInitialMessage,
+                      })}
+                    </p>
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                {t("app.members.whatsappGuideUnavailablePhoneOnly")}
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button
               type="button"
               variant="outline"
-              onClick={() => setIsWhatsappDialogOpen(false)}
-              disabled={isRemovingWhatsappConnection || isSendingWhatsappGuide}
+              onClick={closeWhatsappDialog}
+              disabled={
+                isSavingWhatsappConnection ||
+                isRemovingWhatsappConnection ||
+                isSendingWhatsappGuide
+              }
             >
               {t("common.actions.cancel")}
             </Button>
             <Button
               type="button"
               onClick={() => {
-                void handleSendWhatsappGuide();
+                void handleSaveWhatsappConnection();
               }}
-              disabled={!whatsappDialogMember || isRemovingWhatsappConnection || isSendingWhatsappGuide}
+              disabled={
+                !whatsappDialogMember ||
+                isSavingWhatsappConnection ||
+                isRemovingWhatsappConnection ||
+                isSendingWhatsappGuide
+              }
             >
-              {isSendingWhatsappGuide
-                ? t("common.state.sending")
-                : t("app.members.whatsappGuideSend")}
+              {isSavingWhatsappConnection
+                ? t("common.state.saving")
+                : t("app.whatsapp.actions.saveConnection")}
             </Button>
-            {whatsappDialogMember &&
-            connectionByMemberId.has(whatsappDialogMember.id) ? (
+            {whatsappDialogMember?.canWebSignIn && whatsappDialogMember.email ? (
+              <Button
+                type="button"
+                onClick={() => {
+                  void handleSendWhatsappGuide();
+                }}
+                disabled={
+                  !whatsappDialogMember ||
+                  isSavingWhatsappConnection ||
+                  isRemovingWhatsappConnection ||
+                  isSendingWhatsappGuide
+                }
+              >
+                {isSendingWhatsappGuide
+                  ? t("common.state.sending")
+                  : t("app.members.whatsappGuideSend")}
+              </Button>
+            ) : null}
+            {whatsappDialogMember?.phoneNumberE164 ? (
               <Button
                 type="button"
                 variant="destructive"
                 onClick={() => {
                   void handleRemoveWhatsappConnection();
                 }}
-                disabled={isRemovingWhatsappConnection || isSendingWhatsappGuide}
+                disabled={
+                  isSavingWhatsappConnection ||
+                  isRemovingWhatsappConnection ||
+                  isSendingWhatsappGuide
+                }
               >
                 {isRemovingWhatsappConnection
                   ? t("common.state.removing")
@@ -757,7 +1060,10 @@ function MembersRoute() {
             <DialogDescription>
               {editingMember
                 ? t("app.members.editMemberRoleDescriptionWithName", {
-                    memberName: editingMember.user.name || editingMember.user.email,
+                    memberName:
+                      editingMember.displayName ||
+                      editingMember.email ||
+                      t("common.misc.user"),
                   })
                 : t("app.members.editMemberRoleDescriptionDefault")}
             </DialogDescription>
@@ -822,9 +1128,10 @@ function MembersRoute() {
             <AlertDialogTitle>{t("app.members.removeMemberTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
               {memberPendingRemoval
-                ? t("app.members.removeMemberDescriptionWithName", {
+                ? t("app.members.removeMemberDescriptionWithIdentifier", {
                     memberName: memberPendingRemoval.name,
-                    memberEmail: memberPendingRemoval.email,
+                    memberIdentifier:
+                      memberPendingRemoval.identifier ?? t("common.misc.unknown"),
                   })
                 : t("app.members.removeMemberDescriptionDefault")}
             </AlertDialogDescription>
@@ -846,7 +1153,7 @@ function MembersRoute() {
                   return;
                 }
 
-                void handleRemoveMember(memberPendingRemoval.id);
+                void handleRemoveMember(memberPendingRemoval);
                 setMemberPendingRemoval(null);
               }}
             >

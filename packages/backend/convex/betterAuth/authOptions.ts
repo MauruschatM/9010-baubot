@@ -1,6 +1,5 @@
 import { convexAdapter } from "@convex-dev/better-auth";
 import { convex } from "@convex-dev/better-auth/plugins";
-import { emailOTP } from "better-auth/plugins/email-otp";
 import { organization } from "better-auth/plugins/organization";
 import type { BetterAuthOptions } from "better-auth/minimal";
 
@@ -15,11 +14,9 @@ export const options = {
   emailAndPassword: {
     enabled: true,
     requireEmailVerification: false,
+    sendResetPassword: async () => {},
   },
   plugins: [
-    emailOTP({
-      sendVerificationOTP: async () => {},
-    }),
     organization(),
     convex({ authConfig }),
   ],

@@ -1,3 +1,4 @@
+import type { Translator } from "@mvp-template/i18n";
 import {
   createFileRoute,
   useNavigate,
@@ -34,7 +35,7 @@ function isMemberRole(role: string): role is MemberRole {
 
 function formatInvitationRoleLabel(
   role: string | string[],
-  t: (key: string) => string,
+  t: Translator,
 ) {
   const localizeRole = (value: string) => {
     const normalized = value.trim().toLowerCase();
@@ -70,6 +71,9 @@ function InvitationRoute() {
   const loginHref = invitationId
     ? `/login?invitationId=${encodeURIComponent(invitationId)}`
     : "/login";
+  const signupHref = invitationId
+    ? `/signup?invitationId=${encodeURIComponent(invitationId)}`
+    : "/signup";
 
   const { data: session, isPending: isSessionPending } = authClient.useSession();
   const [invitation, setInvitation] = useState<InvitationDetails | null>(null);
@@ -156,7 +160,7 @@ function InvitationRoute() {
       }
 
       toast.success(t("auth.invitation.toasts.invitationAccepted"));
-      navigate({ to: "/app", replace: true });
+      navigate({ to: "/app/projects", replace: true });
     } catch (error) {
       toast.error(t("auth.invitation.toasts.failedAcceptInvitation"));
     } finally {
@@ -188,7 +192,7 @@ function InvitationRoute() {
       }
 
       toast.success(t("auth.invitation.toasts.invitationDeclined"));
-      navigate({ to: "/app", replace: true });
+      navigate({ to: "/app/projects", replace: true });
     } catch (error) {
       toast.error(t("auth.invitation.toasts.failedRejectInvitation"));
     } finally {
@@ -239,17 +243,25 @@ function InvitationRoute() {
         <Card className="w-full max-w-md">
           <CardHeader>
             <CardTitle>{t("auth.invitation.signInTitle")}</CardTitle>
-            <CardDescription>
+          <CardDescription>
               {t("auth.invitation.signInDescription")}
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-3">
             <Button
               className="w-full"
               type="button"
               onClick={() => window.location.assign(loginHref)}
             >
               {t("common.actions.goToLogin")}
+            </Button>
+            <Button
+              className="w-full"
+              type="button"
+              variant="outline"
+              onClick={() => window.location.assign(signupHref)}
+            >
+              {t("common.actions.createAccount")}
             </Button>
           </CardContent>
         </Card>

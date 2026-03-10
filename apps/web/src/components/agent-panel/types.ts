@@ -60,13 +60,75 @@ export type AgentChatPageContext = {
     currentMemberRole: string | null;
     visibleMembers: Array<{
       name: string;
-      email: string;
+      email: string | null;
+      phoneNumberE164: string | null;
+      memberType: "standard" | "phone_only";
       role: string;
     }>;
     visibleInvitations: Array<{
       email: string;
       role: string;
+      }>;
+  } | null;
+  customers: {
+    totalCount: number;
+    currentCustomer: {
+      id: string;
+      name: string;
+      email: string | null;
+      phone: string | null;
+    } | null;
+    visibleCustomers: Array<{
+      id: string;
+      name: string;
+      contactName: string | null;
+      email: string | null;
+      phone: string | null;
+      activeProjectCount: number;
+      doneProjectCount: number;
     }>;
+  } | null;
+  projects: {
+    totalCount: number;
+    activeCount: number;
+    doneCount: number;
+    currentProject: {
+      id: string;
+      name: string;
+      status: string;
+    } | null;
+    visibleProjects: Array<{
+      id: string;
+      name: string;
+      status: string;
+      hasUnreviewedChanges: boolean;
+      hasNachtrag: boolean;
+    }>;
+  } | null;
+  archive: {
+    archivedCustomerCount: number;
+    archivedProjectCount: number;
+    visibleArchivedCustomers: Array<{
+      id: string;
+      name: string;
+      deletedAt: number;
+    }>;
+    visibleArchivedProjects: Array<{
+      id: string;
+      name: string;
+      status: string;
+      deletedAt: number;
+    }>;
+  } | null;
+  shell: {
+    organizationName: string | null;
+    companyEmail: string | null;
+    companyEmailLocale: string | null;
+    agentProfileName: string | null;
+    agentStyleId: string | null;
+    whatsappPhoneNumberE164: string | null;
+    myWhatsAppPhoneNumberE164: string | null;
+    myWhatsAppConnected: boolean | null;
   } | null;
 };
 

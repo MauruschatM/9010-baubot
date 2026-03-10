@@ -8,7 +8,6 @@ import {
 } from "@mvp-template/i18n";
 import { convex } from "@convex-dev/better-auth/plugins";
 import { betterAuth } from "better-auth/minimal";
-import { emailOTP } from "better-auth/plugins/email-otp";
 import { organization } from "better-auth/plugins/organization";
 
 import type { DataModel } from "./_generated/dataModel";
@@ -18,33 +17,13 @@ import { query } from "./_generated/server";
 import authConfig from "./auth.config";
 import {
   sendOrganizationInvitationEmail,
-  sendOtpEmail,
+  sendPasswordResetEmail,
 } from "./lib/resend";
 
 const siteUrl = process.env.SITE_URL!;
 const appName = process.env.BETTER_AUTH_APP_NAME ?? "MVP Template";
 
 export const authComponent = createClient<DataModel>(components.betterAuth);
-
-function getRequestFromContext(context: unknown): Request | null {
-  if (!context || typeof context !== "object") {
-    return null;
-  }
-
-  const directRequest = (context as { request?: unknown }).request;
-  if (directRequest instanceof Request) {
-    return directRequest;
-  }
-
-  const nestedRequest = (context as { context?: { request?: unknown } }).context
-    ?.request;
-
-  if (nestedRequest instanceof Request) {
-    return nestedRequest;
-  }
-
-  return null;
-}
 
 function getLocaleFromRequest(request: Request | null, userPreference?: AppLocale | null) {
   const cookieHeader = request?.headers.get("cookie");
@@ -83,23 +62,24 @@ function createAuth(ctx: GenericCtx<DataModel>) {
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,
+      async sendResetPassword({ user, url }, request) {
+        const resetUserId =
+          (user as { id?: string; _id?: string }).id ??
+          (user as { id?: string; _id?: string })._id;
+        const userPreference = await getStoredLocaleByUserId(ctx, resetUserId);
+        const locale = getLocaleFromRequest(request ?? null, userPreference);
+
+        void sendPasswordResetEmail({
+          email: user.email,
+          resetUrl: url,
+          appName,
+          locale,
+        }).catch((error) => {
+          console.error("Failed to send password reset email", error);
+        });
+      },
     },
     plugins: [
-      emailOTP({
-        disableSignUp: false,
-        async sendVerificationOTP({ email, otp, type }, endpointContext) {
-          const request = getRequestFromContext(endpointContext);
-          const locale = getLocaleFromRequest(request);
-
-          await sendOtpEmail({
-            email,
-            otp,
-            type,
-            appName,
-            locale,
-          });
-        },
-      }),
       organization({
         async sendInvitationEmail(data, request) {
           const inviteUrl = `${siteUrl}/invitation?invitationId=${data.id}`;

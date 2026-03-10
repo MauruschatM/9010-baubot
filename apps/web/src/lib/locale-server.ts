@@ -3,6 +3,7 @@ import {
   LOCALE_COOKIE_NAME,
   SYSTEM_LOCALE,
   resolveLocale,
+  resolveTranslatedLocale,
   type AppLocale,
 } from "@mvp-template/i18n";
 import { api } from "@mvp-template/backend/convex/_generated/api";
@@ -35,12 +36,14 @@ export const getInitialLocaleForRouting = createServerFn({ method: "GET" }).hand
       userPreference = null;
     }
 
-    const resolvedLocale = resolveLocale({
-      userPreference,
-      cookieLocale,
-      acceptLanguage,
-      defaultLocale: DEFAULT_LOCALE,
-    });
+    const resolvedLocale = resolveTranslatedLocale(
+      resolveLocale({
+        userPreference,
+        cookieLocale,
+        acceptLanguage,
+        defaultLocale: DEFAULT_LOCALE,
+      }),
+    );
 
     if (cookieLocale !== resolvedLocale && cookieLocale !== SYSTEM_LOCALE) {
       setLocaleCookie(resolvedLocale);

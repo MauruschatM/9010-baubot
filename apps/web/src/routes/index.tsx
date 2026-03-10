@@ -31,7 +31,7 @@ function LandingRoute() {
           {t("common.actions.getStarted")}
         </Link>
         <Link
-          to="/app"
+          to="/app/projects"
           className="inline-flex h-10 items-center justify-center rounded-lg border border-border px-4 text-sm font-medium transition-colors hover:bg-muted"
         >
           {t("common.actions.openApp")}

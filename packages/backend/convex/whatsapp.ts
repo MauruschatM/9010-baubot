@@ -1,13 +1,17 @@
 'use node';
 
+import { createTranslator, type AppLocale } from "@mvp-template/i18n";
 import { generateObject } from "ai";
 import { gateway } from "@ai-sdk/gateway";
 import { v } from "convex/values";
+
+import { vAppLocale } from "./lib/locales";
 import { z } from "zod";
 
 import { components, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { action, internalAction } from "./_generated/server";
+import { buildWorkspaceAgentTools } from "./agentRuntime";
 import {
   compileAgentContextPacket,
   formatContextPacketForInstructions,
@@ -17,15 +21,6 @@ import {
   createWorkspaceAgent,
   DEFAULT_AI_GATEWAY_MODEL,
 } from "../mastra/agent";
-import type {
-  ConnectedWhatsAppRecipient,
-  OrganizationInvitation,
-  OrganizationMember,
-  OrganizationSummary,
-  ProactiveWhatsAppSendResult,
-  UserSettingsSummary,
-  WorkspaceSnapshot,
-} from "../mastra/tools";
 import {
   getMastraResourceId,
   getMastraWhatsAppThreadId,
@@ -45,17 +40,27 @@ import {
   WHATSAPP_OUTBOUND_MAX_CHUNKS,
   WHATSAPP_ONBOARDING_TTL_MS,
   WHATSAPP_READY_PROMPT_COOLDOWN_MS,
+  WHATSAPP_THREAD_READINESS_BUFFER_MS,
   WHATSAPP_TURN_DETECTION_MODEL,
   WHATSAPP_TYPING_FALLBACK_DELAY_MS,
 } from "./whatsapp/constants";
 import {
+  askPasswordMessage,
   clarificationMissingAnswerMessage,
   clarificationQuestionMessage,
+  documentationBusyMessage,
+  documentationCapturedMessage,
+  documentationEmptyMessage,
+  documentationProjectChoiceMessage,
+  documentationProjectNameLengthMessage,
+  documentationProjectNamePrompt,
+  documentationReminderMessage,
+  documentationStartedMessage,
   invalidEmailMessage,
-  invalidOtpMessage,
+  invalidPasswordMessage,
   onboardingCompletedMessage,
   onboardingGreetingMessages,
-  onboardingOtpAttemptsExceededMessage,
+  onboardingPasswordAttemptsExceededMessage,
   onboardingSwitchHintMessage,
   processingFallbackMessage,
   readyQuestionMessage,
@@ -66,13 +71,11 @@ import {
   unlinkSuccessMessage,
   unsupportedCommandMessage,
   waitForMoreMessage,
-  askOtpMessage,
+  workingOnThatMessage,
 } from "./whatsapp/messages";
 import {
   extractEmailCandidate,
-  extractOtpCandidate,
   inferLocaleFromPhoneNumber,
-  hasExplicitProactiveSendIntent,
   isAffirmativeAnswer,
   isNegativeCommand,
   isSendCommand,
@@ -85,6 +88,7 @@ import {
 import { transcribeWhatsAppMedia } from "./whatsapp/transcription";
 import { detectTurnReadiness } from "./whatsapp/turnDetection";
 import {
+  getConfiguredTwilioWhatsAppFromNumber,
   parseTwilioInboundPayload,
   sendTwilioWhatsAppMessage,
   sendTwilioWhatsAppTypingIndicator,
@@ -95,6 +99,10 @@ import type {
   TurnDetectionDecision,
   TwilioInboundPayload,
 } from "./whatsapp/types";
+import {
+  ensureServiceSessionForUser,
+  getSessionHeadersForUser,
+} from "./serviceSessions";
 
 type MemberDoc = {
   _id: string;
@@ -109,15 +117,6 @@ type UserDoc = {
   name: string;
   email: string;
   image?: string | null;
-};
-
-type SessionDoc = {
-  _id: string;
-  userId: string;
-  token: string;
-  expiresAt: number | string | Date;
-  updatedAt?: number;
-  activeOrganizationId?: string | null;
 };
 
 type OrganizationDoc = {
@@ -172,11 +171,30 @@ type WhatsAppTurnBufferDoc = {
   userId: string;
   memberId: string;
   threadId: string;
-  status: "buffering" | "awaiting_confirmation";
+  status: "buffering" | "awaiting_confirmation" | "awaiting_documentation_confirmation";
   bufferedMessageIds: Id<"whatsappMessages">[];
   firstBufferedAt: number;
   lastBufferedAt: number;
   readyPromptSentAt?: number;
+  documentationPromptSentAt?: number;
+  documentationReminderJobId?: Id<"_scheduled_functions">;
+  updatedAt: number;
+};
+
+type WhatsAppPendingResolutionDoc = {
+  _id: Id<"whatsappPendingResolutions">;
+  organizationId: string;
+  phoneE164: string;
+  memberId: string;
+  batchId: Id<"whatsappSendBatches">;
+  state: "awaiting_choice" | "awaiting_project_name";
+  customerId?: Id<"customers">;
+  options?: Array<{
+    projectId: Id<"projects">;
+    projectName: string;
+  }>;
+  aiSuggestedProjectName?: string;
+  createdAt: number;
   updatedAt: number;
 };
 
@@ -186,11 +204,11 @@ type OnboardingSessionDoc = {
   status: "active" | "completed" | "expired";
   stage:
     | "awaiting_email"
-    | "awaiting_otp"
+    | "awaiting_password"
     | "awaiting_switch_selection"
     | "awaiting_unlink_confirmation"
     | "ready";
-  locale: "en" | "de";
+  locale: AppLocale;
   email?: string;
   userId?: string;
   organizationId?: string;
@@ -255,16 +273,6 @@ type AuthApiClient = {
   api?: unknown;
 };
 
-type ToolPermissionFlags = {
-  canUpdateOrganization: boolean;
-  canInviteMembers: boolean;
-  canUpdateMembers: boolean;
-  canRemoveMembers: boolean;
-  canCancelInvitations: boolean;
-  canDeleteOrganization: boolean;
-  canLeaveOrganization: boolean;
-};
-
 type OrganizationSelection = {
   organizationId: string;
   organizationName: string;
@@ -281,7 +289,8 @@ type RunAgentForBufferedTurnResult = {
 const PAGE_SIZE = 200;
 const MAX_ATTACHMENTS = 6;
 const MAX_MESSAGE_TEXT = 2500;
-const MAX_ONBOARDING_OTP_ATTEMPTS = 6;
+const MAX_ONBOARDING_AUTH_ATTEMPTS = 6;
+const WHATSAPP_ONBOARDING_PLACEHOLDER_NAME = " ";
 const STREAM_FLUSH_INTERVAL_MS = 180;
 const PENDING_ACTION_TTL_MS = 10 * 60 * 1000;
 const CLARIFICATION_TTL_MS = 15 * 60 * 1000;
@@ -315,6 +324,27 @@ async function resolveInboundLocale(options: {
 
 function clampMessageText(value: string) {
   return value.trim().slice(0, MAX_MESSAGE_TEXT);
+}
+
+function isNewProjectCommand(value: string) {
+  const normalized = normalizeCommandText(value);
+
+  return (
+    normalized === "new" ||
+    normalized === "neu" ||
+    normalized === "new project" ||
+    normalized === "neues projekt"
+  );
+}
+
+function normalizeProjectNameCandidate(value: string) {
+  const normalized = value.replace(/\s+/g, " ").trim();
+
+  if (normalized.length < 2 || normalized.length > 120) {
+    return null;
+  }
+
+  return normalized;
 }
 
 function sleep(milliseconds: number) {
@@ -523,23 +553,6 @@ function getRecordString(value: Record<string, unknown>, key: string): string | 
 
   const trimmed = maybeValue.trim();
   return trimmed.length > 0 ? trimmed : null;
-}
-
-function normalizeDateLike(value: unknown) {
-  if (typeof value === "number") {
-    return value;
-  }
-
-  if (value instanceof Date) {
-    return value.getTime();
-  }
-
-  if (typeof value === "string") {
-    const timestamp = new Date(value).getTime();
-    return Number.isNaN(timestamp) ? 0 : timestamp;
-  }
-
-  return 0;
 }
 
 function normalizeAttachments(attachments: ChatAttachment[]) {
@@ -803,7 +816,7 @@ function hasApprovalRequiredStatus(result: unknown) {
 
   return (
     getRecordString(result, "status") === "requires_confirmation" &&
-    getRecordString(result, "actionType") === "delete-organization"
+    typeof getRecordString(result, "pendingActionId") === "string"
   );
 }
 
@@ -840,6 +853,27 @@ function getApprovalPendingActionId(toolResults: ToolResultRecord[]) {
   }
 
   return null;
+}
+
+function resolveStreamActor(value?: string | null) {
+  if (!value) {
+    return "main" as const;
+  }
+
+  if (value.includes("organization")) {
+    return "organization" as const;
+  }
+  if (value.includes("customer")) {
+    return "customer" as const;
+  }
+  if (value.includes("project")) {
+    return "project" as const;
+  }
+  if (value.includes("user")) {
+    return "user" as const;
+  }
+
+  return "main" as const;
 }
 
 function extractClarificationQuestionsFromResult(result: Record<string, unknown>) {
@@ -891,7 +925,7 @@ function getClarificationToolRequest(toolResults: ToolResultRecord[]) {
 }
 
 function buildClarificationTemplateFromTool(options: {
-  locale: "en" | "de";
+  locale: AppLocale;
   questions: string[];
   reason?: string | null;
 }) {
@@ -902,80 +936,38 @@ function buildClarificationTemplateFromTool(options: {
     })
     .slice(0, 3);
 
-  const fallbackQuestion =
-    options.locale === "de"
-      ? "Welche fehlenden Details soll ich für dich ergänzen?"
-      : "Which missing details should I add before I continue?";
+  const t = createTranslator(options.locale);
+  const fallbackQuestion = t("app.chat.clarification.fallbackQuestion");
 
   const clarificationPrompts =
     normalizedQuestions.length > 0 ? normalizedQuestions : [fallbackQuestion];
 
-  if (options.locale === "de") {
-    return {
-      title: "Rückfrage erforderlich",
-      description:
-        options.reason ??
-        "Bitte beantworte die Rückfrage, damit ich den Auftrag fortsetzen kann.",
-      assistantMessage:
-        clarificationPrompts.length === 1
-          ? clarificationPrompts[0]!
-          : "Ich brauche noch ein paar kurze Angaben, bevor ich fortfahre.",
-      questions: clarificationPrompts.map((prompt, index) => ({
-        id: `details_${index + 1}`,
-        prompt,
-        options: [
-          {
-            id: "provide_details",
-            label: "Details angeben (Empfohlen)",
-            description:
-              "Fehlende Details im Freitextfeld ergänzen, damit ich fortfahren kann.",
-          },
-          {
-            id: "use_current_data",
-            label: "Aktuelle Daten nutzen",
-            description:
-              "Mit den derzeit bekannten Daten fortfahren, falls ausreichend.",
-          },
-          {
-            id: "cancel_request",
-            label: "Vorgang abbrechen",
-            description: "Diesen Vorgang nicht fortsetzen.",
-          },
-        ],
-        allowOther: true,
-        required: true,
-      })),
-    };
-  }
-
   return {
-    title: "Clarification needed",
+    title: t("app.chat.clarification.title"),
     description:
-      options.reason ??
-      "Please answer the question so I can continue with your request.",
+      options.reason ?? t("app.chat.clarification.description"),
     assistantMessage:
       clarificationPrompts.length === 1
         ? clarificationPrompts[0]!
-        : "I need a few quick details before I continue.",
+        : t("app.chat.clarification.assistantMessageMultiple"),
     questions: clarificationPrompts.map((prompt, index) => ({
       id: `details_${index + 1}`,
       prompt,
       options: [
         {
           id: "provide_details",
-          label: "Provide details (Recommended)",
-          description:
-            "Add the missing detail in the free-text field so I can continue.",
+          label: t("app.chat.clarification.options.provideDetailsLabel"),
+          description: t("app.chat.clarification.options.provideDetailsDescription"),
         },
         {
           id: "use_current_data",
-          label: "Use current data",
-          description: "Proceed with the currently available data if sufficient.",
+          label: t("app.chat.clarification.options.useCurrentDataLabel"),
+          description: t("app.chat.clarification.options.useCurrentDataDescription"),
         },
         {
           id: "cancel_request",
-          label: "Cancel request",
-          description: "Do not continue with this operation.",
+          label: t("app.chat.clarification.options.cancelRequestLabel"),
+          description: t("app.chat.clarification.options.cancelRequestDescription"),
         },
       ],
       allowOther: true,
@@ -1026,57 +1018,6 @@ function errorMessageFromUnknown(error: unknown) {
   }
 
   return "Failed to run chat";
-}
-
-function normalizeMember(member: unknown): OrganizationMember | null {
-  if (!isRecord(member)) {
-    return null;
-  }
-
-  const id = getRecordString(member, "id");
-  const userId = getRecordString(member, "userId");
-  const role = getRecordString(member, "role") ?? "member";
-  const user = isRecord(member.user) ? member.user : null;
-  const email =
-    (user && getRecordString(user, "email")) ??
-    getRecordString(member, "email") ??
-    "";
-  const name =
-    (user && getRecordString(user, "name")) ?? getRecordString(member, "name") ?? email;
-
-  if (!id || !userId) {
-    return null;
-  }
-
-  return {
-    id,
-    userId,
-    role,
-    email,
-    name,
-  };
-}
-
-function normalizeInvitation(invitation: unknown): OrganizationInvitation | null {
-  if (!isRecord(invitation)) {
-    return null;
-  }
-
-  const id = getRecordString(invitation, "id");
-  const email = getRecordString(invitation, "email") ?? "";
-  const role = getRecordString(invitation, "role") ?? "member";
-  const status = getRecordString(invitation, "status") ?? "pending";
-
-  if (!id) {
-    return null;
-  }
-
-  return {
-    id,
-    email,
-    role,
-    status,
-  };
 }
 
 function normalizeOrganizationInfo(value: unknown) {
@@ -1143,132 +1084,6 @@ async function callAuthApi(
   return await (method as (context: Record<string, unknown>) => Promise<unknown>)(
     context,
   );
-}
-
-async function hasOrganizationPermission(options: {
-  auth: AuthApiClient;
-  headers: Headers;
-  organizationId: string;
-  permissions: Record<string, string[]>;
-}) {
-  try {
-    const response = await callAuthApi(options.auth, "hasPermission", {
-      body: {
-        organizationId: options.organizationId,
-        permissions: options.permissions,
-      },
-      headers: options.headers,
-    });
-
-    return isRecord(response) && response.success === true;
-  } catch {
-    return false;
-  }
-}
-
-async function getToolPermissionFlags(options: {
-  auth: AuthApiClient;
-  headers: Headers;
-  organizationId: string;
-}) {
-  const [
-    canUpdateOrganization,
-    canInviteMembers,
-    canUpdateMembers,
-    canRemoveMembers,
-    canCancelInvitations,
-    canDeleteOrganization,
-  ] = await Promise.all([
-    hasOrganizationPermission({
-      ...options,
-      permissions: {
-        organization: ["update"],
-      },
-    }),
-    hasOrganizationPermission({
-      ...options,
-      permissions: {
-        invitation: ["create"],
-      },
-    }),
-    hasOrganizationPermission({
-      ...options,
-      permissions: {
-        member: ["update"],
-      },
-    }),
-    hasOrganizationPermission({
-      ...options,
-      permissions: {
-        member: ["delete"],
-      },
-    }),
-    hasOrganizationPermission({
-      ...options,
-      permissions: {
-        invitation: ["cancel"],
-      },
-    }),
-    hasOrganizationPermission({
-      ...options,
-      permissions: {
-        organization: ["delete"],
-      },
-    }),
-  ]);
-
-  return {
-    canUpdateOrganization,
-    canInviteMembers,
-    canUpdateMembers,
-    canRemoveMembers,
-    canCancelInvitations,
-    canDeleteOrganization,
-    canLeaveOrganization: true,
-  } satisfies ToolPermissionFlags;
-}
-
-async function getSessionHeadersForUser(ctx: {
-  runQuery: (
-    queryRef: any,
-    args: Record<string, unknown>,
-  ) => Promise<unknown>;
-}, userId: string) {
-  const sessionsResult = (await ctx.runQuery(components.betterAuth.adapter.findMany, {
-    model: "session",
-    where: [
-      {
-        field: "userId",
-        operator: "eq",
-        value: userId,
-      },
-    ],
-    paginationOpts: {
-      cursor: null,
-      numItems: 20,
-    },
-  })) as { page?: SessionDoc[] };
-
-  const sessions = (sessionsResult.page ?? []) as SessionDoc[];
-  const now = Date.now();
-
-  const activeSession = sessions
-    .filter((session) => {
-      const expiresAt = normalizeDateLike(session.expiresAt);
-      return session.token && expiresAt > now;
-    })
-    .sort((sessionA, sessionB) => {
-      const updatedAtA = sessionA.updatedAt ?? 0;
-      const updatedAtB = sessionB.updatedAt ?? 0;
-      return updatedAtB - updatedAtA;
-    })[0];
-
-  const headers = new Headers();
-  if (activeSession?.token) {
-    headers.set("cookie", `better-auth.session_token=${activeSession.token}`);
-  }
-
-  return headers;
 }
 
 function buildClarificationAnswersFromMessage(options: {
@@ -1367,7 +1182,7 @@ function buildClarificationAnswersFromMessage(options: {
 function buildResumePromptFromClarification(options: {
   originalPrompt: string;
   normalizedAnswers: Record<string, string>;
-  locale: "en" | "de";
+  locale: AppLocale;
 }) {
   const sortedEntries = Object.entries(options.normalizedAnswers).sort((entryA, entryB) =>
     entryA[0].localeCompare(entryB[0]),
@@ -1389,10 +1204,15 @@ function buildResumePromptFromClarification(options: {
 }
 
 function buildBufferedPrompt(options: {
-  locale: "en" | "de";
+  locale: AppLocale;
   messages: WhatsAppMessageDoc[];
+  routingContextText?: string | null;
 }) {
   const promptParts: string[] = [];
+
+  if (options.routingContextText) {
+    promptParts.push(options.routingContextText);
+  }
 
   for (const message of options.messages) {
     const normalizedText = message.text.trim();
@@ -1419,15 +1239,20 @@ function buildBufferedPrompt(options: {
 async function sendOutboundMessage(options: {
   text: string;
   phoneNumberE164: string;
-  locale: "en" | "de";
+  locale: AppLocale;
   connection: WhatsAppConnectionDoc | null;
   runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
 }) {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
-  const fromNumber = process.env.TWILIO_WHATSAPP_FROM_NUMBER;
+  const fromNumber = getConfiguredTwilioWhatsAppFromNumber();
 
   if (!accountSid || !authToken || !fromNumber) {
+    console.warn("WhatsApp outbound messaging is not fully configured", {
+      hasAccountSid: !!accountSid,
+      hasAuthToken: !!authToken,
+      hasFromNumber: !!fromNumber,
+    });
     return;
   }
 
@@ -1645,7 +1470,7 @@ async function processPendingClarification(options: {
     runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
     runAction: (actionRef: any, args: Record<string, unknown>) => Promise<unknown>;
   };
-  locale: "en" | "de";
+  locale: AppLocale;
   messageText: string;
   threadId: string;
   organizationId: string;
@@ -1755,17 +1580,233 @@ async function processPendingClarification(options: {
   };
 }
 
+async function handlePendingProjectResolution(options: {
+  ctx: {
+    runQuery: (queryRef: any, args: Record<string, unknown>) => Promise<unknown>;
+    runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
+    runAction: (actionRef: any, args: Record<string, unknown>) => Promise<unknown>;
+  };
+  locale: AppLocale;
+  messageText: string;
+  connection: WhatsAppConnectionDoc;
+}) {
+  const pendingResolution = (await options.ctx.runQuery(
+    (internal as any).whatsappProcessingData.getPendingResolutionByPhone,
+    {
+      organizationId: options.connection.organizationId,
+      phoneE164: options.connection.phoneNumberE164,
+    },
+  )) as WhatsAppPendingResolutionDoc | null;
+
+  if (!pendingResolution) {
+    return {
+      handled: false,
+    };
+  }
+
+  const normalizedMessage = normalizeCommandText(options.messageText);
+
+  if (pendingResolution.state === "awaiting_choice") {
+    const optionsList = pendingResolution.options ?? [];
+    const numericChoice = Number.parseInt(normalizedMessage, 10);
+    const exactChoice = optionsList.find(
+      (option) => normalizeCommandText(option.projectName) === normalizedMessage,
+    );
+
+    if (isNewProjectCommand(normalizedMessage)) {
+      await options.ctx.runMutation((internal as any).whatsappProcessingData.updateSendBatch, {
+        batchId: pendingResolution.batchId,
+        status: "awaiting_project_name",
+        candidateProjectIds: [],
+        projectMatchReason: "member_requested_new_project",
+      });
+      await options.ctx.runMutation((internal as any).whatsappProcessingData.upsertPendingResolution, {
+        organizationId: pendingResolution.organizationId,
+        phoneE164: pendingResolution.phoneE164,
+        memberId: pendingResolution.memberId,
+        batchId: pendingResolution.batchId,
+        state: "awaiting_project_name",
+        customerId: pendingResolution.customerId,
+        aiSuggestedProjectName: pendingResolution.aiSuggestedProjectName,
+      });
+
+      return {
+        handled: true,
+        reply: documentationProjectNamePrompt({
+          locale: options.locale,
+          suggestedProjectName: pendingResolution.aiSuggestedProjectName,
+        }),
+      };
+    }
+
+    const selectedOption =
+      exactChoice ??
+      (numericChoice >= 1 && numericChoice <= optionsList.length
+        ? optionsList[numericChoice - 1]
+        : null);
+
+    if (!selectedOption) {
+      return {
+        handled: true,
+        reply: documentationProjectChoiceMessage({
+          locale: options.locale,
+          projects: optionsList.map((option) => ({
+            name: option.projectName,
+          })),
+          suggestedProjectName: pendingResolution.aiSuggestedProjectName,
+        }),
+      };
+    }
+
+    try {
+      const result = (await options.ctx.runAction(
+        (internal as any).whatsappProcessing.finalizeBatchToProject,
+        {
+          batchId: pendingResolution.batchId,
+          projectId: selectedOption.projectId,
+          locale: options.locale,
+        },
+      )) as { message: string };
+
+      return {
+        handled: true,
+        reply: result.message,
+      };
+    } catch {
+      return {
+        handled: true,
+        reply: processingFallbackMessage(options.locale),
+      };
+    }
+  }
+
+  const projectName = normalizeProjectNameCandidate(options.messageText);
+  if (!projectName) {
+    return {
+      handled: true,
+      reply: documentationProjectNameLengthMessage(options.locale),
+    };
+  }
+
+  try {
+    const result = (await options.ctx.runAction(
+      (internal as any).whatsappProcessing.createProjectAndFinalizeBatch,
+      {
+        batchId: pendingResolution.batchId,
+        projectName,
+        customerId: pendingResolution.customerId,
+        locale: options.locale,
+      },
+    )) as { message: string };
+
+    return {
+      handled: true,
+      reply: result.message,
+    };
+  } catch {
+    return {
+      handled: true,
+      reply: processingFallbackMessage(options.locale),
+    };
+  }
+}
+
+async function startDocumentationBatch(options: {
+  ctx: {
+    runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
+  };
+  locale: AppLocale;
+  payload: TwilioInboundPayload;
+  connection: WhatsAppConnectionDoc;
+}) {
+  const batchResult = (await options.ctx.runMutation(
+    (internal as any).whatsappProcessingData.createSendBatchFromBuffer,
+    {
+      connectionId: options.connection._id,
+      organizationId: options.connection.organizationId,
+      memberId: options.connection.memberId,
+      userId: options.connection.userId,
+      phoneE164: options.connection.phoneNumberE164,
+      commandMessageSid: options.payload.messageSid,
+      commandFrom: options.payload.from,
+      commandTo: options.payload.to,
+    },
+  )) as {
+    batchId?: Id<"whatsappSendBatches">;
+    messageCount: number;
+    status: "queued" | "empty" | "busy";
+  };
+
+  if (batchResult.status === "busy") {
+    return {
+      status: "busy" as const,
+      message: documentationBusyMessage(options.locale),
+      count: batchResult.messageCount,
+    };
+  }
+
+  if (batchResult.status === "empty") {
+    return {
+      status: "empty" as const,
+      message: documentationEmptyMessage(options.locale),
+      count: batchResult.messageCount,
+    };
+  }
+
+  return {
+    status: "queued" as const,
+    message: documentationCapturedMessage({
+      locale: options.locale,
+      count: batchResult.messageCount,
+    }),
+    count: batchResult.messageCount,
+  };
+}
+
+async function scheduleDocumentationReminder(options: {
+  ctx: {
+    runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
+    scheduler: {
+      runAfter: (
+        delayMs: number,
+        functionReference: any,
+        args: Record<string, unknown>,
+      ) => Promise<Id<"_scheduled_functions">>;
+    };
+  };
+  bufferId: Id<"whatsappTurnBuffers">;
+  connection: WhatsAppConnectionDoc;
+  locale: AppLocale;
+}) {
+  const reminderJobId = await options.ctx.scheduler.runAfter(
+    WHATSAPP_THREAD_READINESS_BUFFER_MS,
+    (internal as any).whatsapp.sendDocumentationReminder,
+    {
+      bufferId: options.bufferId,
+      connectionId: options.connection._id,
+      phoneNumberE164: options.connection.phoneNumberE164,
+      locale: options.locale,
+    },
+  );
+
+  await options.ctx.runMutation(internal.whatsappData.updateTurnBufferStatus, {
+    bufferId: options.bufferId,
+    status: "buffering",
+    documentationReminderJobId: reminderJobId,
+  });
+}
+
 async function runBufferedTurnWithIndicator(options: {
   ctx: {
     runAction: (actionRef: any, args: Record<string, unknown>) => Promise<unknown>;
   };
-  locale: "en" | "de";
+  locale: AppLocale;
   args: {
     organizationId: string;
     userId: string;
     memberId: string;
     threadId: string;
-    locale: "en" | "de";
+    locale: AppLocale;
     prompt: string;
     attachments: ChatAttachment[];
     sourceMessageIds: Id<"whatsappMessages">[];
@@ -1785,7 +1826,7 @@ async function runBufferedTurnWithIndicator(options: {
     await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
       phoneNumberE164: options.connection.phoneNumberE164,
       locale: options.locale,
-      text: processingFallbackMessage(options.locale),
+      text: workingOnThatMessage(options.locale),
       connectionId: options.connection._id,
     });
 
@@ -1800,12 +1841,19 @@ async function processConnectedInbound(options: {
     runQuery: (queryRef: any, args: Record<string, unknown>) => Promise<unknown>;
     runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
     runAction: (actionRef: any, args: Record<string, unknown>) => Promise<unknown>;
+    scheduler: {
+      runAfter: (
+        delayMs: number,
+        functionReference: any,
+        args: Record<string, unknown>,
+      ) => Promise<Id<"_scheduled_functions">>;
+    };
     storage: {
       store: (blob: Blob) => Promise<Id<"_storage">>;
     };
   };
   payload: TwilioInboundPayload;
-  locale: "en" | "de";
+  locale: AppLocale;
   phoneNumberE164: string;
   connection: WhatsAppConnectionDoc;
 }) {
@@ -1908,6 +1956,112 @@ async function processConnectedInbound(options: {
     return;
   }
 
+  const existingTurnBuffer = (await options.ctx.runQuery(
+    internal.whatsappData.getTurnBufferByConnection,
+    {
+      connectionId: options.connection._id,
+    },
+  )) as WhatsAppTurnBufferDoc | null;
+
+  if (existingTurnBuffer?.status === "awaiting_documentation_confirmation") {
+    if (isAffirmativeAnswer(commandText)) {
+      const batchResult = await startDocumentationBatch({
+        ctx: options.ctx,
+        locale: options.locale,
+        payload: options.payload,
+        connection: options.connection,
+      });
+
+      const text =
+        batchResult.status === "queued"
+          ? documentationStartedMessage(options.locale)
+          : batchResult.message;
+
+      await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+        phoneNumberE164: options.connection.phoneNumberE164,
+        locale: options.locale,
+        text,
+        connectionId: options.connection._id,
+      });
+
+      return;
+    }
+
+    if (isNegativeCommand(commandText)) {
+      await options.ctx.runMutation(internal.whatsappData.updateTurnBufferStatus, {
+        bufferId: existingTurnBuffer._id,
+        status: "buffering",
+        documentationPromptSentAt: undefined,
+        documentationReminderJobId: undefined,
+      });
+
+      await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+        phoneNumberE164: options.connection.phoneNumberE164,
+        locale: options.locale,
+        text: waitForMoreMessage(options.locale),
+        connectionId: options.connection._id,
+      });
+
+      return;
+    }
+  }
+
+  if (existingTurnBuffer?.status === "awaiting_confirmation" && isNegativeCommand(commandText)) {
+    await options.ctx.runMutation(internal.whatsappData.updateTurnBufferStatus, {
+      bufferId: existingTurnBuffer._id,
+      status: "buffering",
+      readyPromptSentAt: undefined,
+      documentationReminderJobId: undefined,
+    });
+
+    await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+      phoneNumberE164: options.connection.phoneNumberE164,
+      locale: options.locale,
+      text: waitForMoreMessage(options.locale),
+      connectionId: options.connection._id,
+    });
+
+    return;
+  }
+
+  const pendingProjectResolutionResult = await handlePendingProjectResolution({
+    ctx: options.ctx,
+    locale: options.locale,
+    messageText: options.payload.body,
+    connection: options.connection,
+  });
+
+  if (pendingProjectResolutionResult.handled) {
+    if (pendingProjectResolutionResult.reply) {
+      await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+        phoneNumberE164: options.connection.phoneNumberE164,
+        locale: options.locale,
+        text: pendingProjectResolutionResult.reply,
+        connectionId: options.connection._id,
+      });
+    }
+
+    return;
+  }
+
+  if (isSendCommand(commandText)) {
+    const batchResult = await startDocumentationBatch({
+      ctx: options.ctx,
+      locale: options.locale,
+      payload: options.payload,
+      connection: options.connection,
+    });
+
+    await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+      phoneNumberE164: options.connection.phoneNumberE164,
+      locale: options.locale,
+      text: batchResult.message,
+      connectionId: options.connection._id,
+    });
+
+    return;
+  }
+
   const mediaEntries: StoredWhatsAppMedia[] = [];
   for (const mediaItem of options.payload.media) {
     try {
@@ -1974,17 +2128,7 @@ async function processConnectedInbound(options: {
     messageId: insertedMessage.id,
   })) as WhatsAppTurnBufferDoc;
 
-  if (turnBuffer.status === "awaiting_confirmation" && isNegativeCommand(commandText)) {
-    await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
-      phoneNumberE164: options.connection.phoneNumberE164,
-      locale: options.locale,
-      text: waitForMoreMessage(options.locale),
-      connectionId: options.connection._id,
-    });
-    return;
-  }
-
-  const shouldForceSend = isSendCommand(commandText) || isAffirmativeAnswer(commandText);
+  const shouldForceSend = isAffirmativeAnswer(commandText);
 
   const bufferedMessages = (await options.ctx.runQuery(internal.whatsappData.getMessagesByIds, {
     messageIds: turnBuffer.bufferedMessageIds,
@@ -2006,11 +2150,21 @@ async function processConnectedInbound(options: {
     (message) => message.text.trim().length > 0,
   );
 
+  if (options.payload.media.length > 0) {
+    await scheduleDocumentationReminder({
+      ctx: options.ctx,
+      bufferId: turnBuffer._id,
+      connection: options.connection,
+      locale: options.locale,
+    });
+    return;
+  }
+
   const decision: TurnDetectionDecision = shouldForceSend
     ? {
         shouldSendNow: true,
         shouldAskReadyConfirmation: false,
-        reason: "explicit_send_command",
+        reason: "explicit_confirmation",
       }
     : await detectTurnReadiness({
         locale: options.locale,
@@ -2046,9 +2200,25 @@ async function processConnectedInbound(options: {
     return;
   }
 
+  const routingContextResult = (await options.ctx.runAction(
+    (internal as any).whatsappProcessing.lookupRoutingContext,
+    {
+      organizationId: options.connection.organizationId,
+      queryText: normalizedBufferedMessages
+        .flatMap((message) => [
+          message.text,
+          ...message.media.map((media) => media.transcription ?? ""),
+        ])
+        .join("\n"),
+    },
+  )) as {
+    contextText: string | null;
+  };
+
   const prompt = buildBufferedPrompt({
     locale: options.locale,
     messages: normalizedBufferedMessages,
+    routingContextText: routingContextResult.contextText,
   });
 
   const attachments: ChatAttachment[] = normalizedBufferedMessages
@@ -2134,6 +2304,146 @@ async function processConnectedInbound(options: {
   });
 }
 
+async function sendTypingIndicatorForInboundPayload(options: {
+  payload: TwilioInboundPayload;
+  phoneNumberE164: string;
+}) {
+  if (!options.payload.messageSid || options.payload.media.length > 0) {
+    return;
+  }
+
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  if (!accountSid || !authToken) {
+    return;
+  }
+
+  try {
+    await sendTwilioWhatsAppTypingIndicator({
+      accountSid,
+      authToken,
+      messageId: options.payload.messageSid,
+    });
+  } catch (error) {
+    console.warn("Failed to start WhatsApp typing indicator", {
+      phoneNumberE164: options.phoneNumberE164,
+      message: errorMessageFromUnknown(error),
+    });
+  }
+}
+
+export const sendDocumentationReminder = internalAction({
+  args: {
+    bufferId: v.id("whatsappTurnBuffers"),
+    connectionId: v.id("whatsappConnections"),
+    phoneNumberE164: v.string(),
+    locale: vAppLocale,
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const turnBuffer = (await ctx.runQuery(internal.whatsappData.getTurnBufferByConnection, {
+      connectionId: args.connectionId,
+    })) as WhatsAppTurnBufferDoc | null;
+
+    if (!turnBuffer || turnBuffer._id !== args.bufferId || turnBuffer.status !== "buffering") {
+      return null;
+    }
+
+    const bufferedMessages = (await ctx.runQuery(internal.whatsappData.getMessagesByIds, {
+      messageIds: turnBuffer.bufferedMessageIds,
+    })) as WhatsAppMessageDoc[];
+    const normalizedBufferedMessages = bufferedMessages
+      .slice()
+      .sort((messageA, messageB) => messageA.createdAt - messageB.createdAt);
+    const latestBufferedMessage =
+      normalizedBufferedMessages[normalizedBufferedMessages.length - 1] ?? null;
+
+    if (
+      !latestBufferedMessage ||
+      latestBufferedMessage.media.length === 0 ||
+      Date.now() - turnBuffer.lastBufferedAt < WHATSAPP_THREAD_READINESS_BUFFER_MS
+    ) {
+      return null;
+    }
+
+    await ctx.runMutation(internal.whatsappData.updateTurnBufferStatus, {
+      bufferId: turnBuffer._id,
+      status: "awaiting_documentation_confirmation",
+      readyPromptSentAt: undefined,
+      documentationPromptSentAt: Date.now(),
+      documentationReminderJobId: undefined,
+    });
+
+    await ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+      phoneNumberE164: args.phoneNumberE164,
+      locale: args.locale,
+      text: documentationReminderMessage(args.locale),
+      connectionId: args.connectionId,
+    });
+
+    return null;
+  },
+});
+
+export const processInboundPayload = internalAction({
+  args: {
+    phoneNumberE164: v.string(),
+    payload: v.object({
+      from: v.string(),
+      to: v.string(),
+      body: v.string(),
+      messageSid: v.string(),
+      profileName: v.optional(v.string()),
+      media: v.array(
+        v.object({
+          mediaUrl: v.string(),
+          contentType: v.string(),
+          fileName: v.optional(v.string()),
+        }),
+      ),
+    }),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await sendTypingIndicatorForInboundPayload({
+      payload: args.payload,
+      phoneNumberE164: args.phoneNumberE164,
+    });
+
+    const activeConnection = (await ctx.runQuery(
+      internal.whatsappData.getActiveConnectionByPhone,
+      {
+        phoneNumberE164: args.phoneNumberE164,
+      },
+    )) as WhatsAppConnectionDoc | null;
+
+    const locale = await resolveInboundLocale({
+      runQuery: ctx.runQuery,
+      phoneNumberE164: args.phoneNumberE164,
+      userId: activeConnection?.userId,
+    });
+
+    if (!activeConnection) {
+      await ctx.runAction((internal as any).whatsapp.processOnboardingInbound, {
+        phoneNumberE164: args.phoneNumberE164,
+        locale,
+        payload: args.payload,
+      });
+      return null;
+    }
+
+    await processConnectedInbound({
+      ctx,
+      payload: args.payload,
+      locale,
+      phoneNumberE164: args.phoneNumberE164,
+      connection: activeConnection,
+    });
+
+    return null;
+  },
+});
+
 export const handleTwilioWebhook = action({
   args: {
     requestUrl: v.string(),
@@ -2176,56 +2486,9 @@ export const handleTwilioWebhook = action({
       };
     }
 
-    // Start WhatsApp typing indicator as early as possible after receiving a user message.
-    if (payload.messageSid) {
-      const accountSid = process.env.TWILIO_ACCOUNT_SID;
-      const authToken = process.env.TWILIO_AUTH_TOKEN;
-      if (accountSid && authToken) {
-        try {
-          await sendTwilioWhatsAppTypingIndicator({
-            accountSid,
-            authToken,
-            messageId: payload.messageSid,
-          });
-        } catch (error) {
-          console.warn("Failed to start WhatsApp typing indicator", {
-            phoneNumberE164: normalizedPhone.e164,
-            message: errorMessageFromUnknown(error),
-          });
-        }
-      }
-    }
-
-    const activeConnection = (await ctx.runQuery(
-      internal.whatsappData.getActiveConnectionByPhone,
-      {
-        phoneNumberE164: normalizedPhone.e164,
-      },
-    )) as WhatsAppConnectionDoc | null;
-
-    const locale = await resolveInboundLocale({
-      runQuery: ctx.runQuery,
+    await ctx.scheduler.runAfter(0, (internal as any).whatsapp.processInboundPayload, {
       phoneNumberE164: normalizedPhone.e164,
-      userId: activeConnection?.userId,
-    });
-
-    if (!activeConnection) {
-      await ctx.runAction((internal as any).whatsapp.processOnboardingInbound, {
-        phoneNumberE164: normalizedPhone.e164,
-        locale,
-        payload,
-      });
-      return {
-        handled: true,
-      };
-    }
-
-    await processConnectedInbound({
-      ctx,
       payload,
-      locale,
-      phoneNumberE164: normalizedPhone.e164,
-      connection: activeConnection,
     });
 
     return {
@@ -2237,7 +2500,7 @@ export const handleTwilioWebhook = action({
 export const processOnboardingInbound = internalAction({
   args: {
     phoneNumberE164: v.string(),
-    locale: v.union(v.literal("en"), v.literal("de")),
+    locale: vAppLocale,
     payload: v.object({
       from: v.string(),
       to: v.string(),
@@ -2396,19 +2659,10 @@ export const processOnboardingInbound = internalAction({
         userId: existingUser?._id,
       });
 
-      const auth = createAuth(ctx as any);
-      await callAuthApi(auth, "sendVerificationOTP", {
-        body: {
-          email,
-          type: "sign-in",
-        },
-        headers: new Headers(),
-      });
-
       await ctx.runMutation(internal.whatsappData.upsertOnboardingSession, {
         phoneNumberE164: args.phoneNumberE164,
         status: "active",
-        stage: "awaiting_otp",
+        stage: "awaiting_password",
         locale,
         email,
         userId: existingUser?._id ?? existingSession.userId,
@@ -2422,68 +2676,62 @@ export const processOnboardingInbound = internalAction({
       await ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
         phoneNumberE164: args.phoneNumberE164,
         locale,
-        text: askOtpMessage(locale, email),
+        text: askPasswordMessage({
+          locale,
+          email,
+          isExistingUser: !!existingUser,
+        }),
       });
       return;
     }
 
-    if (existingSession.stage === "awaiting_otp") {
-      const normalizedOtpInput = normalizeCommandText(args.payload.body);
-      if (existingSession.email && normalizedOtpInput.includes("send")) {
-        const auth = createAuth(ctx as any);
-        await callAuthApi(auth, "sendVerificationOTP", {
-          body: {
-            email: existingSession.email,
-            type: "sign-in",
-          },
-          headers: new Headers(),
-        });
-
-        await ctx.runMutation(internal.whatsappData.upsertOnboardingSession, {
-          phoneNumberE164: args.phoneNumberE164,
-          status: "active",
-          stage: "awaiting_otp",
-          locale: existingSession.locale,
-          email: existingSession.email,
-          userId: existingSession.userId,
-          organizationId: existingSession.organizationId,
-          memberId: existingSession.memberId,
-          pendingOrganizations: undefined,
-          otpAttempts: existingSession.otpAttempts,
-          expiresAt: now + WHATSAPP_ONBOARDING_TTL_MS,
-        });
-
+    if (existingSession.stage === "awaiting_password") {
+      const password = args.payload.body;
+      if (!existingSession.email || !password.trim()) {
         await ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
           phoneNumberE164: args.phoneNumberE164,
           locale: existingSession.locale,
-          text: askOtpMessage(existingSession.locale, existingSession.email),
+          text: invalidPasswordMessage(existingSession.locale),
         });
         return;
       }
 
-      const otp = extractOtpCandidate(args.payload.body);
-      if (!otp || !existingSession.email) {
-        await ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
-          phoneNumberE164: args.phoneNumberE164,
-          locale: existingSession.locale,
-          text: invalidOtpMessage(existingSession.locale),
-        });
-        return;
-      }
-
+      const userFromDirectoryBeforeAuth = (await ctx.runQuery(
+        components.betterAuth.adapter.findOne,
+        {
+          model: "user",
+          where: [
+            {
+              field: "email",
+              operator: "eq",
+              value: existingSession.email,
+            },
+          ],
+        },
+      )) as UserDoc | null;
+      const shouldSignIn = !!(existingSession.userId ?? userFromDirectoryBeforeAuth?._id);
       const auth = createAuth(ctx as any);
 
       try {
-        const signInResult = await callAuthApi(auth, "signInEmailOTP", {
-          body: {
-            email: existingSession.email,
-            otp,
-          },
-          headers: new Headers(),
-        });
+        const authResult = shouldSignIn
+          ? await callAuthApi(auth, "signInEmail", {
+              body: {
+                email: existingSession.email,
+                password,
+              },
+              headers: new Headers(),
+            })
+          : await callAuthApi(auth, "signUpEmail", {
+              body: {
+                email: existingSession.email,
+                password,
+                name: WHATSAPP_ONBOARDING_PLACEHOLDER_NAME,
+              },
+              headers: new Headers(),
+            });
 
-        const userFromSignIn = normalizeUserInfo(signInResult);
-        const userFromDirectory = userFromSignIn
+        const userFromAuth = normalizeUserInfo(authResult);
+        const userFromDirectory = userFromAuth
           ? null
           : ((await ctx.runQuery(components.betterAuth.adapter.findOne, {
               model: "user",
@@ -2495,9 +2743,9 @@ export const processOnboardingInbound = internalAction({
                 },
               ],
             })) as UserDoc | null);
-        const user = userFromSignIn ?? normalizeUserInfo(userFromDirectory);
+        const user = userFromAuth ?? normalizeUserInfo(userFromDirectory);
         if (!user) {
-          throw new Error("Unable to resolve signed-in user");
+          throw new Error("Unable to resolve authenticated user");
         }
 
         await autoAcceptInvitationsForEmail({
@@ -2564,21 +2812,23 @@ export const processOnboardingInbound = internalAction({
           text: `${onboardingText}${switchHint}`,
         });
       } catch (error) {
-        console.error("WhatsApp onboarding OTP verification failed", {
+        console.error("WhatsApp onboarding email/password auth failed", {
           phoneNumberE164: args.phoneNumberE164,
           message: errorMessageFromUnknown(error),
         });
 
         const nextAttempts = existingSession.otpAttempts + 1;
-        const shouldExpire = nextAttempts >= MAX_ONBOARDING_OTP_ATTEMPTS;
+        const shouldExpire = nextAttempts >= MAX_ONBOARDING_AUTH_ATTEMPTS;
 
         await ctx.runMutation(internal.whatsappData.upsertOnboardingSession, {
           phoneNumberE164: args.phoneNumberE164,
           status: shouldExpire ? "expired" : "active",
-          stage: shouldExpire ? "awaiting_email" : "awaiting_otp",
+          stage: shouldExpire ? "awaiting_email" : "awaiting_password",
           locale: existingSession.locale,
           email: shouldExpire ? undefined : existingSession.email,
-          userId: existingSession.userId,
+          userId: shouldExpire
+            ? undefined
+            : userFromDirectoryBeforeAuth?._id ?? existingSession.userId,
           organizationId: existingSession.organizationId,
           memberId: existingSession.memberId,
           pendingOrganizations: undefined,
@@ -2590,8 +2840,8 @@ export const processOnboardingInbound = internalAction({
           phoneNumberE164: args.phoneNumberE164,
           locale: existingSession.locale,
           text: shouldExpire
-            ? onboardingOtpAttemptsExceededMessage(existingSession.locale)
-            : invalidOtpMessage(existingSession.locale),
+            ? onboardingPasswordAttemptsExceededMessage(existingSession.locale)
+            : invalidPasswordMessage(existingSession.locale),
         });
       }
     }
@@ -2604,7 +2854,7 @@ export const runAgentForBufferedTurn: any = internalAction({
     userId: v.string(),
     memberId: v.string(),
     threadId: v.string(),
-    locale: v.union(v.literal("en"), v.literal("de")),
+    locale: vAppLocale,
     prompt: v.string(),
     attachments: v.array(
       v.object({
@@ -2733,12 +2983,47 @@ export const runAgentForBufferedTurn: any = internalAction({
     })) as GenerationHistoryMessage[];
 
     const auth = createAuth(ctx as any);
-    const headers = await getSessionHeadersForUser(ctx, args.userId);
+    await ensureServiceSessionForUser(ctx, {
+      userId: args.userId,
+      organizationId: args.organizationId,
+      userAgent: "whatsapp-run-agent",
+    });
+    const headers = await getSessionHeadersForUser(
+      ctx,
+      args.userId,
+      args.organizationId,
+    );
 
-    const permissionFlags = await getToolPermissionFlags({
+    const {
+      permissionFlags,
+      readWorkspaceSnapshot,
+      organizationAdminTools,
+      customerTools,
+      projectTools,
+      userAccountTools,
+    } = await buildWorkspaceAgentTools({
       auth,
       headers,
+      channel: "whatsapp",
+      ctx,
+      locale,
+      memberRole: member.role,
       organizationId: args.organizationId,
+      prompt: normalizedPrompt,
+      resourceId,
+      threadId: args.threadId,
+      userId: args.userId,
+      createPendingAction: async ({ actionType, payload }) => {
+        return await ctx.runMutation(internal.aiState.upsertPendingAction, {
+          threadId: args.threadId,
+          resourceId,
+          organizationId: args.organizationId,
+          userId: args.userId,
+          actionType,
+          payload,
+          expiresAt: Date.now() + PENDING_ACTION_TTL_MS,
+        });
+      },
     });
 
     const contextPacket = compileAgentContextPacket({
@@ -2760,590 +3045,18 @@ export const runAgentForBufferedTurn: any = internalAction({
       historyMessages,
     });
 
-    const listOrganizationMembers = async (): Promise<OrganizationMember[]> => {
-      const response = await callAuthApi(auth, "listMembers", {
-        query: {
-          organizationId: args.organizationId,
-        },
-        headers,
-      });
-
-      const records =
-        isRecord(response) && Array.isArray(response.members)
-          ? response.members
-          : [];
-
-      return records
-        .map((entry) => normalizeMember(entry))
-        .filter((entry): entry is OrganizationMember => !!entry);
-    };
-
-    const listOrganizationInvitations = async (input?: { status?: string }) => {
-      const response = await callAuthApi(auth, "listInvitations", {
-        query: {
-          organizationId: args.organizationId,
-        },
-        headers,
-      });
-
-      const records = Array.isArray(response)
-        ? response
-        : isRecord(response) && Array.isArray(response.invitations)
-          ? response.invitations
-          : [];
-
-      const invitations = records
-        .map((invitation) => normalizeInvitation(invitation))
-        .filter((invitation): invitation is OrganizationInvitation => !!invitation);
-
-      if (!input?.status) {
-        return invitations;
-      }
-
-      return invitations.filter((invitation) => invitation.status === input.status);
-    };
-
-    const getConnectedRecipientState = async () => {
-      const [members, connections] = await Promise.all([
-        listOrganizationMembers(),
-        ctx.runQuery(internal.whatsappData.getActiveConnectionsByOrganization, {
-          organizationId: args.organizationId,
-        }) as Promise<WhatsAppConnectionDoc[]>,
-      ]);
-
-      const memberById = new Map(members.map((entry) => [entry.id, entry]));
-      const connectionByMemberId = new Map<string, WhatsAppConnectionDoc>();
-      const recipients: ConnectedWhatsAppRecipient[] = [];
-
-      for (const connection of connections) {
-        const member = memberById.get(connection.memberId);
-        if (!member) {
-          continue;
-        }
-
-        connectionByMemberId.set(connection.memberId, connection);
-        recipients.push({
-          memberId: connection.memberId,
-          userId: member.userId,
-          name: member.name,
-          email: member.email,
-          phoneNumberE164: connection.phoneNumberE164,
-          isCurrentUser: member.userId === args.userId,
-        });
-      }
-
-      recipients.sort((entryA, entryB) => {
-        const nameComparison = entryA.name.localeCompare(entryB.name, undefined, {
-          sensitivity: "base",
-        });
-        if (nameComparison !== 0) {
-          return nameComparison;
-        }
-        return entryA.email.localeCompare(entryB.email, undefined, {
-          sensitivity: "base",
-        });
-      });
-
-      return {
-        recipients,
-        connectionByMemberId,
-      };
-    };
-
-    const listConnectedWhatsAppNumbers = async (): Promise<ConnectedWhatsAppRecipient[]> => {
-      const state = await getConnectedRecipientState();
-      return state.recipients;
-    };
-
-    const sendProactiveWhatsAppMessage = async (input: {
-      recipientMemberIds: string[];
-      message: string;
-    }): Promise<ProactiveWhatsAppSendResult> => {
-      if (!hasExplicitProactiveSendIntent(normalizedPrompt)) {
-        throw new Error(
-          locale === "de"
-            ? "Ich kann proaktive WhatsApp-Nachrichten nur senden, wenn du es in dieser Nachricht ausdrücklich verlangst."
-            : "I can send proactive WhatsApp messages only when you explicitly ask for sending in this request.",
-        );
-      }
-
-      const accountSid = process.env.TWILIO_ACCOUNT_SID;
-      const authToken = process.env.TWILIO_AUTH_TOKEN;
-      const fromNumber = process.env.TWILIO_WHATSAPP_FROM_NUMBER;
-      if (!accountSid || !authToken || !fromNumber) {
-        throw new Error(
-          locale === "de"
-            ? "WhatsApp-Versand ist nicht konfiguriert."
-            : "WhatsApp outbound messaging is not configured.",
-        );
-      }
-
-      const messageText = input.message.trim();
-      if (!messageText) {
-        throw new Error(
-          locale === "de" ? "Nachricht darf nicht leer sein." : "Message cannot be empty.",
-        );
-      }
-
-      const recipientMemberIds = [...new Set(
-        input.recipientMemberIds.map((entry) => entry.trim()).filter((entry) => entry.length > 0),
-      )];
-      if (recipientMemberIds.length === 0) {
-        throw new Error(
-          locale === "de"
-            ? "Mindestens ein Zielmitglied ist erforderlich."
-            : "At least one recipient is required.",
-        );
-      }
-
-      const { connectionByMemberId } = await getConnectedRecipientState();
-      const results: ProactiveWhatsAppSendResult["results"] = [];
-
-      for (const memberId of recipientMemberIds) {
-        const connection = connectionByMemberId.get(memberId);
-        if (!connection) {
-          results.push({
-            memberId,
-            phoneNumberE164: "",
-            status: "failed",
-            reason:
-              locale === "de"
-                ? "Keine aktive WhatsApp-Verbindung gefunden."
-                : "No active WhatsApp connection found.",
-          });
-          continue;
-        }
-
-        try {
-          await sendOutboundMessage({
-            text: messageText,
-            phoneNumberE164: connection.phoneNumberE164,
-            locale,
-            connection,
-            runMutation: ctx.runMutation,
-          });
-
-          results.push({
-            memberId,
-            phoneNumberE164: connection.phoneNumberE164,
-            status: "sent",
-          });
-        } catch (error) {
-          results.push({
-            memberId,
-            phoneNumberE164: connection.phoneNumberE164,
-            status: "failed",
-            reason: errorMessageFromUnknown(error),
-          });
-        }
-      }
-
-      const sentCount = results.filter((entry) => entry.status === "sent").length;
-      const failedCount = results.length - sentCount;
-
-      return {
-        requestedRecipientCount: recipientMemberIds.length,
-        sentCount,
-        failedCount,
-        results,
-      };
-    };
-
-    const getOrganizationSummary = async (): Promise<OrganizationSummary> => {
-      const [organizationResult, members, invitations] = await Promise.all([
-        callAuthApi(auth, "getFullOrganization", {
-          query: {
-            organizationId: args.organizationId,
-          },
-          headers,
-        }),
-        listOrganizationMembers(),
-        listOrganizationInvitations({ status: "pending" }),
-      ]);
-
-      const organization = normalizeOrganizationInfo(organizationResult) ?? {
-        id: args.organizationId,
-        name: locale === "de" ? "Aktive Organisation" : "Active organization",
-        slug: args.organizationId,
-        logo: null,
-      };
-
-      return {
-        organization,
-        currentMemberRole: member.role,
-        memberCount: members.length,
-        invitationCount: invitations.length,
-        permissions: permissionFlags,
-        members,
-        pendingInvitations: invitations,
-      };
-    };
-
-    const readWorkspaceSnapshot = async (): Promise<WorkspaceSnapshot> => {
-      const membersResult = await ctx.runQuery(components.betterAuth.adapter.findMany, {
-        model: "member",
-        where: [
-          {
-            field: "organizationId",
-            operator: "eq",
-            value: args.organizationId,
-          },
-        ],
-        paginationOpts: {
-          cursor: null,
-          numItems: PAGE_SIZE,
-        },
-      });
-
-      const members = (membersResult.page ?? []) as MemberDoc[];
-      const userIds = [...new Set(members.map((entry) => entry.userId))];
-
-      const usersResult =
-        userIds.length === 0
-          ? { page: [] as UserDoc[] }
-          : await ctx.runQuery(components.betterAuth.adapter.findMany, {
-              model: "user",
-              where: [
-                {
-                  field: "_id",
-                  operator: "in",
-                  value: userIds,
-                },
-              ],
-              paginationOpts: {
-                cursor: null,
-                numItems: PAGE_SIZE,
-              },
-            });
-
-      const users = (usersResult.page ?? []) as UserDoc[];
-      const userById = new Map(users.map((entry) => [entry._id, entry]));
-
-      const invitationsResult = await ctx.runQuery(components.betterAuth.adapter.findMany, {
-        model: "invitation",
-        where: [
-          {
-            field: "organizationId",
-            operator: "eq",
-            value: args.organizationId,
-          },
-          {
-            field: "status",
-            operator: "eq",
-            value: "pending",
-          },
-        ],
-        paginationOpts: {
-          cursor: null,
-          numItems: PAGE_SIZE,
-        },
-      });
-
-      const invitations = (invitationsResult.page ?? []) as InvitationDoc[];
-
-      return {
-        organizationId: args.organizationId,
-        memberCount: members.length,
-        invitationCount: invitations.length,
-        members: members.map((entry) => {
-          const resolvedUser = userById.get(entry.userId);
-          return {
-            name: resolvedUser?.name ?? "Unknown user",
-            email: resolvedUser?.email ?? "unknown@example.com",
-            role: entry.role,
-          };
-        }),
-        pendingInvitations: invitations.map((invitation) => ({
-          email: invitation.email,
-          role: invitation.role ?? "member",
-        })),
-      };
-    };
-
-    const getUserSettings = async (): Promise<UserSettingsSummary> => {
-      const [userResult, localePreference, themePreference] = await Promise.all([
-        ctx.runQuery(components.betterAuth.adapter.findOne, {
-          model: "user",
-          where: [
-            {
-              field: "_id",
-              operator: "eq",
-              value: args.userId,
-            },
-          ],
-        }),
-        ctx.runQuery(internal.preferences.getLocaleForUser, {
-          userId: args.userId,
-        }),
-        ctx.runQuery(internal.preferences.getThemeForUser, {
-          userId: args.userId,
-        }),
-      ]);
-
-      const normalizedUser = normalizeUserInfo(userResult) ?? {
-        id: args.userId,
-        name: userResult && isRecord(userResult) ? getRecordString(userResult, "name") ?? "User" : "User",
-        email: userResult && isRecord(userResult) ? getRecordString(userResult, "email") ?? "unknown@example.com" : "unknown@example.com",
-        image:
-          userResult && isRecord(userResult) && typeof userResult.image === "string"
-            ? userResult.image
-            : null,
-      };
-
-      return {
-        user: normalizedUser,
-        preferences: {
-          language: localePreference ?? "system",
-          theme: themePreference ?? "system",
-        },
-      };
-    };
-
-    const updateUserSettings = async (input: {
-      name?: string;
-      image?: string | null;
-      language?: "en" | "de" | "system";
-      theme?: "light" | "dark" | "system";
-    }): Promise<UserSettingsSummary> => {
-      const userUpdateData: Record<string, string | null> = {};
-      let hasPreferenceUpdate = false;
-
-      if (typeof input.name === "string") {
-        const normalizedName = input.name.trim();
-        if (normalizedName.length < 2) {
-          throw new Error(locale === "de" ? "Name zu kurz." : "Name too short.");
-        }
-        userUpdateData.name = normalizedName;
-      }
-
-      if (input.image !== undefined) {
-        if (input.image === null) {
-          userUpdateData.image = null;
-        } else {
-          const normalizedImage = input.image.trim();
-          userUpdateData.image = normalizedImage.length > 0 ? normalizedImage : null;
-        }
-      }
-
-      if (Object.keys(userUpdateData).length > 0) {
-        await callAuthApi(auth, "updateUser", {
-          body: userUpdateData,
-          headers,
-        });
-      }
-
-      if (input.language !== undefined) {
-        hasPreferenceUpdate = true;
-        await ctx.runMutation(internal.preferences.setLocaleForUser, {
-          userId: args.userId,
-          locale: input.language === "system" ? null : input.language,
-        });
-      }
-
-      if (input.theme !== undefined) {
-        hasPreferenceUpdate = true;
-        await ctx.runMutation(internal.preferences.setThemeForUser, {
-          userId: args.userId,
-          theme: input.theme === "system" ? null : input.theme,
-        });
-      }
-
-      if (Object.keys(userUpdateData).length === 0 && !hasPreferenceUpdate) {
-        throw new Error(locale === "de" ? "Keine Aenderung angegeben." : "No update fields provided.");
-      }
-
-      return await getUserSettings();
-    };
-
-    const requestDeleteOrganizationConfirmation =
-      permissionFlags.canDeleteOrganization
-        ? async () => {
-            const organizationResult = await callAuthApi(auth, "getFullOrganization", {
-              query: {
-                organizationId: args.organizationId,
-              },
-              headers,
-            });
-            const organization = normalizeOrganizationInfo(organizationResult);
-            const pending = await ctx.runMutation(
-              internal.aiState.upsertPendingDeleteOrganizationAction,
-              {
-                threadId: args.threadId,
-                resourceId,
-                organizationId: args.organizationId,
-                userId: args.userId,
-                payload: {
-                  organizationId: args.organizationId,
-                  organizationName: organization?.name,
-                },
-                expiresAt: Date.now() + PENDING_ACTION_TTL_MS,
-              },
-            );
-
-            return {
-              pendingActionId: pending.pendingActionId,
-              expiresAt: pending.expiresAt,
-            };
-          }
-        : undefined;
-
     const agent = createWorkspaceAgent({
+      channel: "whatsapp",
       organizationId: args.organizationId,
       modelId,
       locale,
       responseFormat: "whatsapp",
       contextPacket: formatContextPacketForInstructions(contextPacket),
       readWorkspaceSnapshot,
-      organizationTools: {
-        getOrganizationSummary,
-        listOrganizationMembers,
-        listOrganizationInvitations,
-        listConnectedWhatsAppNumbers,
-        sendProactiveWhatsAppMessage,
-        updateOrganization: permissionFlags.canUpdateOrganization
-          ? async (input) => {
-              const data: Record<string, string> = {};
-
-              if (typeof input.name === "string") {
-                data.name = input.name.trim();
-              }
-              if (typeof input.slug === "string") {
-                data.slug = input.slug.trim();
-              }
-              if (typeof input.logo === "string") {
-                data.logo = input.logo.trim();
-              }
-
-              if (Object.keys(data).length === 0) {
-                throw new Error(locale === "de" ? "Keine Felder angegeben." : "No fields provided.");
-              }
-
-              const updated = await callAuthApi(auth, "updateOrganization", {
-                body: {
-                  organizationId: args.organizationId,
-                  data,
-                },
-                headers,
-              });
-
-              const organization = normalizeOrganizationInfo(updated);
-              if (!organization) {
-                throw new Error(locale === "de" ? "Update fehlgeschlagen." : "Failed to update organization.");
-              }
-
-              return organization;
-            }
-          : undefined,
-        inviteOrganizationMember: permissionFlags.canInviteMembers
-          ? async (input) => {
-              const invited = await callAuthApi(auth, "createInvitation", {
-                body: {
-                  organizationId: args.organizationId,
-                  email: input.email,
-                  role: input.role,
-                },
-                headers,
-              });
-
-              const invitation = normalizeInvitation(invited);
-              if (!invitation) {
-                throw new Error(locale === "de" ? "Einladung fehlgeschlagen." : "Failed to create invitation.");
-              }
-
-              return invitation;
-            }
-          : undefined,
-        updateOrganizationMemberRole: permissionFlags.canUpdateMembers
-          ? async (input) => {
-              const updated = await callAuthApi(auth, "updateMemberRole", {
-                body: {
-                  organizationId: args.organizationId,
-                  memberId: input.memberId,
-                  role: input.role,
-                },
-                headers,
-              });
-
-              const updatedMember = normalizeMember(updated);
-              if (!updatedMember) {
-                throw new Error(locale === "de" ? "Rollenupdate fehlgeschlagen." : "Failed to update member role.");
-              }
-
-              return updatedMember;
-            }
-          : undefined,
-        removeOrganizationMember: permissionFlags.canRemoveMembers
-          ? async (input) => {
-              const removed = await callAuthApi(auth, "removeMember", {
-                body: {
-                  organizationId: args.organizationId,
-                  memberIdOrEmail: input.memberIdOrEmail,
-                },
-                headers,
-              });
-
-              const memberPayload = isRecord(removed) && isRecord(removed.member)
-                ? removed.member
-                : removed;
-              const removedMember = normalizeMember(memberPayload);
-              if (!removedMember) {
-                throw new Error(locale === "de" ? "Entfernen fehlgeschlagen." : "Failed to remove member.");
-              }
-
-              return removedMember;
-            }
-          : undefined,
-        cancelOrganizationInvitation: permissionFlags.canCancelInvitations
-          ? async (input) => {
-              const canceled = await callAuthApi(auth, "cancelInvitation", {
-                body: {
-                  invitationId: input.invitationId,
-                },
-                headers,
-              });
-
-              const invitation = normalizeInvitation(canceled);
-              if (!invitation) {
-                throw new Error(locale === "de" ? "Widerruf fehlgeschlagen." : "Failed to cancel invitation.");
-              }
-
-              return invitation;
-            }
-          : undefined,
-        leaveOrganization: permissionFlags.canLeaveOrganization
-          ? async () => {
-              await callAuthApi(auth, "leaveOrganization", {
-                body: {
-                  organizationId: args.organizationId,
-                },
-                headers,
-              });
-
-              return {
-                organizationId: args.organizationId,
-              };
-            }
-          : undefined,
-        requestDeleteOrganizationConfirmation,
-        deleteOrganization: permissionFlags.canDeleteOrganization
-          ? async () => {
-              await callAuthApi(auth, "deleteOrganization", {
-                body: {
-                  organizationId: args.organizationId,
-                },
-                headers,
-              });
-
-              return {
-                organizationId: args.organizationId,
-              };
-            }
-          : undefined,
-      },
-      userTools: {
-        getUserSettings,
-        updateUserSettings,
-      },
+      organizationAdminTools,
+      customerTools,
+      projectTools,
+      userAccountTools,
     });
 
     await ctx.runMutation(internal.aiState.setChatThreadState, {
@@ -3363,12 +3076,13 @@ export const runAgentForBufferedTurn: any = internalAction({
     let streamedText = "";
     let streamPhase: "idle" | "thinking" | "delegating" | "tool" | "responding" =
       "thinking";
-    let streamActor: "main" | "organization" | "user" = "main";
+    let streamActor: "main" | "organization" | "customer" | "project" | "user" =
+      "main";
     let activeToolLabel: string | null = null;
 
     const setStreamState = (nextState: {
       phase?: "idle" | "thinking" | "delegating" | "tool" | "responding";
-      actor?: "main" | "organization" | "user";
+      actor?: "main" | "organization" | "customer" | "project" | "user";
       toolLabel?: string | null;
     }) => {
       let changed = false;
@@ -3448,16 +3162,11 @@ export const runAgentForBufferedTurn: any = internalAction({
               ? getRecordString(chunk, "toolName")
               : null;
 
-          if (toolName?.startsWith("agent-organization")) {
+          const delegatedActor = resolveStreamActor(toolName);
+          if (delegatedActor !== "main") {
             shouldForceFlush = setStreamState({
               phase: "delegating",
-              actor: "organization",
-              toolLabel: null,
-            });
-          } else if (toolName?.startsWith("agent-user")) {
-            shouldForceFlush = setStreamState({
-              phase: "delegating",
-              actor: "user",
+              actor: delegatedActor,
               toolLabel: null,
             });
           } else {
@@ -3473,16 +3182,11 @@ export const runAgentForBufferedTurn: any = internalAction({
               ? getRecordString(chunk, "toolName")
               : null;
 
-          if (toolName?.startsWith("agent-organization")) {
+          const delegatedActor = resolveStreamActor(toolName);
+          if (delegatedActor !== "main") {
             shouldForceFlush = setStreamState({
               phase: "thinking",
-              actor: "organization",
-              toolLabel: null,
-            });
-          } else if (toolName?.startsWith("agent-user")) {
-            shouldForceFlush = setStreamState({
-              phase: "thinking",
-              actor: "user",
+              actor: delegatedActor,
               toolLabel: null,
             });
           } else {
@@ -3506,11 +3210,7 @@ export const runAgentForBufferedTurn: any = internalAction({
 
           shouldForceFlush = setStreamState({
             phase: "thinking",
-            actor: agentId?.includes("organization")
-              ? "organization"
-              : agentId?.includes("user")
-                ? "user"
-                : "main",
+            actor: resolveStreamActor(agentId),
             toolLabel: null,
           });
         } else if (type === "step-start") {
@@ -3672,7 +3372,7 @@ export const runAgentForBufferedTurn: any = internalAction({
 export const sendSystemMessage = internalAction({
   args: {
     phoneNumberE164: v.string(),
-    locale: v.union(v.literal("en"), v.literal("de")),
+    locale: vAppLocale,
     text: v.string(),
     connectionId: v.optional(v.id("whatsappConnections")),
   },
@@ -3695,7 +3395,7 @@ export const sendSystemMessage = internalAction({
 
 export const detectTurnIntent = internalAction({
   args: {
-    locale: v.union(v.literal("en"), v.literal("de")),
+    locale: vAppLocale,
     text: v.string(),
     hasMedia: v.boolean(),
     mediaOnly: v.boolean(),
@@ -3716,7 +3416,7 @@ export const detectTurnIntent = internalAction({
 
 export const suggestClarificationUi = internalAction({
   args: {
-    locale: v.union(v.literal("en"), v.literal("de")),
+    locale: vAppLocale,
     title: v.string(),
     prompt: v.string(),
     options: v.array(

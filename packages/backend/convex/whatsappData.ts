@@ -1,4 +1,7 @@
+import { createTranslator, type AppLocale } from "@mvp-template/i18n";
 import { v } from "convex/values";
+
+import { vAppLocale } from "./lib/locales";
 
 import { components, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -76,11 +79,13 @@ type WhatsAppTurnBufferDoc = {
   userId: string;
   memberId: string;
   threadId: string;
-  status: "buffering" | "awaiting_confirmation";
+  status: "buffering" | "awaiting_confirmation" | "awaiting_documentation_confirmation";
   bufferedMessageIds: Id<"whatsappMessages">[];
   firstBufferedAt: number;
   lastBufferedAt: number;
   readyPromptSentAt?: number;
+  documentationPromptSentAt?: number;
+  documentationReminderJobId?: Id<"_scheduled_functions">;
   updatedAt: number;
 };
 
@@ -90,11 +95,11 @@ type OnboardingSessionDoc = {
   status: "active" | "completed" | "expired";
   stage:
     | "awaiting_email"
-    | "awaiting_otp"
+    | "awaiting_password"
     | "awaiting_switch_selection"
     | "awaiting_unlink_confirmation"
     | "ready";
-  locale: "en" | "de";
+  locale: AppLocale;
   email?: string;
   userId?: string;
   organizationId?: string;
@@ -357,7 +362,7 @@ export const setMemberConnection = mutation({
   },
 });
 
-export const removeMemberConnection = mutation({
+export const removeMemberConnection = action({
   args: {
     organizationId: v.string(),
     memberId: v.string(),
@@ -412,32 +417,10 @@ export const removeMemberConnection = mutation({
       throw new Error("You are not allowed to manage this WhatsApp connection");
     }
 
-    const connection = await ctx.db
-      .query("whatsappConnections")
-      .withIndex("by_org_member_status", (q) =>
-        q
-          .eq("organizationId", args.organizationId)
-          .eq("memberId", args.memberId)
-          .eq("status", "active"),
-      )
-      .first();
-
-    if (!connection) {
-      return null;
-    }
-
-    const now = Date.now();
-    await ctx.db.patch(connection._id, {
-      status: "disconnected",
-      disconnectedAt: now,
-      updatedAt: now,
+    await ctx.runMutation(internal.whatsappData.disconnectConnectionByMember, {
+      organizationId: args.organizationId,
+      memberId: args.memberId,
     });
-
-    await ctx.db
-      .query("whatsappTurnBuffers")
-      .withIndex("by_connectionId", (q) => q.eq("connectionId", connection._id))
-      .collect()
-      .then((buffers) => Promise.all(buffers.map((buffer) => ctx.db.delete(buffer._id))));
 
     return true;
   },
@@ -528,6 +511,19 @@ export const sendMemberActivationGuideEmail = action({
       throw new Error("You are not allowed to manage this WhatsApp connection");
     }
 
+    const targetProfile = (await ctx.runQuery(
+      internal.memberProfiles.getMemberProfileByMemberId,
+      {
+        memberId: args.memberId,
+      },
+    )) as {
+      memberType?: "standard" | "phone_only";
+    } | null;
+
+    if (targetProfile?.memberType === "phone_only") {
+      throw new Error("This member does not use email onboarding");
+    }
+
     const targetUser = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
       model: "user",
       where: [
@@ -554,14 +550,6 @@ export const sendMemberActivationGuideEmail = action({
       ],
     })) as OrganizationDoc | null;
 
-    const organizationName = organization?.name?.trim() || "Workspace";
-    const agentProfile = await ctx.runQuery(
-      internal.whatsappData.getOrganizationAgentProfileByOrganizationId,
-      {
-        organizationId: args.organizationId,
-      },
-    );
-    const agentName = agentProfile?.name?.trim() || "AI Agent";
     const userPreferenceLocale = await ctx.runQuery(
       internal.whatsappData.getUserLocaleByUserId,
       {
@@ -569,6 +557,17 @@ export const sendMemberActivationGuideEmail = action({
       },
     );
     const locale = userPreferenceLocale === "de" ? "de" : "en";
+    const t = createTranslator(locale);
+    const organizationName =
+      organization?.name?.trim() || t("common.misc.workspace");
+    const agentProfile = await ctx.runQuery(
+      internal.whatsappData.getOrganizationAgentProfileByOrganizationId,
+      {
+        organizationId: args.organizationId,
+      },
+    );
+    const agentName =
+      agentProfile?.name?.trim() || t("app.dialogs.aiAgent.defaultName");
 
     const numberRaw = process.env.WHATSAPP_AGENT_NUMBER ?? "";
     const initialMessage =
@@ -664,12 +663,12 @@ export const upsertOnboardingSession = internalMutation({
     status: v.union(v.literal("active"), v.literal("completed"), v.literal("expired")),
     stage: v.union(
       v.literal("awaiting_email"),
-      v.literal("awaiting_otp"),
+      v.literal("awaiting_password"),
       v.literal("awaiting_switch_selection"),
       v.literal("awaiting_unlink_confirmation"),
       v.literal("ready"),
     ),
-    locale: v.union(v.literal("en"), v.literal("de")),
+    locale: vAppLocale,
     email: v.optional(v.string()),
     userId: v.optional(v.string()),
     organizationId: v.optional(v.string()),
@@ -736,6 +735,7 @@ export const upsertConnectionForMember = internalMutation({
     memberId: v.string(),
     userId: v.string(),
     phoneNumberE164: v.string(),
+    strictUniqueness: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const normalizedPhone = normalizePhoneNumber(args.phoneNumberE164);
@@ -754,6 +754,10 @@ export const upsertConnectionForMember = internalMutation({
     for (const conflict of conflicts) {
       if (conflict.memberId === args.memberId) {
         continue;
+      }
+
+      if (args.strictUniqueness) {
+        throw new Error("This WhatsApp number is already connected to another member");
       }
 
       await ctx.db.patch(conflict._id, {
@@ -824,6 +828,12 @@ export const disconnectConnectionByMember = internalMutation({
       updatedAt: now,
     });
 
+    const buffers = await ctx.db
+      .query("whatsappTurnBuffers")
+      .withIndex("by_connectionId", (q) => q.eq("connectionId", connection._id))
+      .collect();
+    await Promise.all(buffers.map((buffer) => ctx.db.delete(buffer._id)));
+
     return connection._id;
   },
 });
@@ -890,9 +900,21 @@ export const addMessageToTurnBuffer = internalMutation({
       .first();
 
     if (existing) {
+      if (existing.documentationReminderJobId) {
+        try {
+          await ctx.scheduler.cancel(existing.documentationReminderJobId);
+        } catch {
+          // Ignore reminder jobs that have already started or completed.
+        }
+      }
+
       await ctx.db.patch(existing._id, {
         bufferedMessageIds: [...existing.bufferedMessageIds, args.messageId],
+        status: "buffering",
         lastBufferedAt: now,
+        readyPromptSentAt: undefined,
+        documentationPromptSentAt: undefined,
+        documentationReminderJobId: undefined,
         updatedAt: now,
       });
 
@@ -910,6 +932,7 @@ export const addMessageToTurnBuffer = internalMutation({
       bufferedMessageIds: [args.messageId],
       firstBufferedAt: now,
       lastBufferedAt: now,
+      documentationReminderJobId: undefined,
       updatedAt: now,
     });
 
@@ -918,18 +941,64 @@ export const addMessageToTurnBuffer = internalMutation({
   },
 });
 
+export const getTurnBufferByConnection = internalQuery({
+  args: {
+    connectionId: v.id("whatsappConnections"),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("whatsappTurnBuffers")
+      .withIndex("by_connectionId", (q) => q.eq("connectionId", args.connectionId))
+      .first();
+  },
+});
+
 export const updateTurnBufferStatus = internalMutation({
   args: {
     bufferId: v.id("whatsappTurnBuffers"),
-    status: v.union(v.literal("buffering"), v.literal("awaiting_confirmation")),
+    status: v.union(
+      v.literal("buffering"),
+      v.literal("awaiting_confirmation"),
+      v.literal("awaiting_documentation_confirmation"),
+    ),
     readyPromptSentAt: v.optional(v.number()),
+    documentationPromptSentAt: v.optional(v.number()),
+    documentationReminderJobId: v.optional(v.id("_scheduled_functions")),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.bufferId, {
+    const existing = await ctx.db.get(args.bufferId);
+    if (!existing) {
+      return null;
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(args, "documentationReminderJobId") &&
+      existing.documentationReminderJobId &&
+      existing.documentationReminderJobId !== args.documentationReminderJobId
+    ) {
+      try {
+        await ctx.scheduler.cancel(existing.documentationReminderJobId);
+      } catch {
+        // Ignore reminder jobs that have already started or completed.
+      }
+    }
+
+    const patch: Partial<WhatsAppTurnBufferDoc> & { updatedAt: number } = {
       status: args.status,
-      readyPromptSentAt: args.readyPromptSentAt,
       updatedAt: Date.now(),
-    });
+    };
+
+    if (Object.prototype.hasOwnProperty.call(args, "readyPromptSentAt")) {
+      patch.readyPromptSentAt = args.readyPromptSentAt;
+    }
+    if (Object.prototype.hasOwnProperty.call(args, "documentationPromptSentAt")) {
+      patch.documentationPromptSentAt = args.documentationPromptSentAt;
+    }
+    if (Object.prototype.hasOwnProperty.call(args, "documentationReminderJobId")) {
+      patch.documentationReminderJobId = args.documentationReminderJobId;
+    }
+
+    await ctx.db.patch(args.bufferId, patch);
 
     return null;
   },
@@ -945,7 +1014,19 @@ export const clearTurnBufferByConnection = internalMutation({
       .withIndex("by_connectionId", (q) => q.eq("connectionId", args.connectionId))
       .collect();
 
-    await Promise.all(buffers.map((buffer) => ctx.db.delete(buffer._id)));
+    await Promise.all(
+      buffers.map(async (buffer) => {
+        if (buffer.documentationReminderJobId) {
+          try {
+            await ctx.scheduler.cancel(buffer.documentationReminderJobId);
+          } catch {
+            // Ignore reminder jobs that have already started or completed.
+          }
+        }
+
+        await ctx.db.delete(buffer._id);
+      }),
+    );
     return null;
   },
 });

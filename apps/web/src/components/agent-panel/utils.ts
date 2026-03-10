@@ -1,3 +1,5 @@
+import type { ExportManifest } from "@/lib/export-zip";
+
 import { IMAGE_FILENAME_PATTERN } from "./constants";
 import type {
   ChatThreadSummary,
@@ -51,6 +53,22 @@ function getMessageParts(content: unknown): Array<Record<string, unknown>> {
   }
 
   return nestedParts.filter((entry) => isRecord(entry));
+}
+
+function getToolResultValue(part: Record<string, unknown>) {
+  if ("result" in part) {
+    return part.result;
+  }
+
+  if ("output" in part) {
+    return part.output;
+  }
+
+  if ("value" in part) {
+    return part.value;
+  }
+
+  return null;
 }
 
 function buildImageDataUrl(part: Record<string, unknown>) {
@@ -147,6 +165,44 @@ export function extractTimelineAttachments(options: {
   }
 
   return extractedAttachments;
+}
+
+export function extractExportReadyResults(rawContent: unknown): Array<{
+  exportMode: "customers" | "projects";
+  manifest: ExportManifest;
+}> {
+  const results: Array<{
+    exportMode: "customers" | "projects";
+    manifest: ExportManifest;
+  }> = [];
+
+  for (const part of getMessageParts(rawContent)) {
+    const partType = getRecordStringValue(part, "type");
+    if (partType !== "tool-result" && partType !== "tool-invocation") {
+      continue;
+    }
+
+    const result = getToolResultValue(part);
+    if (!isRecord(result) || result.status !== "export_ready") {
+      continue;
+    }
+
+    const exportMode =
+      result.exportMode === "customers" || result.exportMode === "projects"
+        ? result.exportMode
+        : null;
+    const manifest = result.manifest;
+    if (!exportMode || !isRecord(manifest)) {
+      continue;
+    }
+
+    results.push({
+      exportMode,
+      manifest: manifest as ExportManifest,
+    });
+  }
+
+  return results;
 }
 
 export function resolveSpeechRecognitionConstructor() {

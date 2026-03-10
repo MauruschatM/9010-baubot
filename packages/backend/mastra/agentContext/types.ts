@@ -36,7 +36,9 @@ export type AgentContextAttachment = {
 
 export type AgentContextMemberPreview = {
   name: string;
-  email: string;
+  email: string | null;
+  phoneNumberE164: string | null;
+  memberType: "standard" | "phone_only";
   role: string;
 };
 
@@ -54,12 +56,88 @@ export type AgentContextMembersPageSummary = {
   visibleInvitations: AgentContextInvitationPreview[];
 };
 
+export type AgentContextProjectPreview = {
+  id: string;
+  name: string;
+  status: string;
+  hasUnreviewedChanges: boolean;
+  hasNachtrag: boolean;
+};
+
+export type AgentContextProjectsPageSummary = {
+  totalCount: number;
+  activeCount: number;
+  doneCount: number;
+  currentProject: {
+    id: string;
+    name: string;
+    status: string;
+  } | null;
+  visibleProjects: AgentContextProjectPreview[];
+};
+
+export type AgentContextCustomerPreview = {
+  id: string;
+  name: string;
+  contactName: string | null;
+  email: string | null;
+  phone: string | null;
+  activeProjectCount: number;
+  doneProjectCount: number;
+};
+
+export type AgentContextCustomersPageSummary = {
+  totalCount: number;
+  currentCustomer: {
+    id: string;
+    name: string;
+    email: string | null;
+    phone: string | null;
+  } | null;
+  visibleCustomers: AgentContextCustomerPreview[];
+};
+
+export type AgentContextArchivedCustomerPreview = {
+  id: string;
+  name: string;
+  deletedAt: number;
+};
+
+export type AgentContextArchivedProjectPreview = {
+  id: string;
+  name: string;
+  status: string;
+  deletedAt: number;
+};
+
+export type AgentContextArchivePageSummary = {
+  archivedCustomerCount: number;
+  archivedProjectCount: number;
+  visibleArchivedCustomers: AgentContextArchivedCustomerPreview[];
+  visibleArchivedProjects: AgentContextArchivedProjectPreview[];
+};
+
+export type AgentContextShellSummary = {
+  organizationName: string | null;
+  companyEmail: string | null;
+  companyEmailLocale: string | null;
+  agentProfileName: string | null;
+  agentStyleId: string | null;
+  whatsappPhoneNumberE164: string | null;
+  myWhatsAppPhoneNumberE164: string | null;
+  myWhatsAppConnected: boolean | null;
+};
+
 export type AgentContextPageContext = {
   routeId: string;
   routePath: string;
   title: string;
   searchQuery: string | null;
   members: AgentContextMembersPageSummary | null;
+  customers: AgentContextCustomersPageSummary | null;
+  projects: AgentContextProjectsPageSummary | null;
+  archive: AgentContextArchivePageSummary | null;
+  shell: AgentContextShellSummary | null;
 };
 
 export type AgentContextPacket = {

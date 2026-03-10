@@ -4,15 +4,19 @@ import * as React from "react";
 import { Resend } from "resend";
 
 import { OrganizationInvitationEmail } from "../emails/organizationInvitationEmail";
-import { OtpEmail } from "../emails/otpEmail";
-
-type OtpType = "sign-in" | "email-verification" | "forget-password";
+import { PasswordResetEmail } from "../emails/passwordResetEmail";
 
 const resendApiKey = process.env.RESEND_API_KEY;
 const resendFromEmail = process.env.RESEND_FROM_EMAIL;
 const resendReplyTo = process.env.RESEND_REPLY_TO;
 
 let resendClient: Resend | null = null;
+
+export type ResendEmailAttachment = {
+  content: string;
+  filename: string;
+  contentType?: string;
+};
 
 function getResendClient() {
   if (!resendApiKey || !resendFromEmail) {
@@ -26,16 +30,65 @@ function getResendClient() {
   return resendClient;
 }
 
+function sanitizeDisplayName(value: string | null | undefined) {
+  const normalized = value?.replace(/[\r\n<>"]/g, " ").replace(/\s+/g, " ").trim();
+  return normalized && normalized.length > 0 ? normalized : null;
+}
+
+function extractAddress(value: string | null | undefined) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  const bracketMatch = trimmed.match(/<([^>]+)>/);
+  return (bracketMatch?.[1] ?? trimmed).trim() || null;
+}
+
+function buildFromAddress(displayName?: string) {
+  if (!resendFromEmail) {
+    return null;
+  }
+
+  const address = extractAddress(resendFromEmail);
+  if (!address) {
+    return resendFromEmail;
+  }
+
+  const senderName = sanitizeDisplayName(displayName);
+  return senderName ? `${senderName} <${address}>` : resendFromEmail;
+}
+
+function resolveReplyTo(replyTo?: string[]) {
+  if (replyTo && replyTo.length > 0) {
+    return replyTo;
+  }
+
+  return resendReplyTo ? [resendReplyTo] : undefined;
+}
+
 async function sendEmail({
   to,
   subject,
   react,
   idempotencyKey,
+  attachments,
+  throwOnMissingConfig,
+  fromDisplayName,
+  replyTo,
 }: {
   to: string;
   subject: string;
   react: React.ReactElement;
   idempotencyKey: string;
+  attachments?: ResendEmailAttachment[];
+  throwOnMissingConfig?: boolean;
+  fromDisplayName?: string;
+  replyTo?: string[];
 }) {
   const html = await render(react);
   await sendHtmlEmail({
@@ -43,6 +96,10 @@ async function sendEmail({
     subject,
     html,
     idempotencyKey,
+    attachments,
+    throwOnMissingConfig,
+    fromDisplayName,
+    replyTo,
   });
 }
 
@@ -51,28 +108,107 @@ async function sendHtmlEmail({
   subject,
   html,
   idempotencyKey,
+  attachments,
+  throwOnMissingConfig,
+  fromDisplayName,
+  replyTo,
 }: {
   to: string;
   subject: string;
   html: string;
   idempotencyKey: string;
+  attachments?: ResendEmailAttachment[];
+  throwOnMissingConfig?: boolean;
+  fromDisplayName?: string;
+  replyTo?: string[];
 }) {
   const client = getResendClient();
 
   if (!client) {
+    if (throwOnMissingConfig) {
+      throw new Error(
+        "Email sending is not configured. Set RESEND_API_KEY and RESEND_FROM_EMAIL.",
+      );
+    }
+
     console.warn(
       "Skipping email send because RESEND_API_KEY or RESEND_FROM_EMAIL is missing.",
     );
     return;
   }
 
+  const from = buildFromAddress(fromDisplayName);
+  if (!from) {
+    throw new Error("Email sending is not configured. Set RESEND_FROM_EMAIL.");
+  }
+
   const { error } = await client.emails.send(
     {
-      from: resendFromEmail!,
+      from,
       to: [to],
       subject,
       html,
-      ...(resendReplyTo ? { replyTo: [resendReplyTo] } : {}),
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(resolveReplyTo(replyTo) ? { replyTo: resolveReplyTo(replyTo) } : {}),
+    },
+    {
+      idempotencyKey,
+    },
+  );
+
+  if (error) {
+    throw new Error(`Resend failed: ${error.message}`);
+  }
+}
+
+async function sendTextEmail({
+  to,
+  subject,
+  text,
+  idempotencyKey,
+  attachments,
+  throwOnMissingConfig,
+  fromDisplayName,
+  replyTo,
+}: {
+  to: string;
+  subject: string;
+  text: string;
+  idempotencyKey: string;
+  attachments?: ResendEmailAttachment[];
+  throwOnMissingConfig?: boolean;
+  fromDisplayName?: string;
+  replyTo?: string[];
+}) {
+  const client = getResendClient();
+
+  if (!client) {
+    if (throwOnMissingConfig) {
+      throw new Error(
+        "Email sending is not configured. Set RESEND_API_KEY and RESEND_FROM_EMAIL.",
+      );
+    }
+
+    console.warn(
+      "Skipping email send because RESEND_API_KEY or RESEND_FROM_EMAIL is missing.",
+    );
+    return;
+  }
+
+  const from = buildFromAddress(fromDisplayName);
+  if (!from) {
+    throw new Error("Email sending is not configured. Set RESEND_FROM_EMAIL.");
+  }
+
+  const resolvedReplyTo = resolveReplyTo(replyTo);
+  const { error } = await client.emails.send(
+    {
+      from,
+      to: [to],
+      subject,
+      text,
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(resolvedReplyTo ? { replyTo: resolvedReplyTo } : {}),
     },
     {
       idempotencyKey,
@@ -93,41 +229,31 @@ function escapeHtml(value: string) {
     .replaceAll("'", "&#39;");
 }
 
-export async function sendOtpEmail({
+export async function sendPasswordResetEmail({
   email,
-  otp,
-  type,
+  resetUrl,
   appName,
   locale,
 }: {
   email: string;
-  otp: string;
-  type: OtpType;
+  resetUrl: string;
   appName: string;
   locale: AppLocale;
 }) {
   const t = createTranslator(locale);
-  const titleByType: Record<OtpType, string> = {
-    "sign-in": t("emails.otp.titleSignIn"),
-    "email-verification": t("emails.otp.titleEmailVerification"),
-    "forget-password": t("emails.otp.titleForgetPassword"),
-  };
-  const title = titleByType[type];
-  const preview = t("emails.otp.preview", { title, appName });
 
   await sendEmail({
     to: email,
-    subject: t("emails.otp.subject", { appName }),
-    // Resend requires identical request bodies when reusing idempotency keys.
-    // OTP content changes on each send, so include the OTP in the key.
-    idempotencyKey: `otp/${type}/${email.toLowerCase()}/${otp}`,
+    subject: t("emails.passwordReset.subject", { appName }),
+    idempotencyKey: `password-reset/${email.toLowerCase()}/${resetUrl}`,
     react: (
-      <OtpEmail
-        otp={otp}
-        preview={preview}
-        title={title}
-        useCodeToContinue={t("emails.otp.useCodeToContinue")}
-        expiresInFiveMinutes={t("emails.otp.expiresInFiveMinutes")}
+      <PasswordResetEmail
+        resetUrl={resetUrl}
+        preview={t("emails.passwordReset.preview", { appName })}
+        headingText={t("emails.passwordReset.heading")}
+        bodyText={t("emails.passwordReset.body", { appName })}
+        resetCta={t("emails.passwordReset.resetCta")}
+        fallbackHint={t("emails.passwordReset.fallbackHint")}
       />
     ),
   });
@@ -180,6 +306,53 @@ export async function sendOrganizationInvitationEmail({
   });
 }
 
+export async function sendProjectTimelineUpdateEmail({
+  email,
+  subject,
+  bodyText,
+  videoLinks,
+  attachments,
+  idempotencyKey,
+  throwOnMissingConfig,
+  replyToEmail,
+  senderName,
+}: {
+  email: string;
+  subject: string;
+  bodyText: string;
+  videoLinks: Array<{
+    label: string;
+    url: string;
+  }>;
+  attachments?: ResendEmailAttachment[];
+  idempotencyKey: string;
+  throwOnMissingConfig?: boolean;
+  replyToEmail: string;
+  senderName?: string;
+}) {
+  const textSections = [bodyText.trim()];
+
+  if (videoLinks.length > 0) {
+    textSections.push(
+      [
+        "Video links:",
+        ...videoLinks.map((videoLink) => `- ${videoLink.label}: ${videoLink.url}`),
+      ].join("\n"),
+    );
+  }
+
+  await sendTextEmail({
+    to: email,
+    subject,
+    text: textSections.join("\n\n"),
+    idempotencyKey,
+    attachments,
+    throwOnMissingConfig,
+    fromDisplayName: senderName,
+    replyTo: [replyToEmail],
+  });
+}
+
 export async function sendWhatsappActivationGuideEmail({
   email,
   locale,
@@ -203,33 +376,19 @@ export async function sendWhatsappActivationGuideEmail({
   organizationId: string;
   memberId: string;
 }) {
-  const isGerman = locale === "de";
-  const preview = isGerman
-    ? `WhatsApp Anleitung für ${organizationName}`
-    : `WhatsApp setup guide for ${organizationName}`;
-  const subject = isGerman
-    ? `${organizationName}: WhatsApp verbinden`
-    : `${organizationName}: Connect WhatsApp`;
-  const heading = isGerman ? "WhatsApp aktivieren" : "Activate WhatsApp";
-  const intro = isGerman
-    ? `${memberName}, verbinde dein WhatsApp mit ${agentName}, um Onboarding und Chat zu starten.`
-    : `${memberName}, connect your WhatsApp with ${agentName} to start onboarding and chat.`;
-  const numberLabel = isGerman ? "Agent-Nummer" : "Agent number";
-  const messageLabel = isGerman ? "Initiale Nachricht" : "Initial message";
-  const stepTitle = isGerman ? "Kurzablauf" : "Quick steps";
-  const stepOne = isGerman
-    ? "1. Öffne WhatsApp und starte einen Chat mit der Agent-Nummer."
-    : "1. Open WhatsApp and start a chat with the agent number.";
-  const stepTwo = isGerman
-    ? "2. Sende die initiale Nachricht und folge der Verifizierung."
-    : "2. Send the initial message and follow verification.";
-  const stepThree = isGerman
-    ? "3. Danach kannst du direkt mit dem Agenten schreiben."
-    : "3. After that you can chat with the agent directly.";
-  const openButtonLabel = isGerman ? "WhatsApp jetzt öffnen" : "Open WhatsApp now";
-  const fallbackHint = isGerman
-    ? "Falls der Button nicht funktioniert, nutze diesen Link:"
-    : "If the button does not work, use this link:";
+  const t = createTranslator(locale);
+  const preview = t("emails.whatsappGuide.preview", { organizationName });
+  const subject = t("emails.whatsappGuide.subject", { organizationName });
+  const heading = t("emails.whatsappGuide.heading");
+  const intro = t("emails.whatsappGuide.intro", { memberName, agentName });
+  const numberLabel = t("emails.whatsappGuide.numberLabel");
+  const messageLabel = t("emails.whatsappGuide.messageLabel");
+  const stepTitle = t("emails.whatsappGuide.stepTitle");
+  const stepOne = t("emails.whatsappGuide.stepOne");
+  const stepTwo = t("emails.whatsappGuide.stepTwo");
+  const stepThree = t("emails.whatsappGuide.stepThree");
+  const openButtonLabel = t("emails.whatsappGuide.openButtonLabel");
+  const fallbackHint = t("emails.whatsappGuide.fallbackHint");
   const previewSafe = escapeHtml(preview);
   const headingSafe = escapeHtml(heading);
   const introSafe = escapeHtml(intro);

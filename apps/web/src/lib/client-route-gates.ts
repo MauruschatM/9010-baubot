@@ -7,12 +7,18 @@ import { authClient } from "@/lib/auth-client";
 
 export type RouteGateMode = "app" | "login" | "onboarding" | "organization";
 
+type UseClientRouteGateOptions = {
+  authenticatedRedirectTo?: string | null;
+};
+
 type ClientRouteGateState = {
   isAuthenticated: boolean;
   hasName: boolean;
   hasOrganization: boolean;
   organizationCount: number;
 };
+
+const DEFAULT_APP_ROUTE = "/app/projects";
 
 function normalizePathname(pathname: string) {
   if (pathname === "/") {
@@ -55,7 +61,7 @@ function getRedirectTarget(
       return "/organization";
     }
 
-    return "/app";
+    return DEFAULT_APP_ROUTE;
   }
 
   if (mode === "onboarding") {
@@ -64,7 +70,7 @@ function getRedirectTarget(
     }
 
     if (gateState.hasName && gateState.hasOrganization) {
-      return "/app";
+      return DEFAULT_APP_ROUTE;
     }
 
     if (gateState.hasName && !gateState.hasOrganization) {
@@ -83,13 +89,16 @@ function getRedirectTarget(
   }
 
   if (gateState.hasOrganization) {
-    return "/app";
+    return DEFAULT_APP_ROUTE;
   }
 
   return null;
 }
 
-export function useClientRouteGate(mode: RouteGateMode) {
+export function useClientRouteGate(
+  mode: RouteGateMode,
+  options?: UseClientRouteGateOptions,
+) {
   const navigate = useNavigate();
   const pathname = useRouterState({
     select: (state) => normalizePathname(state.location.pathname),
@@ -126,8 +135,18 @@ export function useClientRouteGate(mode: RouteGateMode) {
       return null;
     }
 
+    if (options?.authenticatedRedirectTo) {
+      return options.authenticatedRedirectTo;
+    }
+
     return getRedirectTarget(mode, normalizedGateState);
-  }, [isAuthenticated, isSessionPending, mode, normalizedGateState]);
+  }, [
+    isAuthenticated,
+    isSessionPending,
+    mode,
+    normalizedGateState,
+    options?.authenticatedRedirectTo,
+  ]);
 
   useEffect(() => {
     if (isSessionPending || !redirectTo) {

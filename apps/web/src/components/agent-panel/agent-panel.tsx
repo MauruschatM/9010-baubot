@@ -29,6 +29,7 @@ import ReactMarkdown from "react-markdown";
 import { toast } from "@/components/ui/sonner";
 
 import { useI18n } from "@/lib/i18n-provider";
+import { downloadExportZip } from "@/lib/export-zip";
 import { cn } from "@/lib/utils";
 
 import { Avatar, AvatarFallback, AvatarImage } from "../ui/avatar";
@@ -77,6 +78,7 @@ import type {
 import {
   buildAttachmentPrompt,
   createMessageId,
+  extractExportReadyResults,
   extractTimelineAttachments,
   formatThreadRangeLabel,
   formatThoughtDurationLabel,
@@ -89,6 +91,12 @@ const ACTIVE_THREAD_STORAGE_KEY_PREFIX = "agent-panel-active-thread";
 
 const getActiveThreadStorageKey = (organizationId: string) =>
   `${ACTIVE_THREAD_STORAGE_KEY_PREFIX}:${organizationId}`;
+
+const isWhatsappThread = (thread: Pick<ChatThreadSummary, "channel">) =>
+  thread.channel === "whatsapp";
+
+const isWebThread = (thread: Pick<ChatThreadSummary, "channel">) =>
+  !isWhatsappThread(thread);
 
 export function AgentChatPanel({
   organizationId,
@@ -113,6 +121,9 @@ export function AgentChatPanel({
   const markChatSeenState = useMutation(api.aiState.markChatSeenState);
   const generateUploadUrl = useMutation(api.aiAttachments.generateUploadUrl);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [pendingCreatedThreadId, setPendingCreatedThreadId] = useState<string | null>(
+    null,
+  );
   const [persistedActiveThreadId, setPersistedActiveThreadId] = useState<
     string | null
   >(null);
@@ -203,6 +214,7 @@ export function AgentChatPanel({
   const wasOpenRef = useRef(false);
   const previousScrollTopRef = useRef(0);
   const measuredRowSizeCacheRef = useRef(new Map<string, number>());
+  const handledExportResultIdsRef = useRef(new Set<string>());
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const clarificationAnswersRef = useRef<
     Record<
@@ -225,6 +237,7 @@ export function AgentChatPanel({
   const dictationSessionRef = useRef<DictationSession | null>(null);
   const manualStopRef = useRef(false);
   const markSeenInFlightForUpdatedAtRef = useRef<string | null>(null);
+  const hasAttemptedAutoCreateThreadRef = useRef(false);
   const hasUserOpenedPanelRef = useRef(false);
   const agentInitial = agentName.trim().charAt(0).toUpperCase() || "A";
   const dateLabelFormatter = useMemo(
@@ -250,6 +263,7 @@ export function AgentChatPanel({
   const paginationStatus = paginatedMessages.status;
   const persistedMessagesDesc = paginatedMessages.results;
   const availableChatThreads = chatThreads ?? [];
+  const hasAvailableWebChatThreads = availableChatThreads.some(isWebThread);
   type LabeledChatThread = (typeof availableChatThreads)[number] & {
     label: string;
   };
@@ -290,21 +304,15 @@ export function AgentChatPanel({
     [activeThreadId, availableChatThreads],
   );
   const filteredWebChatThreads = useMemo(
-    () =>
-      filteredChatThreads.filter(
-        (thread) => (thread.channel ?? "web") !== "whatsapp",
-      ),
+    () => filteredChatThreads.filter(isWebThread),
     [filteredChatThreads],
   );
   const filteredWhatsappChatThreads = useMemo(
-    () =>
-      filteredChatThreads.filter(
-        (thread) => (thread.channel ?? "web") === "whatsapp",
-      ),
+    () => filteredChatThreads.filter(isWhatsappThread),
     [filteredChatThreads],
   );
   const hasFilteredChatThreads = filteredChatThreads.length > 0;
-  const isReadOnlyThread = (activeChatThread?.channel ?? "web") === "whatsapp";
+  const isReadOnlyThread = activeChatThread ? isWhatsappThread(activeChatThread) : false;
 
   const messages = useMemo<ChatMessage[]>(() => {
     const normalizedPersisted = persistedMessagesDesc
@@ -427,6 +435,56 @@ export function AgentChatPanel({
 
     return rows;
   }, [dateLabelFormatter, messages, t]);
+
+  useEffect(() => {
+    let canceled = false;
+
+    const handleExportDownloads = async () => {
+      for (const message of persistedMessagesDesc) {
+        if (message.type !== "tool-result") {
+          continue;
+        }
+
+        const exportResults = extractExportReadyResults(message.content);
+        for (const [index, exportResult] of exportResults.entries()) {
+          const handledId = `${message.id}:${index}`;
+          if (handledExportResultIdsRef.current.has(handledId)) {
+            continue;
+          }
+
+          handledExportResultIdsRef.current.add(handledId);
+
+          try {
+            await downloadExportZip(exportResult.manifest, exportResult.exportMode, t);
+            if (canceled) {
+              return;
+            }
+
+            toast.success(
+              t(
+                exportResult.exportMode === "customers"
+                  ? "app.customers.toasts.exportDownloaded"
+                  : "app.projects.toasts.exportDownloaded",
+              ),
+            );
+          } catch (error) {
+            handledExportResultIdsRef.current.delete(handledId);
+            if (canceled) {
+              return;
+            }
+
+            toast.error(error instanceof Error ? error.message : t("app.chat.error"));
+          }
+        }
+      }
+    };
+
+    void handleExportDownloads();
+
+    return () => {
+      canceled = true;
+    };
+  }, [persistedMessagesDesc, t]);
 
   const timelineAttachmentsByMessageId = useMemo(() => {
     const attachmentMap = new Map<string, TimelineAttachment[]>();
@@ -827,6 +885,10 @@ export function AgentChatPanel({
   const thinkingStatusLabel =
     streamActor === "organization"
       ? t("app.chat.stream.organizationWorking")
+      : streamActor === "customer"
+        ? t("app.chat.stream.customerWorking")
+        : streamActor === "project"
+          ? t("app.chat.stream.projectWorking")
       : streamActor === "user"
         ? t("app.chat.stream.userWorking")
       : t("app.chat.thinking");
@@ -842,10 +904,6 @@ export function AgentChatPanel({
       null,
     [messages],
   );
-  const pendingOrganizationName =
-    pendingAction && typeof pendingAction.payload.organizationName === "string"
-      ? pendingAction.payload.organizationName
-      : null;
 
   const stopVoiceInputImmediately = (shouldSetListeningState = true) => {
     const recognition = recognitionRef.current;
@@ -883,16 +941,17 @@ export function AgentChatPanel({
 
   const createThreadForCurrentOrganization = useCallback(async () => {
     if (!organizationId) {
-      throw new Error("No active organization");
+      throw new Error(t("app.chat.noOrganization"));
     }
 
     const createdThread = await createChatThread({
       organizationId,
     });
 
+    setPendingCreatedThreadId(createdThread.threadId);
     setActiveThreadId(createdThread.threadId);
     return createdThread.threadId;
-  }, [createChatThread, organizationId]);
+  }, [createChatThread, organizationId, t]);
 
   const handleCreateNewChat = async () => {
     if (!organizationId || isBusy) {
@@ -1072,6 +1131,8 @@ export function AgentChatPanel({
     wasThinkingRef.current = false;
     lastServerErrorRef.current = null;
     markSeenInFlightForUpdatedAtRef.current = null;
+    setPendingCreatedThreadId(null);
+    hasAttemptedAutoCreateThreadRef.current = false;
     hasUserOpenedPanelRef.current = false;
   }, [organizationId]);
 
@@ -1189,11 +1250,40 @@ export function AgentChatPanel({
   }, [timelineRows]);
 
   useEffect(() => {
+    if (!pendingCreatedThreadId) {
+      return;
+    }
+
+    if (activeThreadId !== pendingCreatedThreadId) {
+      setPendingCreatedThreadId(null);
+      return;
+    }
+
+    if (chatThreads?.some((thread) => thread.threadId === pendingCreatedThreadId)) {
+      setPendingCreatedThreadId(null);
+    }
+  }, [activeThreadId, chatThreads, pendingCreatedThreadId]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      hasAttemptedAutoCreateThreadRef.current = false;
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
     if (!organizationId || chatThreads === undefined) {
       return;
     }
 
     if (hydratedPersistedThreadOrgId !== organizationId) {
+      return;
+    }
+
+    if (
+      activeThreadId &&
+      (chatThreads.some((thread) => thread.threadId === activeThreadId) ||
+        activeThreadId === pendingCreatedThreadId)
+    ) {
       return;
     }
 
@@ -1204,26 +1294,72 @@ export function AgentChatPanel({
       return;
     }
 
-    if (
-      activeThreadId &&
-      chatThreads.some((thread) => thread.threadId === activeThreadId)
-    ) {
-      return;
-    }
-
     const nextPersistedThreadId =
       persistedActiveThreadId &&
-      chatThreads.some((thread) => thread.threadId === persistedActiveThreadId)
+      chatThreads.some(
+        (thread) =>
+          thread.threadId === persistedActiveThreadId && isWebThread(thread),
+      )
         ? persistedActiveThreadId
         : null;
 
-    setActiveThreadId(nextPersistedThreadId ?? chatThreads[0]?.threadId ?? null);
+    const nextAutomaticThreadId =
+      nextPersistedThreadId ?? chatThreads.find(isWebThread)?.threadId ?? null;
+
+    setActiveThreadId(nextAutomaticThreadId);
   }, [
     activeThreadId,
     chatThreads,
     hydratedPersistedThreadOrgId,
     organizationId,
+    pendingCreatedThreadId,
     persistedActiveThreadId,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isOpen ||
+      !hasUserOpenedPanelRef.current ||
+      !organizationId ||
+      chatThreads === undefined ||
+      hydratedPersistedThreadOrgId !== organizationId ||
+      hasAvailableWebChatThreads ||
+      activeThreadId !== null ||
+      isCreatingThread ||
+      hasAttemptedAutoCreateThreadRef.current
+    ) {
+      return;
+    }
+
+    let isCancelled = false;
+    hasAttemptedAutoCreateThreadRef.current = true;
+    setIsCreatingThread(true);
+
+    void createThreadForCurrentOrganization()
+      .catch(() => {
+        if (!isCancelled) {
+          toast.error(t("app.chat.error"));
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsCreatingThread(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [
+    activeThreadId,
+    chatThreads,
+    createThreadForCurrentOrganization,
+    hasAvailableWebChatThreads,
+    hydratedPersistedThreadOrgId,
+    isCreatingThread,
+    isOpen,
+    organizationId,
+    t,
   ]);
 
   useEffect(() => {
@@ -2189,29 +2325,32 @@ export function AgentChatPanel({
                 </>
               )}
 
-              {pendingAction?.actionType === "delete-organization" ? (
+              {pendingAction ? (
                 <div className="mt-3 rounded-xl border bg-card/60 p-3">
                   <p className="text-xs font-semibold text-foreground">
-                    {t("app.chat.confirmation.deleteOrganization.title")}
+                    {pendingAction.payload.title}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
-                    {pendingOrganizationName
-                      ? t("app.chat.confirmation.deleteOrganization.descriptionNamed", {
-                          organizationName: pendingOrganizationName,
-                        })
-                      : t("app.chat.confirmation.deleteOrganization.description")}
+                    {pendingAction.payload.description}
                   </p>
                   <div className="mt-3 flex items-center gap-2">
                     <Button
                       type="button"
                       size="sm"
-                      variant="destructive"
+                      variant={
+                        pendingAction.actionType === "delete-organization" ||
+                        pendingAction.actionType === "archive-customer" ||
+                        pendingAction.actionType === "archive-project" ||
+                        pendingAction.actionType === "remove-member"
+                          ? "destructive"
+                          : "default"
+                      }
                       disabled={isResolvingPendingAction || isReadOnlyThread}
                       onClick={() => {
                         void handleConfirmPendingAction();
                       }}
                     >
-                      {t("app.chat.confirmation.deleteOrganization.confirm")}
+                      {pendingAction.payload.confirmLabel}
                     </Button>
                     <Button
                       type="button"
@@ -2222,7 +2361,7 @@ export function AgentChatPanel({
                         void handleCancelPendingAction();
                       }}
                     >
-                      {t("app.chat.confirmation.deleteOrganization.cancel")}
+                      {pendingAction.payload.cancelLabel}
                     </Button>
                   </div>
                 </div>

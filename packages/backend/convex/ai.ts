@@ -1,10 +1,17 @@
 'use node';
 
+import { createTranslator, type AppLocale } from "@mvp-template/i18n";
 import { v } from "convex/values";
+
+import { vAppLocale } from "./lib/locales";
 
 import { components, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { action } from "./_generated/server";
+import {
+  buildWorkspaceAgentTools,
+  executePendingAction,
+} from "./agentRuntime";
 import {
   compileAgentContextPacket,
   formatContextPacketForInstructions,
@@ -36,48 +43,12 @@ import {
   createWorkspaceAgent,
   DEFAULT_AI_GATEWAY_MODEL,
 } from "../mastra/agent";
-import type {
-  ConnectedWhatsAppRecipient,
-  OrganizationInvitation,
-  OrganizationMember,
-  OrganizationSummary,
-  ProactiveWhatsAppSendResult,
-  UserSettingsSummary,
-  WorkspaceSnapshot,
-} from "../mastra/tools";
-import { hasExplicitProactiveSendIntent } from "./whatsapp/normalize";
 
 type MemberDoc = {
   _id: string;
   organizationId: string;
   userId: string;
   role: string;
-};
-
-type UserDoc = {
-  _id: string;
-  name: string;
-  email: string;
-  image?: string | null;
-};
-
-type InvitationDoc = {
-  email: string;
-  role?: string | null;
-  status: string;
-};
-
-type WhatsAppConnectionDoc = {
-  _id: Id<"whatsappConnections">;
-  organizationId: string;
-  memberId: string;
-  userId: string;
-  phoneNumberE164: string;
-  phoneNumberDigits: string;
-  status: "active" | "disconnected";
-  createdAt: number;
-  updatedAt: number;
-  disconnectedAt?: number;
 };
 
 type ChatAttachment = {
@@ -90,22 +61,84 @@ type ChatPageContext = {
   routeId: string;
   routePath: string;
   title: string;
-  searchQuery?: string;
+  searchQuery?: string | null;
   members?: {
     totalCount: number;
     filteredCount: number;
     pendingInvitationCount: number;
-    currentMemberRole?: string;
+    currentMemberRole?: string | null;
     visibleMembers: Array<{
       name: string;
-      email: string;
+      email?: string | null;
+      phoneNumberE164?: string | null;
+      memberType?: "standard" | "phone_only";
       role: string;
     }>;
     visibleInvitations: Array<{
       email: string;
       role: string;
     }>;
-  };
+  } | null;
+  customers?: {
+    totalCount: number;
+    currentCustomer?: {
+      id: string;
+      name: string;
+      email?: string | null;
+      phone?: string | null;
+    } | null;
+    visibleCustomers: Array<{
+      id: string;
+      name: string;
+      contactName?: string | null;
+      email?: string | null;
+      phone?: string | null;
+      activeProjectCount: number;
+      doneProjectCount: number;
+    }>;
+  } | null;
+  projects?: {
+    totalCount: number;
+    activeCount: number;
+    doneCount: number;
+    currentProject?: {
+      id: string;
+      name: string;
+      status: string;
+    } | null;
+    visibleProjects: Array<{
+      id: string;
+      name: string;
+      status: string;
+      hasUnreviewedChanges: boolean;
+      hasNachtrag: boolean;
+    }>;
+  } | null;
+  archive?: {
+    archivedCustomerCount: number;
+    archivedProjectCount: number;
+    visibleArchivedCustomers: Array<{
+      id: string;
+      name: string;
+      deletedAt: number;
+    }>;
+    visibleArchivedProjects: Array<{
+      id: string;
+      name: string;
+      status: string;
+      deletedAt: number;
+    }>;
+  } | null;
+  shell?: {
+    organizationName?: string | null;
+    companyEmail?: string | null;
+    companyEmailLocale?: string | null;
+    agentProfileName?: string | null;
+    agentStyleId?: string | null;
+    whatsappPhoneNumberE164?: string | null;
+    myWhatsAppPhoneNumberE164?: string | null;
+    myWhatsAppConnected?: boolean | null;
+  } | null;
 };
 
 type RequestPart =
@@ -164,20 +197,6 @@ type ToolResultRecord = {
   isError?: boolean;
 };
 
-type AuthApiClient = {
-  api?: unknown;
-};
-
-type ToolPermissionFlags = {
-  canUpdateOrganization: boolean;
-  canInviteMembers: boolean;
-  canUpdateMembers: boolean;
-  canRemoveMembers: boolean;
-  canCancelInvitations: boolean;
-  canDeleteOrganization: boolean;
-  canLeaveOrganization: boolean;
-};
-
 type ClarificationAnswerInput = {
   questionId: string;
   optionId?: string;
@@ -194,7 +213,6 @@ type ChatActionResult = {
   pendingActionId: string | null;
 };
 
-const PAGE_SIZE = 200;
 const STREAM_FLUSH_INTERVAL_MS = 180;
 const PENDING_ACTION_TTL_MS = 10 * 60 * 1000;
 const CLARIFICATION_TTL_MS = 15 * 60 * 1000;
@@ -233,7 +251,7 @@ function normalizePageContextText(value: string) {
   return value.trim().slice(0, MAX_PAGE_CONTEXT_TEXT_LENGTH);
 }
 
-function normalizeOptionalPageContextText(value?: string) {
+function normalizeOptionalPageContextText(value?: string | null) {
   if (typeof value !== "string") {
     return null;
   }
@@ -248,6 +266,16 @@ function normalizeNonNegativeInteger(value: number) {
   }
 
   return Math.max(0, Math.floor(value));
+}
+
+function normalizePageContextMemberType(
+  value?: string | null,
+): "standard" | "phone_only" {
+  return value === "phone_only" ? "phone_only" : "standard";
+}
+
+function normalizeBooleanOrNull(value?: boolean | null) {
+  return typeof value === "boolean" ? value : null;
 }
 
 function normalizePageContext(
@@ -278,11 +306,18 @@ function normalizePageContext(
           .slice(0, MAX_PAGE_CONTEXT_ITEMS)
           .map((member) => ({
             name: normalizePageContextText(member.name),
-            email: normalizePageContextText(member.email),
+            email: normalizeOptionalPageContextText(member.email ?? undefined),
+            phoneNumberE164: normalizeOptionalPageContextText(
+              member.phoneNumberE164 ?? undefined,
+            ),
+            memberType: normalizePageContextMemberType(member.memberType),
             role: normalizePageContextText(member.role),
           }))
           .filter(
-            (member) => member.name.length > 0 || member.email.length > 0,
+            (member) =>
+              member.name.length > 0 ||
+              member.email !== null ||
+              member.phoneNumberE164 !== null,
           ),
         visibleInvitations: pageContext.members.visibleInvitations
           .slice(0, MAX_PAGE_CONTEXT_ITEMS)
@@ -293,6 +328,112 @@ function normalizePageContext(
           .filter((invitation) => invitation.email.length > 0),
       }
     : null;
+  const customers = pageContext.customers
+    ? {
+        totalCount: normalizeNonNegativeInteger(pageContext.customers.totalCount),
+        currentCustomer: pageContext.customers.currentCustomer
+          ? {
+              id: normalizePageContextText(pageContext.customers.currentCustomer.id),
+              name: normalizePageContextText(pageContext.customers.currentCustomer.name),
+              email: normalizeOptionalPageContextText(
+                pageContext.customers.currentCustomer.email ?? undefined,
+              ),
+              phone: normalizeOptionalPageContextText(
+                pageContext.customers.currentCustomer.phone ?? undefined,
+              ),
+            }
+          : null,
+        visibleCustomers: pageContext.customers.visibleCustomers
+          .slice(0, MAX_PAGE_CONTEXT_ITEMS)
+          .map((customer) => ({
+            id: normalizePageContextText(customer.id),
+            name: normalizePageContextText(customer.name),
+            contactName: normalizeOptionalPageContextText(customer.contactName ?? undefined),
+            email: normalizeOptionalPageContextText(customer.email ?? undefined),
+            phone: normalizeOptionalPageContextText(customer.phone ?? undefined),
+            activeProjectCount: normalizeNonNegativeInteger(customer.activeProjectCount),
+            doneProjectCount: normalizeNonNegativeInteger(customer.doneProjectCount),
+          }))
+          .filter((customer) => customer.id.length > 0 || customer.name.length > 0),
+      }
+    : null;
+  const projects = pageContext.projects
+    ? {
+        totalCount: normalizeNonNegativeInteger(pageContext.projects.totalCount),
+        activeCount: normalizeNonNegativeInteger(pageContext.projects.activeCount),
+        doneCount: normalizeNonNegativeInteger(pageContext.projects.doneCount),
+        currentProject: pageContext.projects.currentProject
+          ? {
+              id: normalizePageContextText(pageContext.projects.currentProject.id),
+              name: normalizePageContextText(pageContext.projects.currentProject.name),
+              status: normalizePageContextText(pageContext.projects.currentProject.status),
+            }
+          : null,
+        visibleProjects: pageContext.projects.visibleProjects
+          .slice(0, MAX_PAGE_CONTEXT_ITEMS)
+          .map((project) => ({
+            id: normalizePageContextText(project.id),
+            name: normalizePageContextText(project.name),
+            status: normalizePageContextText(project.status),
+            hasUnreviewedChanges: Boolean(project.hasUnreviewedChanges),
+            hasNachtrag: Boolean(project.hasNachtrag),
+          }))
+          .filter((project) => project.id.length > 0 || project.name.length > 0),
+      }
+    : null;
+  const archive = pageContext.archive
+    ? {
+        archivedCustomerCount: normalizeNonNegativeInteger(
+          pageContext.archive.archivedCustomerCount,
+        ),
+        archivedProjectCount: normalizeNonNegativeInteger(
+          pageContext.archive.archivedProjectCount,
+        ),
+        visibleArchivedCustomers: pageContext.archive.visibleArchivedCustomers
+          .slice(0, MAX_PAGE_CONTEXT_ITEMS)
+          .map((customer) => ({
+            id: normalizePageContextText(customer.id),
+            name: normalizePageContextText(customer.name),
+            deletedAt: normalizeNonNegativeInteger(customer.deletedAt),
+          }))
+          .filter((customer) => customer.id.length > 0 || customer.name.length > 0),
+        visibleArchivedProjects: pageContext.archive.visibleArchivedProjects
+          .slice(0, MAX_PAGE_CONTEXT_ITEMS)
+          .map((project) => ({
+            id: normalizePageContextText(project.id),
+            name: normalizePageContextText(project.name),
+            status: normalizePageContextText(project.status),
+            deletedAt: normalizeNonNegativeInteger(project.deletedAt),
+          }))
+          .filter((project) => project.id.length > 0 || project.name.length > 0),
+      }
+    : null;
+  const shell = pageContext.shell
+    ? {
+        organizationName: normalizeOptionalPageContextText(
+          pageContext.shell.organizationName ?? undefined,
+        ),
+        companyEmail: normalizeOptionalPageContextText(
+          pageContext.shell.companyEmail ?? undefined,
+        ),
+        companyEmailLocale: normalizeOptionalPageContextText(
+          pageContext.shell.companyEmailLocale ?? undefined,
+        ),
+        agentProfileName: normalizeOptionalPageContextText(
+          pageContext.shell.agentProfileName ?? undefined,
+        ),
+        agentStyleId: normalizeOptionalPageContextText(
+          pageContext.shell.agentStyleId ?? undefined,
+        ),
+        whatsappPhoneNumberE164: normalizeOptionalPageContextText(
+          pageContext.shell.whatsappPhoneNumberE164 ?? undefined,
+        ),
+        myWhatsAppPhoneNumberE164: normalizeOptionalPageContextText(
+          pageContext.shell.myWhatsAppPhoneNumberE164 ?? undefined,
+        ),
+        myWhatsAppConnected: normalizeBooleanOrNull(pageContext.shell.myWhatsAppConnected),
+      }
+    : null;
 
   return {
     routeId,
@@ -300,6 +441,10 @@ function normalizePageContext(
     title,
     searchQuery: normalizeOptionalPageContextText(pageContext.searchQuery),
     members,
+    customers,
+    projects,
+    archive,
+    shell,
   };
 }
 
@@ -561,49 +706,34 @@ function toLocale(value: string | undefined) {
   return value === "de" ? "de" : "en";
 }
 
-function toDeleteActionText(options: {
-  locale: "en" | "de";
-  status: "confirmed" | "canceled" | "expired" | "missing" | "error";
+function toPendingActionErrorText(options: {
+  locale: AppLocale;
   errorMessage?: string;
 }) {
   if (options.locale === "de") {
-    if (options.status === "confirmed") {
-      return "Organisation wurde gelöscht.";
-    }
-    if (options.status === "canceled") {
-      return "Löschen der Organisation wurde abgebrochen.";
-    }
-    if (options.status === "expired") {
-      return "Bestätigung ist abgelaufen. Bitte erneut anfordern.";
-    }
-    if (options.status === "missing") {
-      return "Keine offene Bestätigung gefunden.";
-    }
-    if (options.status === "error") {
-      return options.errorMessage
-        ? `Löschen fehlgeschlagen: ${options.errorMessage}`
-        : "Löschen der Organisation ist fehlgeschlagen.";
-    }
+    return options.errorMessage
+      ? `Aktion fehlgeschlagen: ${options.errorMessage}`
+      : "Aktion konnte nicht ausgeführt werden.";
   }
 
-  if (options.status === "confirmed") {
-    return "Organization has been deleted.";
-  }
-  if (options.status === "canceled") {
-    return "Organization deletion was canceled.";
-  }
-  if (options.status === "expired") {
-    return "Confirmation expired. Please request it again.";
-  }
-  if (options.status === "missing") {
-    return "No pending confirmation was found.";
-  }
   return options.errorMessage
-    ? `Delete failed: ${options.errorMessage}`
-    : "Organization deletion failed.";
+    ? `Action failed: ${options.errorMessage}`
+    : "The action could not be completed.";
 }
 
-function toClarificationCanceledText(locale: "en" | "de") {
+function toPendingActionExpiredText(locale: AppLocale) {
+  return locale === "de"
+    ? "Bestätigung ist abgelaufen. Bitte erneut anfordern."
+    : "Confirmation expired. Please request it again.";
+}
+
+function toPendingActionMissingText(locale: AppLocale) {
+  return locale === "de"
+    ? "Keine offene Bestätigung gefunden."
+    : "No pending confirmation was found.";
+}
+
+function toClarificationCanceledText(locale: AppLocale) {
   if (locale === "de") {
     return "Rückfrage abgebrochen. Du kannst jederzeit eine neue Anfrage senden.";
   }
@@ -611,7 +741,7 @@ function toClarificationCanceledText(locale: "en" | "de") {
   return "Clarification was canceled. You can send a new request anytime.";
 }
 
-function toClarificationExpiredText(locale: "en" | "de") {
+function toClarificationExpiredText(locale: AppLocale) {
   if (locale === "de") {
     return "Rückfrage ist abgelaufen. Bitte Anfrage erneut senden.";
   }
@@ -619,7 +749,7 @@ function toClarificationExpiredText(locale: "en" | "de") {
   return "Clarification expired. Please submit your request again.";
 }
 
-function toClarificationMissingText(locale: "en" | "de") {
+function toClarificationMissingText(locale: AppLocale) {
   if (locale === "de") {
     return "Keine offene Rückfrage gefunden.";
   }
@@ -627,7 +757,7 @@ function toClarificationMissingText(locale: "en" | "de") {
   return "No pending clarification was found.";
 }
 
-function toClarificationAnsweredText(locale: "en" | "de") {
+function toClarificationAnsweredText(locale: AppLocale) {
   if (locale === "de") {
     return "Danke, ich fahre mit diesen Angaben fort.";
   }
@@ -635,7 +765,7 @@ function toClarificationAnsweredText(locale: "en" | "de") {
   return "Thanks, I will continue with these details.";
 }
 
-function toClarificationErrorText(locale: "en" | "de", errorMessage?: string) {
+function toClarificationErrorText(locale: AppLocale, errorMessage?: string) {
   if (locale === "de") {
     return errorMessage
       ? `Rückfrage konnte nicht verarbeitet werden: ${errorMessage}`
@@ -663,7 +793,7 @@ function hasApprovalRequiredStatus(result: unknown) {
 
   return (
     getRecordString(result, "status") === "requires_confirmation" &&
-    getRecordString(result, "actionType") === "delete-organization"
+    typeof getRecordString(result, "pendingActionId") === "string"
   );
 }
 
@@ -753,7 +883,7 @@ function getClarificationToolRequest(toolResults: ToolResultRecord[]) {
 }
 
 function buildClarificationTemplateFromTool(options: {
-  locale: "en" | "de";
+  locale: AppLocale;
   questions: string[];
   reason?: string | null;
 }) {
@@ -764,80 +894,38 @@ function buildClarificationTemplateFromTool(options: {
     })
     .slice(0, 3);
 
-  const fallbackQuestion =
-    options.locale === "de"
-      ? "Welche fehlenden Details soll ich für dich ergänzen?"
-      : "Which missing details should I add before I continue?";
+  const t = createTranslator(options.locale);
+  const fallbackQuestion = t("app.chat.clarification.fallbackQuestion");
 
   const clarificationPrompts =
     normalizedQuestions.length > 0 ? normalizedQuestions : [fallbackQuestion];
 
-  if (options.locale === "de") {
-    return {
-      title: "Rückfrage erforderlich",
-      description:
-        options.reason ??
-        "Bitte beantworte die Rückfrage, damit ich den Auftrag fortsetzen kann.",
-      assistantMessage:
-        clarificationPrompts.length === 1
-          ? clarificationPrompts[0]!
-          : "Ich brauche noch ein paar kurze Angaben, bevor ich fortfahre.",
-      questions: clarificationPrompts.map((prompt, index) => ({
-        id: `details_${index + 1}`,
-        prompt,
-        options: [
-          {
-            id: "provide_details",
-            label: "Details angeben (Empfohlen)",
-            description:
-              "Fehlende Details im Freitextfeld ergänzen, damit ich fortfahren kann.",
-          },
-          {
-            id: "use_current_data",
-            label: "Aktuelle Daten nutzen",
-            description:
-              "Mit den derzeit bekannten Daten fortfahren, falls ausreichend.",
-          },
-          {
-            id: "cancel_request",
-            label: "Vorgang abbrechen",
-            description: "Diesen Vorgang nicht fortsetzen.",
-          },
-        ],
-        allowOther: true,
-        required: true,
-      })),
-    };
-  }
-
   return {
-    title: "Clarification needed",
+    title: t("app.chat.clarification.title"),
     description:
-      options.reason ??
-      "Please answer the question so I can continue with your request.",
+      options.reason ?? t("app.chat.clarification.description"),
     assistantMessage:
       clarificationPrompts.length === 1
         ? clarificationPrompts[0]!
-        : "I need a few quick details before I continue.",
+        : t("app.chat.clarification.assistantMessageMultiple"),
     questions: clarificationPrompts.map((prompt, index) => ({
       id: `details_${index + 1}`,
       prompt,
       options: [
         {
           id: "provide_details",
-          label: "Provide details (Recommended)",
-          description:
-            "Add the missing detail in the free-text field so I can continue.",
+          label: t("app.chat.clarification.options.provideDetailsLabel"),
+          description: t("app.chat.clarification.options.provideDetailsDescription"),
         },
         {
           id: "use_current_data",
-          label: "Use current data",
-          description: "Proceed with the currently available data if sufficient.",
+          label: t("app.chat.clarification.options.useCurrentDataLabel"),
+          description: t("app.chat.clarification.options.useCurrentDataDescription"),
         },
         {
           id: "cancel_request",
-          label: "Cancel request",
-          description: "Do not continue with this operation.",
+          label: t("app.chat.clarification.options.cancelRequestLabel"),
+          description: t("app.chat.clarification.options.cancelRequestDescription"),
         },
       ],
       allowOther: true,
@@ -848,8 +936,10 @@ function buildClarificationTemplateFromTool(options: {
 
 function normalizeClarificationAnswers(options: {
   answers: ClarificationAnswerInput[];
+  locale: AppLocale;
   questions: ClarificationQuestion[];
 }) {
+  const t = createTranslator(options.locale);
   const answersByQuestionId = new Map(
     options.answers.map((answer) => [answer.questionId, answer]),
   );
@@ -865,13 +955,13 @@ function normalizeClarificationAnswers(options: {
 
     if (!selectedOption && !normalizedOtherText) {
       if (question.required) {
-        throw new Error("Please answer all clarification questions");
+        throw new Error(t("app.chat.clarification.completeRequired"));
       }
       continue;
     }
 
     if (!selectedOption && normalizedOtherText && !question.allowOther) {
-      throw new Error("An unsupported clarification answer was provided");
+      throw new Error(t("app.chat.clarification.unsupportedAnswer"));
     }
 
     if (selectedOption && normalizedOtherText) {
@@ -893,7 +983,7 @@ function normalizeClarificationAnswers(options: {
 function buildResumePromptFromClarification(options: {
   originalPrompt: string;
   normalizedAnswers: Record<string, string>;
-  locale: "en" | "de";
+  locale: AppLocale;
 }) {
   const sortedEntries = Object.entries(options.normalizedAnswers).sort((entryA, entryB) =>
     entryA[0].localeCompare(entryB[0]),
@@ -946,209 +1036,32 @@ function getTextDeltaFromChunk(chunk: unknown, payload: Record<string, unknown> 
   return "";
 }
 
-function normalizeMember(member: unknown): OrganizationMember | null {
-  if (!isRecord(member)) {
-    return null;
+function resolveStreamActor(value?: string | null): MastraChatStreamActor {
+  if (!value) {
+    return "main";
   }
 
-  const id = getRecordString(member, "id");
-  const userId = getRecordString(member, "userId");
-  const role = getRecordString(member, "role") ?? "member";
-  const user = isRecord(member.user) ? member.user : null;
-  const email =
-    (user && getRecordString(user, "email")) ??
-    getRecordString(member, "email") ??
-    "";
-  const name =
-    (user && getRecordString(user, "name")) ?? getRecordString(member, "name") ?? email;
-
-  if (!id || !userId) {
-    return null;
+  if (value.includes("organization")) {
+    return "organization";
+  }
+  if (value.includes("customer")) {
+    return "customer";
+  }
+  if (value.includes("project")) {
+    return "project";
+  }
+  if (value.includes("user")) {
+    return "user";
   }
 
-  return {
-    id,
-    userId,
-    role,
-    email,
-    name,
-  };
-}
-
-function normalizeInvitation(invitation: unknown): OrganizationInvitation | null {
-  if (!isRecord(invitation)) {
-    return null;
-  }
-
-  const id = getRecordString(invitation, "id");
-  const email = getRecordString(invitation, "email") ?? "";
-  const role = getRecordString(invitation, "role") ?? "member";
-  const status = getRecordString(invitation, "status") ?? "pending";
-
-  if (!id) {
-    return null;
-  }
-
-  return {
-    id,
-    email,
-    role,
-    status,
-  };
-}
-
-function normalizeOrganizationInfo(value: unknown) {
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  const id = getRecordString(value, "id");
-  const name = getRecordString(value, "name");
-  const slug = getRecordString(value, "slug");
-  const logoRaw = value.logo;
-  const logo = typeof logoRaw === "string" ? logoRaw : null;
-
-  if (!id || !name || !slug) {
-    return null;
-  }
-
-  return {
-    id,
-    name,
-    slug,
-    logo,
-  };
-}
-
-function normalizeUserInfo(value: unknown) {
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  const id = getRecordString(value, "_id") ?? getRecordString(value, "id");
-  const name = getRecordString(value, "name");
-  const email = getRecordString(value, "email");
-  const imageRaw = value.image;
-  const image = typeof imageRaw === "string" ? imageRaw : null;
-
-  if (!id || !name || !email) {
-    return null;
-  }
-
-  return {
-    id,
-    name,
-    email,
-    image,
-  };
-}
-
-async function callAuthApi(
-  auth: AuthApiClient,
-  methodName: string,
-  context: Record<string, unknown>,
-) {
-  const apiRecord = isRecord(auth.api)
-    ? (auth.api as Record<string, unknown>)
-    : undefined;
-  const method = apiRecord?.[methodName];
-  if (typeof method !== "function") {
-    throw new Error(`Better Auth API method '${methodName}' is not available`);
-  }
-
-  return await (method as (context: Record<string, unknown>) => Promise<unknown>)(
-    context,
-  );
-}
-
-async function hasOrganizationPermission(options: {
-  auth: AuthApiClient;
-  headers: Headers;
-  organizationId: string;
-  permissions: Record<string, string[]>;
-}) {
-  try {
-    const response = await callAuthApi(options.auth, "hasPermission", {
-      body: {
-        organizationId: options.organizationId,
-        permissions: options.permissions,
-      },
-      headers: options.headers,
-    });
-
-    return isRecord(response) && response.success === true;
-  } catch {
-    return false;
-  }
-}
-
-async function getToolPermissionFlags(options: {
-  auth: AuthApiClient;
-  headers: Headers;
-  organizationId: string;
-}) {
-  const [
-    canUpdateOrganization,
-    canInviteMembers,
-    canUpdateMembers,
-    canRemoveMembers,
-    canCancelInvitations,
-    canDeleteOrganization,
-  ] = await Promise.all([
-    hasOrganizationPermission({
-      ...options,
-      permissions: {
-        organization: ["update"],
-      },
-    }),
-    hasOrganizationPermission({
-      ...options,
-      permissions: {
-        invitation: ["create"],
-      },
-    }),
-    hasOrganizationPermission({
-      ...options,
-      permissions: {
-        member: ["update"],
-      },
-    }),
-    hasOrganizationPermission({
-      ...options,
-      permissions: {
-        member: ["delete"],
-      },
-    }),
-    hasOrganizationPermission({
-      ...options,
-      permissions: {
-        invitation: ["cancel"],
-      },
-    }),
-    hasOrganizationPermission({
-      ...options,
-      permissions: {
-        organization: ["delete"],
-      },
-    }),
-  ]);
-
-  return {
-    canUpdateOrganization,
-    canInviteMembers,
-    canUpdateMembers,
-    canRemoveMembers,
-    canCancelInvitations,
-    canDeleteOrganization,
-    canLeaveOrganization: true,
-  } satisfies ToolPermissionFlags;
+  return "main";
 }
 
 export const chat: any = action({
   args: {
     organizationId: v.string(),
     prompt: v.string(),
-    locale: v.optional(v.union(v.literal("en"), v.literal("de"))),
+    locale: v.optional(vAppLocale),
     attachments: v.optional(
       v.array(
         v.object({
@@ -1163,27 +1076,132 @@ export const chat: any = action({
         routeId: v.string(),
         routePath: v.string(),
         title: v.string(),
-        searchQuery: v.optional(v.string()),
+        searchQuery: v.optional(v.union(v.string(), v.null())),
         members: v.optional(
-          v.object({
-            totalCount: v.number(),
-            filteredCount: v.number(),
-            pendingInvitationCount: v.number(),
-            currentMemberRole: v.optional(v.string()),
-            visibleMembers: v.array(
-              v.object({
-                name: v.string(),
-                email: v.string(),
-                role: v.string(),
-              }),
-            ),
-            visibleInvitations: v.array(
-              v.object({
-                email: v.string(),
-                role: v.string(),
-              }),
-            ),
-          }),
+          v.union(
+            v.object({
+              totalCount: v.number(),
+              filteredCount: v.number(),
+              pendingInvitationCount: v.number(),
+              currentMemberRole: v.optional(v.union(v.string(), v.null())),
+              visibleMembers: v.array(
+                v.object({
+                  name: v.string(),
+                  email: v.optional(v.union(v.string(), v.null())),
+                  phoneNumberE164: v.optional(v.union(v.string(), v.null())),
+                  memberType: v.optional(
+                    v.union(v.literal("standard"), v.literal("phone_only")),
+                  ),
+                  role: v.string(),
+                }),
+              ),
+              visibleInvitations: v.array(
+                v.object({
+                  email: v.string(),
+                  role: v.string(),
+                }),
+              ),
+            }),
+            v.null(),
+          ),
+        ),
+        customers: v.optional(
+          v.union(
+            v.object({
+              totalCount: v.number(),
+              currentCustomer: v.optional(
+                v.union(
+                  v.object({
+                    id: v.string(),
+                    name: v.string(),
+                    email: v.optional(v.union(v.string(), v.null())),
+                    phone: v.optional(v.union(v.string(), v.null())),
+                  }),
+                  v.null(),
+                ),
+              ),
+              visibleCustomers: v.array(
+                v.object({
+                  id: v.string(),
+                  name: v.string(),
+                  contactName: v.optional(v.union(v.string(), v.null())),
+                  email: v.optional(v.union(v.string(), v.null())),
+                  phone: v.optional(v.union(v.string(), v.null())),
+                  activeProjectCount: v.number(),
+                  doneProjectCount: v.number(),
+                }),
+              ),
+            }),
+            v.null(),
+          ),
+        ),
+        projects: v.optional(
+          v.union(
+            v.object({
+              totalCount: v.number(),
+              activeCount: v.number(),
+              doneCount: v.number(),
+              currentProject: v.optional(
+                v.union(
+                  v.object({
+                    id: v.string(),
+                    name: v.string(),
+                    status: v.string(),
+                  }),
+                  v.null(),
+                ),
+              ),
+              visibleProjects: v.array(
+                v.object({
+                  id: v.string(),
+                  name: v.string(),
+                  status: v.string(),
+                  hasUnreviewedChanges: v.boolean(),
+                  hasNachtrag: v.boolean(),
+                }),
+              ),
+            }),
+            v.null(),
+          ),
+        ),
+        archive: v.optional(
+          v.union(
+            v.object({
+              archivedCustomerCount: v.number(),
+              archivedProjectCount: v.number(),
+              visibleArchivedCustomers: v.array(
+                v.object({
+                  id: v.string(),
+                  name: v.string(),
+                  deletedAt: v.number(),
+                }),
+              ),
+              visibleArchivedProjects: v.array(
+                v.object({
+                  id: v.string(),
+                  name: v.string(),
+                  status: v.string(),
+                  deletedAt: v.number(),
+                }),
+              ),
+            }),
+            v.null(),
+          ),
+        ),
+        shell: v.optional(
+          v.union(
+            v.object({
+              organizationName: v.optional(v.union(v.string(), v.null())),
+              companyEmail: v.optional(v.union(v.string(), v.null())),
+              companyEmailLocale: v.optional(v.union(v.string(), v.null())),
+              agentProfileName: v.optional(v.union(v.string(), v.null())),
+              agentStyleId: v.optional(v.union(v.string(), v.null())),
+              whatsappPhoneNumberE164: v.optional(v.union(v.string(), v.null())),
+              myWhatsAppPhoneNumberE164: v.optional(v.union(v.string(), v.null())),
+              myWhatsAppConnected: v.optional(v.union(v.boolean(), v.null())),
+            }),
+            v.null(),
+          ),
         ),
       }),
     ),
@@ -1354,10 +1372,36 @@ export const chat: any = action({
     )) as GenerationHistoryMessage[];
 
     const { auth, headers } = await authComponent.getAuth(createAuth, ctx);
-    const permissionFlags = await getToolPermissionFlags({
+    const {
+      permissionFlags,
+      readWorkspaceSnapshot,
+      organizationAdminTools,
+      customerTools,
+      projectTools,
+      userAccountTools,
+    } = await buildWorkspaceAgentTools({
       auth,
       headers,
+      channel: "web",
+      ctx,
+      locale,
+      memberRole: membership.role,
       organizationId: args.organizationId,
+      prompt,
+      resourceId,
+      threadId,
+      userId: authUser._id,
+      createPendingAction: async ({ actionType, payload }) => {
+        return await ctx.runMutation(internal.aiState.upsertPendingAction, {
+          threadId,
+          resourceId,
+          organizationId: args.organizationId,
+          userId: authUser._id,
+          actionType,
+          payload,
+          expiresAt: Date.now() + PENDING_ACTION_TTL_MS,
+        });
+      },
     });
 
     const contextPacket = compileAgentContextPacket({
@@ -1435,623 +1479,18 @@ export const chat: any = action({
       };
     }
 
-    const listOrganizationMembers = async (): Promise<OrganizationMember[]> => {
-      const response = await callAuthApi(auth, "listMembers", {
-        query: {
-          organizationId: args.organizationId,
-        },
-        headers,
-      });
-
-      const records =
-        isRecord(response) && Array.isArray(response.members)
-          ? response.members
-          : [];
-
-      return records
-        .map((member) => normalizeMember(member))
-        .filter((member): member is OrganizationMember => !!member);
-    };
-
-    const listOrganizationInvitations = async (input?: { status?: string }) => {
-      const response = await callAuthApi(auth, "listInvitations", {
-        query: {
-          organizationId: args.organizationId,
-        },
-        headers,
-      });
-
-      const records = Array.isArray(response)
-        ? response
-        : isRecord(response) && Array.isArray(response.invitations)
-          ? response.invitations
-          : [];
-
-      const invitations = records
-        .map((invitation) => normalizeInvitation(invitation))
-        .filter((invitation): invitation is OrganizationInvitation => !!invitation);
-
-      if (!input?.status) {
-        return invitations;
-      }
-
-      return invitations.filter((invitation) => invitation.status === input.status);
-    };
-
-    const getConnectedRecipientState = async () => {
-      const [members, connections] = await Promise.all([
-        listOrganizationMembers(),
-        ctx.runQuery(internal.whatsappData.getActiveConnectionsByOrganization, {
-          organizationId: args.organizationId,
-        }) as Promise<WhatsAppConnectionDoc[]>,
-      ]);
-
-      const memberById = new Map(members.map((entry) => [entry.id, entry]));
-      const connectionByMemberId = new Map<string, WhatsAppConnectionDoc>();
-      const recipients: ConnectedWhatsAppRecipient[] = [];
-
-      for (const connection of connections) {
-        const member = memberById.get(connection.memberId);
-        if (!member) {
-          continue;
-        }
-
-        connectionByMemberId.set(connection.memberId, connection);
-        recipients.push({
-          memberId: connection.memberId,
-          userId: member.userId,
-          name: member.name,
-          email: member.email,
-          phoneNumberE164: connection.phoneNumberE164,
-          isCurrentUser: member.userId === authUser._id,
-        });
-      }
-
-      recipients.sort((entryA, entryB) => {
-        const nameComparison = entryA.name.localeCompare(entryB.name, undefined, {
-          sensitivity: "base",
-        });
-        if (nameComparison !== 0) {
-          return nameComparison;
-        }
-        return entryA.email.localeCompare(entryB.email, undefined, {
-          sensitivity: "base",
-        });
-      });
-
-      return {
-        recipients,
-        connectionByMemberId,
-      };
-    };
-
-    const listConnectedWhatsAppNumbers = async (): Promise<ConnectedWhatsAppRecipient[]> => {
-      const state = await getConnectedRecipientState();
-      return state.recipients;
-    };
-
-    const sendProactiveWhatsAppMessage = async (input: {
-      recipientMemberIds: string[];
-      message: string;
-    }): Promise<ProactiveWhatsAppSendResult> => {
-      if (!hasExplicitProactiveSendIntent(prompt)) {
-        throw new Error(
-          locale === "de"
-            ? "Ich kann proaktive WhatsApp-Nachrichten nur senden, wenn du es in dieser Nachricht ausdrücklich verlangst."
-            : "I can send proactive WhatsApp messages only when you explicitly ask for sending in this request.",
-        );
-      }
-
-      const accountSid = process.env.TWILIO_ACCOUNT_SID;
-      const authToken = process.env.TWILIO_AUTH_TOKEN;
-      const fromNumber = process.env.TWILIO_WHATSAPP_FROM_NUMBER;
-      if (!accountSid || !authToken || !fromNumber) {
-        throw new Error(
-          locale === "de"
-            ? "WhatsApp-Versand ist nicht konfiguriert."
-            : "WhatsApp outbound messaging is not configured.",
-        );
-      }
-
-      const messageText = input.message.trim();
-      if (!messageText) {
-        throw new Error(
-          locale === "de" ? "Nachricht darf nicht leer sein." : "Message cannot be empty.",
-        );
-      }
-
-      const recipientMemberIds = [...new Set(
-        input.recipientMemberIds.map((entry) => entry.trim()).filter((entry) => entry.length > 0),
-      )];
-      if (recipientMemberIds.length === 0) {
-        throw new Error(
-          locale === "de"
-            ? "Mindestens ein Zielmitglied ist erforderlich."
-            : "At least one recipient is required.",
-        );
-      }
-
-      const { connectionByMemberId } = await getConnectedRecipientState();
-      const results: ProactiveWhatsAppSendResult["results"] = [];
-
-      for (const memberId of recipientMemberIds) {
-        const connection = connectionByMemberId.get(memberId);
-        if (!connection) {
-          results.push({
-            memberId,
-            phoneNumberE164: "",
-            status: "failed",
-            reason:
-              locale === "de"
-                ? "Keine aktive WhatsApp-Verbindung gefunden."
-                : "No active WhatsApp connection found.",
-          });
-          continue;
-        }
-
-        try {
-          await ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
-            phoneNumberE164: connection.phoneNumberE164,
-            locale,
-            text: messageText,
-            connectionId: connection._id,
-          });
-
-          results.push({
-            memberId,
-            phoneNumberE164: connection.phoneNumberE164,
-            status: "sent",
-          });
-        } catch (error) {
-          results.push({
-            memberId,
-            phoneNumberE164: connection.phoneNumberE164,
-            status: "failed",
-            reason: errorMessageFromUnknown(error),
-          });
-        }
-      }
-
-      const sentCount = results.filter((entry) => entry.status === "sent").length;
-      const failedCount = results.length - sentCount;
-
-      return {
-        requestedRecipientCount: recipientMemberIds.length,
-        sentCount,
-        failedCount,
-        results,
-      };
-    };
-
-    const getOrganizationSummary = async (): Promise<OrganizationSummary> => {
-      const [organizationResult, members, invitations] = await Promise.all([
-        callAuthApi(auth, "getFullOrganization", {
-          query: {
-            organizationId: args.organizationId,
-          },
-          headers,
-        }),
-        listOrganizationMembers(),
-        listOrganizationInvitations({ status: "pending" }),
-      ]);
-
-      const organization = normalizeOrganizationInfo(organizationResult) ?? {
-        id: args.organizationId,
-        name:
-          locale === "de" ? "Aktive Organisation" : "Active organization",
-        slug: args.organizationId,
-        logo: null,
-      };
-
-      return {
-        organization,
-        currentMemberRole: membership.role,
-        memberCount: members.length,
-        invitationCount: invitations.length,
-        permissions: permissionFlags,
-        members,
-        pendingInvitations: invitations,
-      };
-    };
-
-    const readWorkspaceSnapshot = async (): Promise<WorkspaceSnapshot> => {
-      const membersResult = await ctx.runQuery(components.betterAuth.adapter.findMany, {
-        model: "member",
-        where: [
-          {
-            field: "organizationId",
-            operator: "eq",
-            value: args.organizationId,
-          },
-        ],
-        paginationOpts: {
-          cursor: null,
-          numItems: PAGE_SIZE,
-        },
-      });
-
-      const members = (membersResult.page ?? []) as MemberDoc[];
-      const userIds = [...new Set(members.map((member) => member.userId))];
-
-      const usersResult =
-        userIds.length === 0
-          ? { page: [] as UserDoc[] }
-          : await ctx.runQuery(components.betterAuth.adapter.findMany, {
-              model: "user",
-              where: [
-                {
-                  field: "_id",
-                  operator: "in",
-                  value: userIds,
-                },
-              ],
-              paginationOpts: {
-                cursor: null,
-                numItems: PAGE_SIZE,
-              },
-            });
-
-      const users = (usersResult.page ?? []) as UserDoc[];
-      const userById = new Map(users.map((user) => [user._id, user]));
-
-      const invitationsResult = await ctx.runQuery(
-        components.betterAuth.adapter.findMany,
-        {
-          model: "invitation",
-          where: [
-            {
-              field: "organizationId",
-              operator: "eq",
-              value: args.organizationId,
-            },
-            {
-              field: "status",
-              operator: "eq",
-              value: "pending",
-            },
-          ],
-          paginationOpts: {
-            cursor: null,
-            numItems: PAGE_SIZE,
-          },
-        },
-      );
-
-      const invitations = (invitationsResult.page ?? []) as InvitationDoc[];
-
-      return {
-        organizationId: args.organizationId,
-        memberCount: members.length,
-        invitationCount: invitations.length,
-        members: members.map((member) => {
-          const user = userById.get(member.userId);
-
-          return {
-            name: user?.name ?? "Unknown user",
-            email: user?.email ?? "unknown@example.com",
-            role: member.role,
-          };
-        }),
-        pendingInvitations: invitations.map((invitation) => ({
-          email: invitation.email,
-          role: invitation.role ?? "member",
-        })),
-      };
-    };
-
-    const getUserSettings = async (): Promise<UserSettingsSummary> => {
-      const [userResult, localePreference, themePreference] = await Promise.all([
-        ctx.runQuery(components.betterAuth.adapter.findOne, {
-          model: "user",
-          where: [
-            {
-              field: "_id",
-              operator: "eq",
-              value: authUser._id,
-            },
-          ],
-        }),
-        ctx.runQuery(internal.preferences.getLocaleForUser, {
-          userId: authUser._id,
-        }),
-        ctx.runQuery(internal.preferences.getThemeForUser, {
-          userId: authUser._id,
-        }),
-      ]);
-
-      const normalizedUser = normalizeUserInfo(userResult) ?? {
-        id: authUser._id,
-        name: authUser.name?.trim() || (locale === "de" ? "Benutzer" : "User"),
-        email: authUser.email,
-        image: typeof authUser.image === "string" ? authUser.image : null,
-      };
-
-      return {
-        user: normalizedUser,
-        preferences: {
-          language: localePreference ?? "system",
-          theme: themePreference ?? "system",
-        },
-      };
-    };
-
-    const updateUserSettings = async (input: {
-      name?: string;
-      image?: string | null;
-      language?: "en" | "de" | "system";
-      theme?: "light" | "dark" | "system";
-    }): Promise<UserSettingsSummary> => {
-      const userUpdateData: Record<string, string | null> = {};
-      let hasPreferenceUpdate = false;
-
-      if (typeof input.name === "string") {
-        const normalizedName = input.name.trim();
-        if (normalizedName.length < 2) {
-          throw new Error(
-            locale === "de"
-              ? "Der Name muss mindestens 2 Zeichen lang sein."
-              : "Name must be at least 2 characters.",
-          );
-        }
-        userUpdateData.name = normalizedName;
-      }
-
-      if (input.image !== undefined) {
-        if (input.image === null) {
-          userUpdateData.image = null;
-        } else {
-          const normalizedImage = input.image.trim();
-          userUpdateData.image = normalizedImage.length > 0 ? normalizedImage : null;
-        }
-      }
-
-      if (Object.keys(userUpdateData).length > 0) {
-        await callAuthApi(auth, "updateUser", {
-          body: userUpdateData,
-          headers,
-        });
-      }
-
-      if (input.language !== undefined) {
-        hasPreferenceUpdate = true;
-        await ctx.runMutation(internal.preferences.setLocaleForUser, {
-          userId: authUser._id,
-          locale: input.language === "system" ? null : input.language,
-        });
-      }
-
-      if (input.theme !== undefined) {
-        hasPreferenceUpdate = true;
-        await ctx.runMutation(internal.preferences.setThemeForUser, {
-          userId: authUser._id,
-          theme: input.theme === "system" ? null : input.theme,
-        });
-      }
-
-      if (Object.keys(userUpdateData).length === 0 && !hasPreferenceUpdate) {
-        throw new Error(
-          locale === "de"
-            ? "Mindestens ein Feld zum Aktualisieren angeben."
-            : "Provide at least one field to update.",
-        );
-      }
-
-      return await getUserSettings();
-    };
-
-    const requestDeleteOrganizationConfirmation =
-      permissionFlags.canDeleteOrganization
-        ? async () => {
-            const organizationResult = await callAuthApi(auth, "getFullOrganization", {
-              query: {
-                organizationId: args.organizationId,
-              },
-              headers,
-            });
-            const organization = normalizeOrganizationInfo(organizationResult);
-            const pending = await ctx.runMutation(
-              internal.aiState.upsertPendingDeleteOrganizationAction,
-              {
-                threadId,
-                resourceId,
-                organizationId: args.organizationId,
-                userId: authUser._id,
-                payload: {
-                  organizationId: args.organizationId,
-                  organizationName: organization?.name,
-                },
-                expiresAt: Date.now() + PENDING_ACTION_TTL_MS,
-              },
-            );
-
-            return {
-              pendingActionId: pending.pendingActionId,
-              expiresAt: pending.expiresAt,
-            };
-          }
-        : undefined;
-
     const agent = createWorkspaceAgent({
+      channel: "web",
       organizationId: args.organizationId,
       modelId,
       locale,
       responseFormat: "panel_markdown",
       contextPacket: formatContextPacketForInstructions(contextPacket),
       readWorkspaceSnapshot,
-      organizationTools: {
-        getOrganizationSummary,
-        listOrganizationMembers,
-        listOrganizationInvitations,
-        listConnectedWhatsAppNumbers,
-        sendProactiveWhatsAppMessage,
-        updateOrganization: permissionFlags.canUpdateOrganization
-          ? async (input) => {
-              const data: Record<string, string> = {};
-
-              if (typeof input.name === "string") {
-                data.name = input.name.trim();
-              }
-              if (typeof input.slug === "string") {
-                data.slug = input.slug.trim();
-              }
-              if (typeof input.logo === "string") {
-                data.logo = input.logo.trim();
-              }
-
-              if (Object.keys(data).length === 0) {
-                throw new Error(
-                  locale === "de"
-                    ? "Mindestens ein Feld zum Aktualisieren angeben."
-                    : "Provide at least one field to update.",
-                );
-              }
-
-              const updated = await callAuthApi(auth, "updateOrganization", {
-                body: {
-                  organizationId: args.organizationId,
-                  data,
-                },
-                headers,
-              });
-
-              const organization = normalizeOrganizationInfo(updated);
-              if (!organization) {
-                throw new Error(
-                  locale === "de"
-                    ? "Organisation konnte nicht aktualisiert werden."
-                    : "Failed to update organization.",
-                );
-              }
-
-              return organization;
-            }
-          : undefined,
-        inviteOrganizationMember: permissionFlags.canInviteMembers
-          ? async (input) => {
-              const invited = await callAuthApi(auth, "createInvitation", {
-                body: {
-                  organizationId: args.organizationId,
-                  email: input.email,
-                  role: input.role,
-                },
-                headers,
-              });
-
-              const invitation = normalizeInvitation(invited);
-              if (!invitation) {
-                throw new Error(
-                  locale === "de"
-                    ? "Einladung konnte nicht erstellt werden."
-                    : "Failed to create invitation.",
-                );
-              }
-
-              return invitation;
-            }
-          : undefined,
-        updateOrganizationMemberRole: permissionFlags.canUpdateMembers
-          ? async (input) => {
-              const updated = await callAuthApi(auth, "updateMemberRole", {
-                body: {
-                  organizationId: args.organizationId,
-                  memberId: input.memberId,
-                  role: input.role,
-                },
-                headers,
-              });
-
-              const member = normalizeMember(updated);
-              if (!member) {
-                throw new Error(
-                  locale === "de"
-                    ? "Rolle konnte nicht aktualisiert werden."
-                    : "Failed to update member role.",
-                );
-              }
-
-              return member;
-            }
-          : undefined,
-        removeOrganizationMember: permissionFlags.canRemoveMembers
-          ? async (input) => {
-              const removed = await callAuthApi(auth, "removeMember", {
-                body: {
-                  organizationId: args.organizationId,
-                  memberIdOrEmail: input.memberIdOrEmail,
-                },
-                headers,
-              });
-
-              const memberPayload = isRecord(removed) && isRecord(removed.member)
-                ? removed.member
-                : removed;
-              const member = normalizeMember(memberPayload);
-              if (!member) {
-                throw new Error(
-                  locale === "de"
-                    ? "Mitglied konnte nicht entfernt werden."
-                    : "Failed to remove member.",
-                );
-              }
-
-              return member;
-            }
-          : undefined,
-        cancelOrganizationInvitation: permissionFlags.canCancelInvitations
-          ? async (input) => {
-              const canceled = await callAuthApi(auth, "cancelInvitation", {
-                body: {
-                  invitationId: input.invitationId,
-                },
-                headers,
-              });
-
-              const invitation = normalizeInvitation(canceled);
-              if (!invitation) {
-                throw new Error(
-                  locale === "de"
-                    ? "Einladung konnte nicht widerrufen werden."
-                    : "Failed to cancel invitation.",
-                );
-              }
-
-              return invitation;
-            }
-          : undefined,
-        leaveOrganization: permissionFlags.canLeaveOrganization
-          ? async () => {
-              await callAuthApi(auth, "leaveOrganization", {
-                body: {
-                  organizationId: args.organizationId,
-                },
-                headers,
-              });
-
-              return {
-                organizationId: args.organizationId,
-              };
-            }
-          : undefined,
-        requestDeleteOrganizationConfirmation,
-        deleteOrganization: permissionFlags.canDeleteOrganization
-          ? async () => {
-              await callAuthApi(auth, "deleteOrganization", {
-                body: {
-                  organizationId: args.organizationId,
-                },
-                headers,
-              });
-
-              return {
-                organizationId: args.organizationId,
-              };
-            }
-          : undefined,
-      },
-      userTools: {
-        getUserSettings,
-        updateUserSettings,
-      },
+      organizationAdminTools,
+      customerTools,
+      projectTools,
+      userAccountTools,
     });
 
     await ctx.runMutation(internal.aiState.setChatThreadState, {
@@ -2155,16 +1594,11 @@ export const chat: any = action({
               ? getRecordString(chunk, "toolName")
               : null;
 
-          if (toolName?.startsWith("agent-organization")) {
+          const delegatedActor = resolveStreamActor(toolName);
+          if (delegatedActor !== "main") {
             shouldForceFlush = setStreamState({
               phase: "delegating",
-              actor: "organization",
-              toolLabel: null,
-            });
-          } else if (toolName?.startsWith("agent-user")) {
-            shouldForceFlush = setStreamState({
-              phase: "delegating",
-              actor: "user",
+              actor: delegatedActor,
               toolLabel: null,
             });
           } else {
@@ -2180,16 +1614,11 @@ export const chat: any = action({
               ? getRecordString(chunk, "toolName")
               : null;
 
-          if (toolName?.startsWith("agent-organization")) {
+          const delegatedActor = resolveStreamActor(toolName);
+          if (delegatedActor !== "main") {
             shouldForceFlush = setStreamState({
               phase: "thinking",
-              actor: "organization",
-              toolLabel: null,
-            });
-          } else if (toolName?.startsWith("agent-user")) {
-            shouldForceFlush = setStreamState({
-              phase: "thinking",
-              actor: "user",
+              actor: delegatedActor,
               toolLabel: null,
             });
           } else {
@@ -2213,11 +1642,7 @@ export const chat: any = action({
 
           shouldForceFlush = setStreamState({
             phase: "thinking",
-            actor: agentId?.includes("organization")
-              ? "organization"
-              : agentId?.includes("user")
-                ? "user"
-                : "main",
+            actor: resolveStreamActor(agentId),
             toolLabel: null,
           });
         } else if (type === "step-start") {
@@ -2387,7 +1812,7 @@ export const submitClarificationAnswers: any = action({
   args: {
     organizationId: v.string(),
     clarificationSessionId: v.id("aiClarificationSessions"),
-    locale: v.optional(v.union(v.literal("en"), v.literal("de"))),
+    locale: v.optional(vAppLocale),
     answers: v.array(
       v.object({
         questionId: v.string(),
@@ -2469,6 +1894,7 @@ export const submitClarificationAnswers: any = action({
     try {
       const normalizedAnswers = normalizeClarificationAnswers({
         answers: args.answers as ClarificationAnswerInput[],
+        locale,
         questions: session.questions as ClarificationQuestion[],
       });
 
@@ -2506,7 +1932,7 @@ export const cancelClarificationSession = action({
   args: {
     organizationId: v.string(),
     clarificationSessionId: v.id("aiClarificationSessions"),
-    locale: v.optional(v.union(v.literal("en"), v.literal("de"))),
+    locale: v.optional(vAppLocale),
   },
   returns: v.object({
     status: v.union(
@@ -2612,7 +2038,7 @@ export const resumeFromClarification: any = action({
   args: {
     organizationId: v.string(),
     clarificationSessionId: v.id("aiClarificationSessions"),
-    locale: v.optional(v.union(v.literal("en"), v.literal("de"))),
+    locale: v.optional(vAppLocale),
   },
   returns: v.object({
     status: v.union(
@@ -2714,7 +2140,7 @@ export const confirmPendingAction = action({
   args: {
     organizationId: v.string(),
     pendingActionId: v.id("aiPendingActions"),
-    locale: v.optional(v.union(v.literal("en"), v.literal("de"))),
+    locale: v.optional(vAppLocale),
   },
   returns: v.object({
     status: v.union(
@@ -2725,7 +2151,10 @@ export const confirmPendingAction = action({
     ),
     text: v.string(),
   }),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{
+    status: "confirmed" | "expired" | "missing" | "error";
+    text: string;
+  }> => {
     const locale = toLocale(args.locale);
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) {
@@ -2764,10 +2193,7 @@ export const confirmPendingAction = action({
     ) {
       return {
         status: "missing" as const,
-        text: toDeleteActionText({
-          locale,
-          status: "missing",
-        }),
+        text: pendingAction?.payload.missingMessage ?? toPendingActionMissingText(locale),
       };
     }
 
@@ -2779,20 +2205,20 @@ export const confirmPendingAction = action({
 
       return {
         status: "expired" as const,
-        text: toDeleteActionText({
-          locale,
-          status: "expired",
-        }),
+        text: pendingAction.payload.expiredMessage ?? toPendingActionExpiredText(locale),
       };
     }
 
     try {
       const { auth, headers } = await authComponent.getAuth(createAuth, ctx);
-      await callAuthApi(auth, "deleteOrganization", {
-        body: {
-          organizationId: args.organizationId,
-        },
+      const text = await executePendingAction({
+        actionType: pendingAction.actionType,
+        auth,
+        ctx,
         headers,
+        locale,
+        payload: pendingAction.payload,
+        userId: authUser._id,
       });
 
       await ctx.runMutation(internal.aiState.resolvePendingAction, {
@@ -2802,17 +2228,13 @@ export const confirmPendingAction = action({
 
       return {
         status: "confirmed" as const,
-        text: toDeleteActionText({
-          locale,
-          status: "confirmed",
-        }),
+        text,
       };
     } catch (error) {
       return {
         status: "error" as const,
-        text: toDeleteActionText({
+        text: toPendingActionErrorText({
           locale,
-          status: "error",
           errorMessage: errorMessageFromUnknown(error),
         }),
       };
@@ -2824,7 +2246,7 @@ export const cancelPendingAction = action({
   args: {
     organizationId: v.string(),
     pendingActionId: v.id("aiPendingActions"),
-    locale: v.optional(v.union(v.literal("en"), v.literal("de"))),
+    locale: v.optional(vAppLocale),
   },
   returns: v.object({
     status: v.union(
@@ -2835,7 +2257,10 @@ export const cancelPendingAction = action({
     ),
     text: v.string(),
   }),
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{
+    status: "canceled" | "expired" | "missing" | "error";
+    text: string;
+  }> => {
     const locale = toLocale(args.locale);
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) {
@@ -2874,10 +2299,7 @@ export const cancelPendingAction = action({
     ) {
       return {
         status: "missing" as const,
-        text: toDeleteActionText({
-          locale,
-          status: "missing",
-        }),
+        text: pendingAction?.payload.missingMessage ?? toPendingActionMissingText(locale),
       };
     }
 
@@ -2889,10 +2311,7 @@ export const cancelPendingAction = action({
 
       return {
         status: "expired" as const,
-        text: toDeleteActionText({
-          locale,
-          status: "expired",
-        }),
+        text: pendingAction.payload.expiredMessage ?? toPendingActionExpiredText(locale),
       };
     }
 
@@ -2905,10 +2324,8 @@ export const cancelPendingAction = action({
       const threadId = pendingAction.threadId;
       const resourceId = pendingAction.resourceId;
 
-      const text = toDeleteActionText({
-        locale,
-        status: "canceled",
-      });
+      const text =
+        pendingAction.payload.canceledMessage ?? toPendingActionMissingText(locale);
 
       await ctx.runMutation(internal.aiState.upsertGeneratedMessages, {
         threadId,
@@ -2933,9 +2350,8 @@ export const cancelPendingAction = action({
     } catch (error) {
       return {
         status: "error" as const,
-        text: toDeleteActionText({
+        text: toPendingActionErrorText({
           locale,
-          status: "error",
           errorMessage: errorMessageFromUnknown(error),
         }),
       };

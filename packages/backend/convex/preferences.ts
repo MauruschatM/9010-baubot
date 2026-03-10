@@ -1,3 +1,4 @@
+import type { AppLocale } from "@mvp-template/i18n";
 import { v } from "convex/values";
 
 import {
@@ -9,8 +10,8 @@ import {
   type QueryCtx,
 } from "./_generated/server";
 import { authComponent } from "./auth";
+import { vNullableAppLocale } from "./lib/locales";
 
-const vLocalePreference = v.union(v.literal("en"), v.literal("de"), v.null());
 const vThemePreference = v.union(v.literal("light"), v.literal("dark"), v.null());
 
 async function getLocalePreferenceByUserId(ctx: QueryCtx | MutationCtx, userId: string) {
@@ -25,7 +26,7 @@ async function getLocalePreferenceByUserId(ctx: QueryCtx | MutationCtx, userId: 
 async function setLocalePreferenceByUserId(
   ctx: MutationCtx,
   userId: string,
-  locale: "en" | "de" | null,
+  locale: AppLocale | null,
 ) {
   const existingPreference = await ctx.db
     .query("userPreferences")
@@ -103,7 +104,7 @@ async function setThemePreferenceByUserId(
 
 export const getMyLocale = query({
   args: {},
-  returns: vLocalePreference,
+  returns: vNullableAppLocale,
   handler: async (ctx) => {
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) {
@@ -116,9 +117,9 @@ export const getMyLocale = query({
 
 export const setMyLocale = mutation({
   args: {
-    locale: vLocalePreference,
+    locale: vNullableAppLocale,
   },
-  returns: vLocalePreference,
+  returns: vNullableAppLocale,
   handler: async (ctx, args) => {
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) {
@@ -161,7 +162,7 @@ export const getLocaleForUser = internalQuery({
   args: {
     userId: v.string(),
   },
-  returns: vLocalePreference,
+  returns: vNullableAppLocale,
   handler: async (ctx, args) => {
     return await getLocalePreferenceByUserId(ctx, args.userId);
   },
@@ -170,9 +171,9 @@ export const getLocaleForUser = internalQuery({
 export const setLocaleForUser = internalMutation({
   args: {
     userId: v.string(),
-    locale: vLocalePreference,
+    locale: vNullableAppLocale,
   },
-  returns: vLocalePreference,
+  returns: vNullableAppLocale,
   handler: async (ctx, args) => {
     return await setLocalePreferenceByUserId(ctx, args.userId, args.locale);
   },

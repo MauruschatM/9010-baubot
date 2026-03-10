@@ -1,6 +1,8 @@
 import {
   assertProviderTranslationsForCodes,
+  isTranslationKey,
   messagesCatalog,
+  type TranslationKey,
   type Translator,
 } from "@mvp-template/i18n";
 
@@ -43,14 +45,13 @@ export function extractAuthErrorCode(error: unknown): string | null {
 export function getLocalizedAuthErrorMessage(
   t: Translator,
   error: unknown,
-  fallbackKey = "errors.genericUnexpected",
+  fallbackKey: TranslationKey = "errors.genericUnexpected",
 ) {
   const code = extractAuthErrorCode(error);
   if (code) {
     const providerKey = `errors.provider.${code}`;
-    const translated = t(providerKey);
-    if (translated !== providerKey) {
-      return translated;
+    if (isTranslationKey(providerKey)) {
+      return t(providerKey);
     }
   }
 

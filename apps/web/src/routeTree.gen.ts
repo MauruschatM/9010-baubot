@@ -14,10 +14,17 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AppIndexRouteImport } from './routes/app/index'
 import { Route as AppOrganizationRouteImport } from './routes/app/organization'
 import { Route as AppMembersRouteImport } from './routes/app/members'
+import { Route as AppArchiveRouteImport } from './routes/app/archive'
+import { Route as authSignupRouteImport } from './routes/(auth)/signup'
+import { Route as authResetPasswordRouteImport } from './routes/(auth)/reset-password'
 import { Route as authOrganizationRouteImport } from './routes/(auth)/organization'
 import { Route as authOnboardingRouteImport } from './routes/(auth)/onboarding'
 import { Route as authLoginRouteImport } from './routes/(auth)/login'
 import { Route as authInvitationRouteImport } from './routes/(auth)/invitation'
+import { Route as AppProjectsIndexRouteImport } from './routes/app/projects/index'
+import { Route as AppCustomersIndexRouteImport } from './routes/app/customers/index'
+import { Route as AppProjectsProjectIdRouteImport } from './routes/app/projects/$projectId'
+import { Route as AppCustomersCustomerIdRouteImport } from './routes/app/customers/$customerId'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
 
 const AppRouteRoute = AppRouteRouteImport.update({
@@ -45,6 +52,21 @@ const AppMembersRoute = AppMembersRouteImport.update({
   path: '/members',
   getParentRoute: () => AppRouteRoute,
 } as any)
+const AppArchiveRoute = AppArchiveRouteImport.update({
+  id: '/archive',
+  path: '/archive',
+  getParentRoute: () => AppRouteRoute,
+} as any)
+const authSignupRoute = authSignupRouteImport.update({
+  id: '/(auth)/signup',
+  path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const authResetPasswordRoute = authResetPasswordRouteImport.update({
+  id: '/(auth)/reset-password',
+  path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const authOrganizationRoute = authOrganizationRouteImport.update({
   id: '/(auth)/organization',
   path: '/organization',
@@ -65,6 +87,26 @@ const authInvitationRoute = authInvitationRouteImport.update({
   path: '/invitation',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppProjectsIndexRoute = AppProjectsIndexRouteImport.update({
+  id: '/projects/',
+  path: '/projects/',
+  getParentRoute: () => AppRouteRoute,
+} as any)
+const AppCustomersIndexRoute = AppCustomersIndexRouteImport.update({
+  id: '/customers/',
+  path: '/customers/',
+  getParentRoute: () => AppRouteRoute,
+} as any)
+const AppProjectsProjectIdRoute = AppProjectsProjectIdRouteImport.update({
+  id: '/projects/$projectId',
+  path: '/projects/$projectId',
+  getParentRoute: () => AppRouteRoute,
+} as any)
+const AppCustomersCustomerIdRoute = AppCustomersCustomerIdRouteImport.update({
+  id: '/customers/$customerId',
+  path: '/customers/$customerId',
+  getParentRoute: () => AppRouteRoute,
+} as any)
 const ApiAuthSplatRoute = ApiAuthSplatRouteImport.update({
   id: '/api/auth/$',
   path: '/api/auth/$',
@@ -78,10 +120,17 @@ export interface FileRoutesByFullPath {
   '/login': typeof authLoginRoute
   '/onboarding': typeof authOnboardingRoute
   '/organization': typeof authOrganizationRoute
+  '/reset-password': typeof authResetPasswordRoute
+  '/signup': typeof authSignupRoute
+  '/app/archive': typeof AppArchiveRoute
   '/app/members': typeof AppMembersRoute
   '/app/organization': typeof AppOrganizationRoute
   '/app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/app/customers/$customerId': typeof AppCustomersCustomerIdRoute
+  '/app/projects/$projectId': typeof AppProjectsProjectIdRoute
+  '/app/customers/': typeof AppCustomersIndexRoute
+  '/app/projects/': typeof AppProjectsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -89,10 +138,17 @@ export interface FileRoutesByTo {
   '/login': typeof authLoginRoute
   '/onboarding': typeof authOnboardingRoute
   '/organization': typeof authOrganizationRoute
+  '/reset-password': typeof authResetPasswordRoute
+  '/signup': typeof authSignupRoute
+  '/app/archive': typeof AppArchiveRoute
   '/app/members': typeof AppMembersRoute
   '/app/organization': typeof AppOrganizationRoute
   '/app': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/app/customers/$customerId': typeof AppCustomersCustomerIdRoute
+  '/app/projects/$projectId': typeof AppProjectsProjectIdRoute
+  '/app/customers': typeof AppCustomersIndexRoute
+  '/app/projects': typeof AppProjectsIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -102,10 +158,17 @@ export interface FileRoutesById {
   '/(auth)/login': typeof authLoginRoute
   '/(auth)/onboarding': typeof authOnboardingRoute
   '/(auth)/organization': typeof authOrganizationRoute
+  '/(auth)/reset-password': typeof authResetPasswordRoute
+  '/(auth)/signup': typeof authSignupRoute
+  '/app/archive': typeof AppArchiveRoute
   '/app/members': typeof AppMembersRoute
   '/app/organization': typeof AppOrganizationRoute
   '/app/': typeof AppIndexRoute
   '/api/auth/$': typeof ApiAuthSplatRoute
+  '/app/customers/$customerId': typeof AppCustomersCustomerIdRoute
+  '/app/projects/$projectId': typeof AppProjectsProjectIdRoute
+  '/app/customers/': typeof AppCustomersIndexRoute
+  '/app/projects/': typeof AppProjectsIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -116,10 +179,17 @@ export interface FileRouteTypes {
     | '/login'
     | '/onboarding'
     | '/organization'
+    | '/reset-password'
+    | '/signup'
+    | '/app/archive'
     | '/app/members'
     | '/app/organization'
     | '/app/'
     | '/api/auth/$'
+    | '/app/customers/$customerId'
+    | '/app/projects/$projectId'
+    | '/app/customers/'
+    | '/app/projects/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -127,10 +197,17 @@ export interface FileRouteTypes {
     | '/login'
     | '/onboarding'
     | '/organization'
+    | '/reset-password'
+    | '/signup'
+    | '/app/archive'
     | '/app/members'
     | '/app/organization'
     | '/app'
     | '/api/auth/$'
+    | '/app/customers/$customerId'
+    | '/app/projects/$projectId'
+    | '/app/customers'
+    | '/app/projects'
   id:
     | '__root__'
     | '/'
@@ -139,10 +216,17 @@ export interface FileRouteTypes {
     | '/(auth)/login'
     | '/(auth)/onboarding'
     | '/(auth)/organization'
+    | '/(auth)/reset-password'
+    | '/(auth)/signup'
+    | '/app/archive'
     | '/app/members'
     | '/app/organization'
     | '/app/'
     | '/api/auth/$'
+    | '/app/customers/$customerId'
+    | '/app/projects/$projectId'
+    | '/app/customers/'
+    | '/app/projects/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -152,6 +236,8 @@ export interface RootRouteChildren {
   authLoginRoute: typeof authLoginRoute
   authOnboardingRoute: typeof authOnboardingRoute
   authOrganizationRoute: typeof authOrganizationRoute
+  authResetPasswordRoute: typeof authResetPasswordRoute
+  authSignupRoute: typeof authSignupRoute
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
 }
 
@@ -192,6 +278,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppMembersRouteImport
       parentRoute: typeof AppRouteRoute
     }
+    '/app/archive': {
+      id: '/app/archive'
+      path: '/archive'
+      fullPath: '/app/archive'
+      preLoaderRoute: typeof AppArchiveRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/(auth)/signup': {
+      id: '/(auth)/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof authSignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/(auth)/reset-password': {
+      id: '/(auth)/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof authResetPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/(auth)/organization': {
       id: '/(auth)/organization'
       path: '/organization'
@@ -220,6 +327,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof authInvitationRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/app/projects/': {
+      id: '/app/projects/'
+      path: '/projects'
+      fullPath: '/app/projects/'
+      preLoaderRoute: typeof AppProjectsIndexRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/app/customers/': {
+      id: '/app/customers/'
+      path: '/customers'
+      fullPath: '/app/customers/'
+      preLoaderRoute: typeof AppCustomersIndexRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/app/projects/$projectId': {
+      id: '/app/projects/$projectId'
+      path: '/projects/$projectId'
+      fullPath: '/app/projects/$projectId'
+      preLoaderRoute: typeof AppProjectsProjectIdRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
+    '/app/customers/$customerId': {
+      id: '/app/customers/$customerId'
+      path: '/customers/$customerId'
+      fullPath: '/app/customers/$customerId'
+      preLoaderRoute: typeof AppCustomersCustomerIdRouteImport
+      parentRoute: typeof AppRouteRoute
+    }
     '/api/auth/$': {
       id: '/api/auth/$'
       path: '/api/auth/$'
@@ -231,15 +366,25 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteRouteChildren {
+  AppArchiveRoute: typeof AppArchiveRoute
   AppMembersRoute: typeof AppMembersRoute
   AppOrganizationRoute: typeof AppOrganizationRoute
   AppIndexRoute: typeof AppIndexRoute
+  AppCustomersCustomerIdRoute: typeof AppCustomersCustomerIdRoute
+  AppProjectsProjectIdRoute: typeof AppProjectsProjectIdRoute
+  AppCustomersIndexRoute: typeof AppCustomersIndexRoute
+  AppProjectsIndexRoute: typeof AppProjectsIndexRoute
 }
 
 const AppRouteRouteChildren: AppRouteRouteChildren = {
+  AppArchiveRoute: AppArchiveRoute,
   AppMembersRoute: AppMembersRoute,
   AppOrganizationRoute: AppOrganizationRoute,
   AppIndexRoute: AppIndexRoute,
+  AppCustomersCustomerIdRoute: AppCustomersCustomerIdRoute,
+  AppProjectsProjectIdRoute: AppProjectsProjectIdRoute,
+  AppCustomersIndexRoute: AppCustomersIndexRoute,
+  AppProjectsIndexRoute: AppProjectsIndexRoute,
 }
 
 const AppRouteRouteWithChildren = AppRouteRoute._addFileChildren(
@@ -253,6 +398,8 @@ const rootRouteChildren: RootRouteChildren = {
   authLoginRoute: authLoginRoute,
   authOnboardingRoute: authOnboardingRoute,
   authOrganizationRoute: authOrganizationRoute,
+  authResetPasswordRoute: authResetPasswordRoute,
+  authSignupRoute: authSignupRoute,
   ApiAuthSplatRoute: ApiAuthSplatRoute,
 }
 export const routeTree = rootRouteImport

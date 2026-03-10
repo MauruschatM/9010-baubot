@@ -1,11 +1,13 @@
 import {
-  SUPPORTED_LOCALES,
   SYSTEM_LOCALE,
-  normalizeLocale,
+  normalizeTranslatedLocale,
+  resolveTranslatedLocale,
   type AppLocale,
   type LocalePreference,
+  type TranslationKey,
 } from "@mvp-template/i18n";
 import { api } from "@mvp-template/backend/convex/_generated/api";
+import type { Id } from "@mvp-template/backend/convex/_generated/dataModel";
 import {
   Link,
   Outlet,
@@ -24,11 +26,13 @@ import {
 import { useTheme } from "next-themes";
 import { toast } from "@/components/ui/sonner";
 import {
+  RiArchiveLine,
+  RiArrowLeftLine,
   RiArrowDownSLine,
   RiCheckLine,
   RiComputerLine,
+  RiFolder3Line,
   RiGlobalLine,
-  RiLayoutGridLine,
   RiLogoutBoxRLine,
   RiMailSendLine,
   RiMoonLine,
@@ -39,6 +43,7 @@ import {
   RiSparklingLine,
   RiSunLine,
   RiTeamLine,
+  RiUser3Line,
   RiWhatsappLine,
 } from "@remixicon/react";
 
@@ -59,7 +64,9 @@ import {
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
+  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -101,6 +108,7 @@ import {
   AgentChatPanel,
   type AgentChatPageContext,
 } from "@/components/agent-panel";
+import { DetailHeaderTitleSkeleton } from "@/components/loading/projects-customers-skeletons";
 import { authClient } from "@/lib/auth-client";
 import {
   ensureProviderErrorCoverage,
@@ -108,6 +116,14 @@ import {
 } from "@/lib/auth-error-i18n";
 import { useClientRouteGate } from "@/lib/client-route-gates";
 import { useI18n, writeLocaleCookie } from "@/lib/i18n-provider";
+import {
+  EUROPE_LANGUAGE_LOCALES,
+  FREQUENT_LANGUAGE_LOCALES,
+  localeOptionFlag,
+  localeOptionLabel,
+  localeOptionName,
+  normalizeSelectableLocale,
+} from "@/lib/locale-options";
 
 function slugify(value: string) {
   return value
@@ -123,15 +139,16 @@ type InviteMemberRole = "owner" | "admin" | "member";
 const inviteMemberRoleValues: InviteMemberRole[] = ["member", "admin", "owner"];
 
 type AgentStyleId = "woman" | "man";
+type AgentNameLocale = "en" | "de";
 
 type AgentStyleOption = {
   id: AgentStyleId;
   imageSrc: string;
-  namePoolByLocale: Record<AppLocale, readonly string[]>;
-  labelKey: string;
+  namePoolByLocale: Record<AgentNameLocale, readonly string[]>;
+  labelKey: TranslationKey;
 };
 
-const SHARED_AGENT_NAMES_BY_LOCALE: Record<AppLocale, readonly string[]> = {
+const SHARED_AGENT_NAMES_BY_LOCALE: Record<AgentNameLocale, readonly string[]> = {
   en: [
     "Nova",
     "Ari",
@@ -274,6 +291,10 @@ const AGENT_STYLE_OPTIONS: readonly AgentStyleOption[] = [
 const DEFAULT_AGENT_STYLE_ID: AgentStyleId = "woman";
 const DEFAULT_AGENT_NAME = "Nova";
 
+function toAgentNameLocale(locale: AppLocale): AgentNameLocale {
+  return locale === "de" ? "de" : "en";
+}
+
 function getAgentStyleOption(styleId: AgentStyleId) {
   return (
     AGENT_STYLE_OPTIONS.find((styleOption) => styleOption.id === styleId) ??
@@ -288,9 +309,10 @@ function getRandomValue<T>(values: readonly T[]): T {
 
 function randomizeAgentNameByStyle(styleId: AgentStyleId, locale: AppLocale) {
   const styleOption = getAgentStyleOption(styleId);
+  const agentNameLocale = toAgentNameLocale(locale);
   const randomizedPool = [
-    ...styleOption.namePoolByLocale[locale],
-    ...SHARED_AGENT_NAMES_BY_LOCALE[locale],
+    ...styleOption.namePoolByLocale[agentNameLocale],
+    ...SHARED_AGENT_NAMES_BY_LOCALE[agentNameLocale],
   ];
   return getRandomValue(randomizedPool);
 }
@@ -308,27 +330,23 @@ function normalizeLocalePreference(value: string): LocalePreference | null {
     return SYSTEM_LOCALE;
   }
 
-  if (!SUPPORTED_LOCALES.includes(value as AppLocale)) {
-    return null;
-  }
-
-  return value as AppLocale;
+  return normalizeTranslatedLocale(value);
 }
 
 function resolveSystemLocale(fallbackLocale: AppLocale): AppLocale {
   if (typeof navigator === "undefined") {
-    return fallbackLocale;
+    return resolveTranslatedLocale(fallbackLocale);
   }
 
   const preferredLocales = [...(navigator.languages ?? []), navigator.language];
   for (const candidate of preferredLocales) {
-    const normalized = normalizeLocale(candidate);
+    const normalized = normalizeTranslatedLocale(candidate);
     if (normalized) {
       return normalized;
     }
   }
 
-  return fallbackLocale;
+  return resolveTranslatedLocale(fallbackLocale);
 }
 
 const MAX_LOGO_DATA_URL_BYTES = 900 * 1024;
@@ -447,6 +465,10 @@ function AppRouteContent() {
       : "skip",
   );
   const whatsappSetupInfo = useQuery(api.whatsappData.getConnectionSetupInfo);
+  const organizationSettings = useQuery(api.organizationSettings.getForActiveOrganization);
+  const saveOrganizationSettings = useMutation(
+    api.organizationSettings.saveForActiveOrganization,
+  );
   const myWhatsappConnection = useQuery(
     api.whatsappData.getMyConnection,
     activeOrganization?.id
@@ -463,6 +485,8 @@ function AppRouteContent() {
   const [isUpdatingUser, setIsUpdatingUser] = useState(false);
   const [organizationName, setOrganizationName] = useState("");
   const [organizationLogo, setOrganizationLogo] = useState("");
+  const [companyEmail, setCompanyEmail] = useState("");
+  const [companyEmailLocale, setCompanyEmailLocale] = useState<AppLocale>("en");
   const [isOrganizationDialogOpen, setIsOrganizationDialogOpen] = useState(false);
   const [isOrganizationSwitchDialogOpen, setIsOrganizationSwitchDialogOpen] =
     useState(false);
@@ -502,8 +526,20 @@ function AppRouteContent() {
     [createOrganizationName],
   );
   const selectedLocale = locale;
+  const resolvedLocalePreference =
+    localePreference === undefined || localePreference === null
+      ? localePreference
+      : resolveTranslatedLocale(localePreference);
   const selectedLocalePreference: LocalePreference =
-    localePreference === undefined ? selectedLocale : localePreference ?? SYSTEM_LOCALE;
+    resolvedLocalePreference === undefined
+      ? selectedLocale
+      : resolvedLocalePreference ?? SYSTEM_LOCALE;
+  const selectedLocaleMenuValue =
+    selectedLocalePreference === SYSTEM_LOCALE
+      ? SYSTEM_LOCALE
+      : (normalizeSelectableLocale(selectedLocalePreference) ?? selectedLocalePreference);
+  const selectedCompanyEmailLocale =
+    normalizeSelectableLocale(companyEmailLocale) ?? companyEmailLocale;
 
   useEffect(() => {
     const providerErrorCodes = Object.keys(authClient.$ERROR_CODES ?? {});
@@ -521,7 +557,15 @@ function AppRouteContent() {
 
     setOrganizationName(activeOrganization.name);
     setOrganizationLogo(activeOrganization.logo ?? "");
-  }, [activeOrganization?.id, activeOrganization?.name, activeOrganization?.logo]);
+    setCompanyEmail(organizationSettings?.companyEmail ?? "");
+    setCompanyEmailLocale(resolveTranslatedLocale(organizationSettings?.companyEmailLocale));
+  }, [
+    activeOrganization?.id,
+    activeOrganization?.name,
+    activeOrganization?.logo,
+    organizationSettings?.companyEmail,
+    organizationSettings?.companyEmailLocale,
+  ]);
 
   const handleUpdateOrganization = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -529,6 +573,11 @@ function AppRouteContent() {
     const trimmedName = organizationName.trim();
     const normalizedLogo = organizationLogo.trim();
     const currentLogo = activeOrganization?.logo ?? "";
+    const normalizedCompanyEmail = companyEmail.trim().toLowerCase();
+    const currentCompanyEmail = organizationSettings?.companyEmail ?? "";
+    const currentCompanyEmailLocale = resolveTranslatedLocale(
+      organizationSettings?.companyEmailLocale,
+    );
 
     if (!activeOrganization?.id) {
       return;
@@ -539,7 +588,12 @@ function AppRouteContent() {
       return;
     }
 
-    if (trimmedName === activeOrganization.name && normalizedLogo === currentLogo) {
+    if (
+      trimmedName === activeOrganization.name &&
+      normalizedLogo === currentLogo &&
+      normalizedCompanyEmail === currentCompanyEmail &&
+      companyEmailLocale === currentCompanyEmailLocale
+    ) {
       setIsOrganizationDialogOpen(false);
       return;
     }
@@ -561,6 +615,11 @@ function AppRouteContent() {
         );
         return;
       }
+
+      await saveOrganizationSettings({
+        companyEmail: normalizedCompanyEmail || null,
+        companyEmailLocale,
+      });
 
       toast.success(t("app.toasts.organizationUpdated"));
       setIsOrganizationDialogOpen(false);
@@ -589,6 +648,51 @@ function AppRouteContent() {
       myWhatsappConnection.connection === null,
   );
   const isMembersPage = pathname.startsWith("/app/members");
+  const isCustomersPage = pathname.startsWith("/app/customers");
+  const isArchivePage = pathname.startsWith("/app/archive");
+  const isProjectsListPage = pathname === "/app/projects";
+  const isProjectDetailPage = /^\/app\/projects\/[^/]+$/.test(pathname);
+  const isCustomerDetailPage = /^\/app\/customers\/[^/]+$/.test(pathname);
+  const isProjectsPage = isProjectsListPage || isProjectDetailPage;
+  const currentProjectId = isProjectDetailPage
+    ? pathname.slice("/app/projects/".length)
+    : null;
+  const currentCustomerId = isCustomerDetailPage
+    ? pathname.slice("/app/customers/".length)
+    : null;
+  const currentProjectHeader = useQuery(
+    api.projects.getById,
+    isProjectDetailPage && currentProjectId
+      ? { projectId: currentProjectId as Id<"projects"> }
+      : "skip",
+  );
+  const currentCustomerHeader = useQuery(
+    api.customers.getById,
+    isCustomerDetailPage && currentCustomerId
+      ? { customerId: currentCustomerId as Id<"customers"> }
+      : "skip",
+  );
+  const isProjectHeaderTitleLoading = currentProjectHeader === undefined;
+  const projectHeaderTitle = currentProjectHeader?.name ?? t("app.shell.projects");
+  const isCustomerHeaderTitleLoading = currentCustomerHeader === undefined;
+  const customerHeaderTitle = currentCustomerHeader?.name ?? t("app.shell.customers");
+  const projectBackCustomerId = useMemo(() => {
+    if (!isProjectDetailPage) {
+      return null;
+    }
+
+    const value = new URLSearchParams(locationSearch).get("customerId");
+    return value && value.trim().length > 0 ? value : null;
+  }, [isProjectDetailPage, locationSearch]);
+  const headerTitle = isMembersPage
+    ? t("app.shell.members")
+    : isProjectsPage
+      ? t("app.shell.projects")
+    : isCustomersPage
+      ? t("app.shell.customers")
+      : isArchivePage
+        ? t("app.shell.archive")
+        : t("app.shell.workspace");
   const selectedTheme =
     theme === "light" || theme === "dark" || theme === "system"
       ? theme
@@ -607,8 +711,32 @@ function AppRouteContent() {
         }
       : "skip",
   );
+  const projectsForAgent = useQuery(
+    api.projects.list,
+    isProjectsPage && activeOrganization?.id ? {} : "skip",
+  );
+  const currentProjectForAgent = useQuery(
+    api.projects.getById,
+    isProjectDetailPage && currentProjectId
+      ? {
+          projectId: currentProjectId as any,
+        }
+      : "skip",
+  );
+  const customersForAgent = useQuery(
+    api.customers.list,
+    (isCustomersPage || isArchivePage) && activeOrganization?.id ? {} : "skip",
+  );
+  const archivedCustomersForAgent = useQuery(
+    api.customers.listArchived,
+    isArchivePage && activeOrganization?.id ? {} : "skip",
+  );
+  const archivedProjectsForAgent = useQuery(
+    api.projects.listArchived,
+    isArchivePage && activeOrganization?.id ? {} : "skip",
+  );
   const agentPanelPageContext = useMemo<AgentChatPageContext | null>(() => {
-    if (!isMembersPage) {
+    if (!activeOrganization?.id) {
       return null;
     }
 
@@ -624,8 +752,9 @@ function AppRouteContent() {
       }
 
       return (
-        member.user.name.toLowerCase().includes(normalizedSearchQueryLower) ||
-        member.user.email.toLowerCase().includes(normalizedSearchQueryLower)
+        member.displayName.toLowerCase().includes(normalizedSearchQueryLower) ||
+        (member.email ?? "").toLowerCase().includes(normalizedSearchQueryLower) ||
+        (member.phoneNumberE164 ?? "").toLowerCase().includes(normalizedSearchQueryLower)
       );
     });
     const filteredInvitations = pendingInvitations.filter((invitation) => {
@@ -636,33 +765,157 @@ function AppRouteContent() {
       return invitation.email.toLowerCase().includes(normalizedSearchQueryLower);
     });
 
+    const allProjects = projectsForAgent ?? [];
+    const activeProjects = allProjects.filter((project) => project.status === "active");
+    const doneProjects = allProjects.filter((project) => project.status === "done");
+    const allCustomers = customersForAgent ?? [];
+    const archivedCustomers = archivedCustomersForAgent ?? [];
+    const archivedProjects = archivedProjectsForAgent ?? [];
+
+    const routeId = isProjectDetailPage
+      ? "app.projects.detail"
+      : isProjectsPage
+        ? "app.projects"
+      : isCustomerDetailPage
+        ? "app.customers.detail"
+      : isCustomersPage
+        ? "app.customers"
+      : isMembersPage
+        ? "app.members"
+      : isArchivePage
+        ? "app.archive"
+      : "app.workspace";
+
+    const title = isProjectDetailPage
+      ? currentProjectForAgent?.name ?? "Project detail"
+      : isCustomerDetailPage
+        ? currentCustomerHeader?.name ?? "Customer detail"
+      : headerTitle;
+
     return {
-      routeId: "app.members",
+      routeId,
       routePath: pathname,
-      title: t("app.shell.members"),
-      searchQuery: normalizedSearchQuery || null,
-      members: {
-        totalCount: members.length,
-        filteredCount: filteredMembers.length,
-        pendingInvitationCount: pendingInvitations.length,
-        currentMemberRole: membersPageSnapshotForAgent?.currentMember.role ?? null,
-        visibleMembers: filteredMembers.slice(0, 12).map((member) => ({
-          name: member.user.name,
-          email: member.user.email,
-          role: member.role,
-        })),
-        visibleInvitations: filteredInvitations.slice(0, 8).map((invitation) => ({
-          email: invitation.email,
-          role: invitation.role,
-        })),
+      title,
+      searchQuery: isMembersPage ? normalizedSearchQuery || null : null,
+      members: isMembersPage
+        ? {
+            totalCount: members.length,
+            filteredCount: filteredMembers.length,
+            pendingInvitationCount: pendingInvitations.length,
+            currentMemberRole: membersPageSnapshotForAgent?.currentMember.role ?? null,
+            visibleMembers: filteredMembers.slice(0, 12).map((member) => ({
+              name: member.displayName,
+              email: member.email ?? null,
+              phoneNumberE164: member.phoneNumberE164 ?? null,
+              memberType: member.memberType,
+              role: member.role,
+            })),
+            visibleInvitations: filteredInvitations.slice(0, 8).map((invitation) => ({
+              email: invitation.email,
+              role: invitation.role,
+            })),
+          }
+        : null,
+      customers: isCustomersPage
+        ? {
+            totalCount: allCustomers.length,
+            currentCustomer: currentCustomerHeader
+              ? {
+                  id: String(currentCustomerHeader._id),
+                  name: currentCustomerHeader.name,
+                  email: currentCustomerHeader.email ?? null,
+                  phone: currentCustomerHeader.phone ?? null,
+                }
+              : null,
+            visibleCustomers: allCustomers.slice(0, 12).map((customer) => ({
+              id: String(customer._id),
+              name: customer.name,
+              contactName: customer.contactName ?? null,
+              email: customer.email ?? null,
+              phone: customer.phone ?? null,
+              activeProjectCount: customer.activeProjectCount,
+              doneProjectCount: customer.doneProjectCount,
+            })),
+          }
+        : null,
+      projects: isProjectsPage
+        ? {
+            totalCount: allProjects.length,
+            activeCount: activeProjects.length,
+            doneCount: doneProjects.length,
+            currentProject: currentProjectForAgent
+              ? {
+                  id: String(currentProjectForAgent._id),
+                  name: currentProjectForAgent.name,
+                  status: currentProjectForAgent.status,
+                }
+              : null,
+            visibleProjects: allProjects.slice(0, 12).map((project) => ({
+              id: String(project._id),
+              name: project.name,
+              status: project.status,
+              hasUnreviewedChanges: project.hasUnreviewedChanges,
+              hasNachtrag: project.hasNachtrag,
+            })),
+          }
+        : null,
+      archive: isArchivePage
+        ? {
+            archivedCustomerCount: archivedCustomers.length,
+            archivedProjectCount: archivedProjects.length,
+            visibleArchivedCustomers: archivedCustomers.slice(0, 12).map((customer) => ({
+              id: String(customer._id),
+              name: customer.name,
+              deletedAt: customer.deletedAt,
+            })),
+            visibleArchivedProjects: archivedProjects.slice(0, 12).map((project) => ({
+              id: String(project._id),
+              name: project.name,
+              status: project.status,
+              deletedAt: project.deletedAt,
+            })),
+          }
+        : null,
+      shell: {
+        organizationName: activeOrganization.name,
+        companyEmail: organizationSettings?.companyEmail ?? null,
+        companyEmailLocale: organizationSettings?.companyEmailLocale ?? null,
+        agentProfileName: activeAiAgentProfile?.name ?? null,
+        agentStyleId: activeAiAgentProfile?.styleId ?? null,
+        whatsappPhoneNumberE164: whatsappSetupInfo?.phoneNumberE164 ?? null,
+        myWhatsAppPhoneNumberE164:
+          myWhatsappConnection?.connection?.phoneNumberE164 ?? null,
+        myWhatsAppConnected:
+          myWhatsappConnection == null
+            ? null
+            : Boolean(myWhatsappConnection.connection),
       },
     };
   }, [
+    activeAiAgentProfile?.name,
+    activeAiAgentProfile?.styleId,
+    activeOrganization?.id,
+    activeOrganization?.name,
+    archivedCustomersForAgent,
+    archivedProjectsForAgent,
+    currentCustomerHeader,
+    currentProjectForAgent,
+    customersForAgent,
+    headerTitle,
+    isArchivePage,
+    isCustomerDetailPage,
+    isCustomersPage,
+    isProjectDetailPage,
+    isProjectsPage,
     isMembersPage,
     membersPageSnapshotForAgent,
     membersSearchQuery,
+    myWhatsappConnection,
+    organizationSettings?.companyEmail,
+    organizationSettings?.companyEmailLocale,
     pathname,
-    t,
+    projectsForAgent,
+    whatsappSetupInfo?.phoneNumberE164,
   ]);
 
   const handleMembersSearchChange = (value: string) => {
@@ -766,11 +1019,11 @@ function AppRouteContent() {
   };
 
   useEffect(() => {
-    if (localePreference === undefined || isUpdatingLocale) {
+    if (resolvedLocalePreference === undefined || isUpdatingLocale) {
       return;
     }
 
-    if (localePreference === null) {
+    if (resolvedLocalePreference === null) {
       const systemLocale = resolveSystemLocale(selectedLocale);
       if (selectedLocale !== systemLocale) {
         setLocale(systemLocale);
@@ -779,10 +1032,10 @@ function AppRouteContent() {
       return;
     }
 
-    if (selectedLocale !== localePreference) {
-      setLocale(localePreference);
+    if (selectedLocale !== resolvedLocalePreference) {
+      setLocale(resolvedLocalePreference);
     }
-  }, [isUpdatingLocale, localePreference, selectedLocale, setLocale]);
+  }, [isUpdatingLocale, resolvedLocalePreference, selectedLocale, setLocale]);
 
   useEffect(() => {
     if (themePreference === undefined || isUpdatingThemePreference) {
@@ -815,6 +1068,8 @@ function AppRouteContent() {
     const normalizedImage = userImage.trim();
     const currentName = user?.name?.trim() ?? "";
     const currentImage = user?.image ?? "";
+    const profileDidChange =
+      trimmedName !== currentName || normalizedImage !== currentImage;
 
     if (trimmedName.length < 2) {
       toast.error(t("app.toasts.userNameMinLength"));
@@ -828,20 +1083,24 @@ function AppRouteContent() {
 
     setIsUpdatingUser(true);
     try {
-      const { error } = await authClient.updateUser({
-        name: trimmedName,
-        image: normalizedImage || null,
-      });
+      if (profileDidChange) {
+        const { error } = await authClient.updateUser({
+          name: trimmedName,
+          image: normalizedImage || null,
+        });
 
-      if (error) {
-        toast.error(getLocalizedAuthErrorMessage(t, error, "app.toasts.failedUpdateProfile"));
-        return;
+        if (error) {
+          toast.error(getLocalizedAuthErrorMessage(t, error, "app.toasts.failedUpdateProfile"));
+          return;
+        }
       }
 
       toast.success(t("app.toasts.profileUpdated"));
       setIsUserDialogOpen(false);
     } catch (error) {
-      toast.error(t("app.toasts.failedUpdateProfile"));
+      toast.error(
+        getLocalizedAuthErrorMessage(t, error, "app.toasts.failedUpdateProfile"),
+      );
     } finally {
       setIsUpdatingUser(false);
     }
@@ -886,6 +1145,11 @@ function AppRouteContent() {
     setOrganizationName(activeOrganization.name);
     setOrganizationLogo(activeOrganization.logo ?? "");
     setIsOrganizationDialogOpen(true);
+  };
+
+  const openArchive = () => {
+    setIsOrganizationDialogOpen(false);
+    void navigate({ to: "/app/archive" });
   };
 
   const openAiAgentSettings = () => {
@@ -1220,6 +1484,14 @@ function AppRouteContent() {
                         <RiSettings4Line />
                         <span>{t("common.actions.settings")}</span>
                       </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="min-h-8 px-2"
+                        onClick={openArchive}
+                        disabled={isOrganizationPending || !activeOrganization}
+                      >
+                        <RiArchiveLine />
+                        <span>{t("common.actions.archive")}</span>
+                      </DropdownMenuItem>
                       <DropdownMenuSeparator className="my-1" />
                       <DropdownMenuItem
                         className="min-h-8 px-2"
@@ -1238,12 +1510,22 @@ function AppRouteContent() {
           <SidebarMenu className="gap-1 px-3 pt-3">
             <SidebarMenuItem>
               <SidebarMenuButton
-                render={<Link to="/app" />}
-                isActive={pathname === "/app"}
+                render={<Link to="/app/projects" />}
+                isActive={pathname.startsWith("/app/projects")}
                 className="h-9 rounded-lg px-2 font-medium data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-foreground"
               >
-                <RiLayoutGridLine className="size-4" />
-                <span>{t("app.shell.dashboard")}</span>
+                <RiFolder3Line className="size-4" />
+                <span>{t("app.shell.projects")}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                render={<Link to="/app/customers" />}
+                isActive={pathname.startsWith("/app/customers")}
+                className="h-9 rounded-lg px-2 font-medium data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-foreground"
+              >
+                <RiUser3Line className="size-4" />
+                <span>{t("app.shell.customers")}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
@@ -1379,36 +1661,54 @@ function AppRouteContent() {
                           <RiGlobalLine />
                           <span>{t("common.language.label")}</span>
                         </DropdownMenuSubTrigger>
-                        <DropdownMenuSubContent className="w-44">
+                        <DropdownMenuSubContent className="max-h-72 w-56 overflow-y-auto rounded-xl bg-card p-1.5">
                           <DropdownMenuRadioGroup
-                            value={selectedLocalePreference}
+                            value={selectedLocaleMenuValue}
                             onValueChange={(value) => {
                               void handleLocaleChange(value);
                             }}
                           >
+                            <DropdownMenuLabel className="px-2.5 pt-1">
+                              {t("common.language.system")}
+                            </DropdownMenuLabel>
                             <DropdownMenuRadioItem
                               className="min-h-8 pl-2 pr-8"
                               value={SYSTEM_LOCALE}
                               disabled={isUpdatingLocale}
                             >
                               <RiComputerLine />
-                              <span>{t("common.language.system")}</span>
+                              <span>
+                                {`${t("common.language.system")} (${localeOptionLabel(
+                                  resolveSystemLocale(selectedLocale),
+                                )})`}
+                              </span>
                             </DropdownMenuRadioItem>
-                            {SUPPORTED_LOCALES.map((availableLocale) => (
+                            <DropdownMenuSeparator />
+                            <DropdownMenuLabel className="px-2.5">
+                              {t("common.language.frequentlyUsed")}
+                            </DropdownMenuLabel>
+                            {FREQUENT_LANGUAGE_LOCALES.map((availableLocale) => (
                               <DropdownMenuRadioItem
                                 key={availableLocale}
                                 className="min-h-8 pl-2 pr-8"
                                 value={availableLocale}
                                 disabled={isUpdatingLocale}
                               >
-                                <span aria-hidden className="text-base leading-none">
-                                  {availableLocale === "en" ? "🇺🇸" : "🇩🇪"}
-                                </span>
-                                <span>
-                                  {availableLocale === "en"
-                                    ? t("common.language.english")
-                                    : t("common.language.german")}
-                                </span>
+                                <span>{localeOptionLabel(availableLocale)}</span>
+                              </DropdownMenuRadioItem>
+                            ))}
+                            <DropdownMenuSeparator />
+                            <DropdownMenuLabel className="px-2.5">
+                              {t("common.language.europe")}
+                            </DropdownMenuLabel>
+                            {EUROPE_LANGUAGE_LOCALES.map((availableLocale) => (
+                              <DropdownMenuRadioItem
+                                key={availableLocale}
+                                className="min-h-8 pl-2 pr-8"
+                                value={availableLocale}
+                                disabled={isUpdatingLocale}
+                              >
+                                <span>{localeOptionLabel(availableLocale)}</span>
                               </DropdownMenuRadioItem>
                             ))}
                           </DropdownMenuRadioGroup>
@@ -1438,9 +1738,64 @@ function AppRouteContent() {
             <div className="flex min-w-0 items-center gap-3">
               <SidebarTrigger className="-ml-1" />
               <div className="h-4 w-px bg-border" />
-              <p className="text-sm font-medium tracking-tight">
-                {isMembersPage ? t("app.shell.members") : t("app.shell.workspace")}
-              </p>
+              {isProjectDetailPage ? (
+                <div className="flex min-w-0 items-center gap-2">
+                  {projectBackCustomerId ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-8 px-2"
+                      render={
+                        <Link
+                          to="/app/customers/$customerId"
+                          params={{ customerId: projectBackCustomerId }}
+                        />
+                      }
+                    >
+                      <RiArrowLeftLine className="size-4" />
+                      {t("app.projects.detail.back")}
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-8 px-2"
+                      render={<Link to="/app/projects" />}
+                    >
+                      <RiArrowLeftLine className="size-4" />
+                      {t("app.projects.detail.back")}
+                    </Button>
+                  )}
+                  {isProjectHeaderTitleLoading ? (
+                    <DetailHeaderTitleSkeleton />
+                  ) : (
+                    <p className="truncate text-sm font-medium tracking-tight">
+                      {projectHeaderTitle}
+                    </p>
+                  )}
+                </div>
+              ) : isCustomerDetailPage ? (
+                <div className="flex min-w-0 items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 px-2"
+                    render={<Link to="/app/customers" />}
+                  >
+                    <RiArrowLeftLine className="size-4" />
+                    {t("app.customers.detail.back")}
+                  </Button>
+                  {isCustomerHeaderTitleLoading ? (
+                    <DetailHeaderTitleSkeleton />
+                  ) : (
+                    <p className="truncate text-sm font-medium tracking-tight">
+                      {customerHeaderTitle}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm font-medium tracking-tight">{headerTitle}</p>
+              )}
             </div>
             {isMembersPage ? (
               <div className="flex items-center gap-2">
@@ -1456,6 +1811,10 @@ function AppRouteContent() {
                     className="h-7 w-44 pl-8 sm:w-56"
                   />
                 </div>
+                <div
+                  id="app-members-header-actions"
+                  className="flex items-center gap-2"
+                />
                 <Button
                   type="button"
                   size="sm"
@@ -1466,11 +1825,18 @@ function AppRouteContent() {
                   <span>{t("common.actions.invite")}</span>
                 </Button>
               </div>
-            ) : null}
+            ) : (
+              <div id="app-layout-header-actions" className="flex items-center gap-2" />
+            )}
           </div>
         </header>
         <main className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4 pt-6 md:p-6 md:pt-8">
-          <div className="mx-auto w-full max-w-5xl">
+          <div
+            className={[
+              "mx-auto w-full",
+              isProjectDetailPage ? "max-w-6xl" : "max-w-5xl",
+            ].join(" ")}
+          >
             <Outlet />
           </div>
         </main>
@@ -1495,7 +1861,7 @@ function AppRouteContent() {
           setIsInviteMemberDialogOpen(open);
         }}
       >
-        <DialogContent>
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{t("app.dialogs.inviteMember.title")}</DialogTitle>
             <DialogDescription>
@@ -1632,7 +1998,7 @@ function AppRouteContent() {
           setIsUserDialogOpen(open);
         }}
       >
-        <DialogContent>
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{t("app.dialogs.profile.title")}</DialogTitle>
             <DialogDescription>
@@ -1843,6 +2209,8 @@ function AppRouteContent() {
           if (open && activeOrganization?.name) {
             setOrganizationName(activeOrganization.name);
             setOrganizationLogo(activeOrganization.logo ?? "");
+            setCompanyEmail(organizationSettings?.companyEmail ?? "");
+            setCompanyEmailLocale(resolveTranslatedLocale(organizationSettings?.companyEmailLocale));
           } else if (!open) {
             setIsLeaveOrganizationDialogOpen(false);
             setIsDeleteOrganizationDialogOpen(false);
@@ -1851,7 +2219,7 @@ function AppRouteContent() {
           setIsOrganizationDialogOpen(open);
         }}
       >
-        <DialogContent>
+        <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>{t("app.dialogs.organization.title")}</DialogTitle>
             <DialogDescription>
@@ -1931,6 +2299,91 @@ function AppRouteContent() {
                 disabled
               />
             </div>
+            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_176px] md:items-start">
+              <div className="space-y-2">
+                <Label htmlFor="organization-company-email">
+                  {t("app.dialogs.organization.companyEmailLabel")}
+                </Label>
+                <Input
+                  id="organization-company-email"
+                  type="email"
+                  value={companyEmail}
+                  onChange={(event) => setCompanyEmail(event.target.value)}
+                  placeholder={t("app.dialogs.organization.companyEmailPlaceholder")}
+                  disabled={
+                    isUpdatingOrganization ||
+                    isLeavingOrganization ||
+                    isDeletingOrganization ||
+                    isOrganizationPending ||
+                    !activeOrganization
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t("app.dialogs.organization.companyEmailHint")}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="organization-company-email-locale">
+                  {t("app.dialogs.organization.companyEmailLocaleLabel")}
+                </Label>
+                <Select
+                  value={selectedCompanyEmailLocale}
+                  onValueChange={(value) => {
+                    const nextLocale = normalizeSelectableLocale(value);
+                    if (nextLocale) {
+                      setCompanyEmailLocale(nextLocale);
+                    }
+                  }}
+                  disabled={
+                    isUpdatingOrganization ||
+                    isLeavingOrganization ||
+                    isDeletingOrganization ||
+                    isOrganizationPending ||
+                    !activeOrganization
+                  }
+                >
+                  <SelectTrigger
+                    id="organization-company-email-locale"
+                    className="w-full min-w-0"
+                  >
+                    <SelectValue>
+                      {(value) => {
+                        const normalized = normalizeSelectableLocale(
+                          typeof value === "string" ? value : selectedCompanyEmailLocale,
+                        );
+                        return normalized
+                          ? localeOptionLabel(normalized)
+                          : localeOptionLabel(selectedCompanyEmailLocale);
+                      }}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72">
+                    <SelectGroup>
+                      <SelectLabel>{t("common.language.frequentlyUsed")}</SelectLabel>
+                      {FREQUENT_LANGUAGE_LOCALES.map((availableLocale) => (
+                        <SelectItem key={availableLocale} value={availableLocale}>
+                          <span className="inline-flex min-w-5 justify-center">
+                            {localeOptionFlag(availableLocale)}
+                          </span>
+                          <span>{localeOptionName(availableLocale)}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                    <SelectGroup>
+                      <SelectLabel>{t("common.language.europe")}</SelectLabel>
+                      {EUROPE_LANGUAGE_LOCALES.map((availableLocale) => (
+                        <SelectItem key={availableLocale} value={availableLocale}>
+                          <span className="inline-flex min-w-5 justify-center">
+                            {localeOptionFlag(availableLocale)}
+                          </span>
+                          <span>{localeOptionName(availableLocale)}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
             <DialogFooter>
               <div className="flex flex-wrap items-center gap-2 sm:mr-auto">
                 {isOwner ? (
@@ -1973,6 +2426,10 @@ function AppRouteContent() {
                     if (activeOrganization?.name) {
                       setOrganizationName(activeOrganization.name);
                       setOrganizationLogo(activeOrganization.logo ?? "");
+                      setCompanyEmail(organizationSettings?.companyEmail ?? "");
+                      setCompanyEmailLocale(
+                        resolveTranslatedLocale(organizationSettings?.companyEmailLocale),
+                      );
                     }
 
                     setIsOrganizationDialogOpen(false);

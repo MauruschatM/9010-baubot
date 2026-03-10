@@ -106,7 +106,7 @@ function OrganizationSetupRouteContent() {
       }
 
       toast.success(t("auth.organization.toasts.created"));
-      navigate({ to: "/app", replace: true });
+      navigate({ to: "/app/projects", replace: true });
     } catch (error) {
       toast.error(t("auth.organization.toasts.failedCreate"));
     } finally {

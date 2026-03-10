@@ -1,8 +1,9 @@
 import type { ConvexQueryClient } from "@convex-dev/react-query";
 import {
   DEFAULT_LOCALE,
+  getLocaleDirection,
   LOCALE_COOKIE_NAME,
-  normalizeLocale,
+  normalizeTranslatedLocale,
   parseCookieValue,
 } from "@mvp-template/i18n";
 import type { QueryClient } from "@tanstack/react-query";
@@ -76,7 +77,7 @@ export const Route = createRootRouteWithContext<RouterAppContext>()({
       return {
         isAuthenticated: false,
         token: null,
-        locale: normalizeLocale(cookieLocale) ?? DEFAULT_LOCALE,
+        locale: normalizeTranslatedLocale(cookieLocale) ?? DEFAULT_LOCALE,
       };
     }
 
@@ -131,7 +132,11 @@ function RootDocument() {
       authClient={authClient}
       initialToken={initialTokenRef.current}
     >
-      <html lang={context.locale ?? DEFAULT_LOCALE} suppressHydrationWarning>
+      <html
+        lang={context.locale ?? DEFAULT_LOCALE}
+        dir={getLocaleDirection(context.locale)}
+        suppressHydrationWarning
+      >
         <head>
           <HeadContent />
         </head>

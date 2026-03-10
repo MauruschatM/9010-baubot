@@ -15,6 +15,23 @@ function toBase64(bytes: Uint8Array) {
   return btoa(binary);
 }
 
+export function getConfiguredTwilioWhatsAppFromNumber() {
+  const candidates = [
+    process.env.TWILIO_WHATSAPP_FROM_NUMBER,
+    process.env.TWILIO_WHATSAPP_FROM,
+    process.env.WHATSAPP_AGENT_NUMBER,
+  ];
+
+  for (const value of candidates) {
+    const trimmed = value?.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+
+  return null;
+}
+
 async function signTwilioPayload(options: {
   authToken: string;
   url: string;
