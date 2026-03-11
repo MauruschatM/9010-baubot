@@ -1,15 +1,15 @@
-import { arPsMessages } from "../../../baubot-prototype/packages/i18n/src/content/ar-PS/messages";
-import { bgMessages } from "../../../baubot-prototype/packages/i18n/src/content/bg/messages";
-import { bsMessages } from "../../../baubot-prototype/packages/i18n/src/content/bs/messages";
-import { enMessages as prototypeEnMessages } from "../../../baubot-prototype/packages/i18n/src/content/en/messages";
-import { hrMessages } from "../../../baubot-prototype/packages/i18n/src/content/hr/messages";
-import { itMessages } from "../../../baubot-prototype/packages/i18n/src/content/it/messages";
-import { plMessages } from "../../../baubot-prototype/packages/i18n/src/content/pl/messages";
-import { roMessages } from "../../../baubot-prototype/packages/i18n/src/content/ro/messages";
-import { ruMessages } from "../../../baubot-prototype/packages/i18n/src/content/ru/messages";
-import { srMessages } from "../../../baubot-prototype/packages/i18n/src/content/sr/messages";
-import { trMessages } from "../../../baubot-prototype/packages/i18n/src/content/tr/messages";
-import { ukMessages } from "../../../baubot-prototype/packages/i18n/src/content/uk/messages";
+import { arPsMessages } from "./content/ar-PS/messages";
+import { bgMessages } from "./content/bg/messages";
+import { bsMessages } from "./content/bs/messages";
+import { enMessages as prototypeEnMessages } from "./content/en/messages";
+import { hrMessages } from "./content/hr/messages";
+import { itMessages } from "./content/it/messages";
+import { plMessages } from "./content/pl/messages";
+import { roMessages } from "./content/ro/messages";
+import { ruMessages } from "./content/ru/messages";
+import { srMessages } from "./content/sr/messages";
+import { trMessages } from "./content/tr/messages";
+import { ukMessages } from "./content/uk/messages";
 
 import { type TranslationTree } from "./messages.schema";
 import { messagesEn } from "./messages.en";
