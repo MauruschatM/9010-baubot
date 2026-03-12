@@ -380,8 +380,7 @@ function mapArchivedCustomerSummary(customer: {
 
 function mapProjectSummary(project: {
   _id: Id<"projects">;
-  name: string;
-  location?: string;
+  location: string;
   status: "active" | "done";
   customerId?: Id<"customers">;
   customer?: {
@@ -395,8 +394,7 @@ function mapProjectSummary(project: {
 }): ProjectSummary {
   return {
     id: String(project._id),
-    name: project.name,
-    location: project.location ?? null,
+    location: project.location,
     status: project.status,
     customerId: project.customerId ? String(project.customerId) : null,
     customerName: project.customer?.name ?? null,
@@ -410,8 +408,7 @@ function mapProjectSummary(project: {
 
 function mapArchivedProjectSummary(project: {
   _id: Id<"projects">;
-  name: string;
-  location?: string;
+  location: string;
   status: "active" | "done";
   customer?: {
     name: string;
@@ -420,16 +417,15 @@ function mapArchivedProjectSummary(project: {
 }): ArchivedProjectSummary {
   return {
     id: String(project._id),
-    name: project.name,
-    location: project.location ?? null,
+    location: project.location,
     status: project.status,
     customerName: project.customer?.name ?? null,
     deletedAt: project.deletedAt,
   };
 }
 
-function buildDefaultEmailSubject(projectName: string, batchTitle: string) {
-  return `${projectName}: ${batchTitle}`;
+function buildDefaultEmailSubject(projectLocation: string, batchTitle: string) {
+  return `${projectLocation}: ${batchTitle}`;
 }
 
 function buildTimelineBatchSummaries(options: {
@@ -496,7 +492,7 @@ function buildTimelineBatchSummaries(options: {
   return Array.from(byBatchId.values())
     .sort((batchA, batchB) => batchB.addedAt - batchA.addedAt)
     .map((batch) => {
-      const subject = buildDefaultEmailSubject(options.project.name, batch.title);
+      const subject = buildDefaultEmailSubject(options.project.location, batch.title);
       const body = batch.overview ?? batch.summary ?? "Project update";
 
       return {
@@ -1719,8 +1715,7 @@ export async function buildWorkspaceAgentTools(
                 : {},
           )) as Array<{
         _id: Id<"projects">;
-        name: string;
-        location?: string;
+        location: string;
         status: "active" | "done";
         customerId?: Id<"customers">;
         customer?: {
@@ -1751,8 +1746,7 @@ export async function buildWorkspaceAgentTools(
             },
       )) as {
         _id: Id<"projects">;
-        name: string;
-        location?: string;
+        location: string;
         status: "active" | "done";
         customerId?: Id<"customers">;
         customer?: {
@@ -1775,12 +1769,10 @@ export async function buildWorkspaceAgentTools(
           ? {
               organizationId: options.organizationId,
               userId: options.userId,
-              name: input.name,
               location: input.location,
               customerId: input.customerId as Id<"customers"> | undefined,
             }
           : {
-              name: input.name,
               location: input.location,
               customerId: input.customerId as Id<"customers"> | undefined,
             },
@@ -1807,7 +1799,6 @@ export async function buildWorkspaceAgentTools(
               organizationId: options.organizationId,
               userId: options.userId,
               projectId: input.projectId as Id<"projects">,
-              name: input.name,
               location: input.location,
               customerId:
                 input.customerId === undefined
@@ -1819,7 +1810,6 @@ export async function buildWorkspaceAgentTools(
             }
           : {
               projectId: input.projectId as Id<"projects">,
-              name: input.name,
               location: input.location,
               customerId:
                 input.customerId === undefined
@@ -1855,8 +1845,7 @@ export async function buildWorkspaceAgentTools(
           : {},
       )) as Array<{
         _id: Id<"projects">;
-        name: string;
-        location?: string;
+        location: string;
         status: "active" | "done";
         customer?: {
           name: string;
@@ -1914,10 +1903,12 @@ export async function buildWorkspaceAgentTools(
               userId: options.userId,
               projectId: input.projectId as Id<"projects">,
               limit: 500,
+              viewerLocale: options.locale,
             }
           : {
               projectId: input.projectId as Id<"projects">,
               limit: 500,
+              viewerLocale: options.locale,
             },
       )) as { rows: TimelineSummaryRow[] };
 
@@ -2008,7 +1999,7 @@ export async function buildWorkspaceAgentTools(
             const request = createPendingActionPayload("archive-project", {
               organizationId: options.organizationId,
               projectId: input.projectId as Id<"projects">,
-              projectName: project.name,
+              projectLabel: project.location,
             });
 
             return await request(
@@ -2016,14 +2007,14 @@ export async function buildWorkspaceAgentTools(
                 locale: options.locale,
                 titleEn: "Archive project",
                 titleDe: "Projekt archivieren",
-                descriptionEn: `Archive ${project.name}?`,
-                descriptionDe: `${project.name} archivieren?`,
+                descriptionEn: `Archive ${project.location}?`,
+                descriptionDe: `${project.location} archivieren?`,
                 confirmEn: "Archive project",
                 confirmDe: "Projekt archivieren",
                 cancelEn: "Keep project",
                 cancelDe: "Behalten",
-                confirmedEn: `${project.name} has been archived.`,
-                confirmedDe: `${project.name} wurde archiviert.`,
+                confirmedEn: `${project.location} has been archived.`,
+                confirmedDe: `${project.location} wurde archiviert.`,
                 canceledEn: "Project archive was canceled.",
                 canceledDe: "Projektarchivierung wurde abgebrochen.",
                 expiredEn: "Confirmation expired. Please request archiving again.",
@@ -2081,7 +2072,7 @@ export async function buildWorkspaceAgentTools(
             const request = createPendingActionPayload("send-project-batch-email", {
               organizationId: options.organizationId,
               projectId: input.projectId as Id<"projects">,
-              projectName: project.name,
+              projectLabel: project.location,
               batchId: input.batchId as Id<"whatsappSendBatches">,
               recipientEmail: batch.recipientEmail,
               subject,

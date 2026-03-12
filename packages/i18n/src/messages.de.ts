@@ -631,8 +631,8 @@ export const messagesDe = {
         contactPersonPlaceholder: "Jane Miller",
         phoneLabel: "Telefon",
         phonePlaceholder: "+49 171 123456",
-        projectNameLabel: "Projektname",
-        projectNamePlaceholder: "Badsanierung",
+        projectNameLabel: "Ort",
+        projectNamePlaceholder: "Musterstraße 15, Berlin",
         locationLabel: "Ort",
         locationPlaceholder: "Musterstraße 15, Berlin",
       },
@@ -726,15 +726,15 @@ export const messagesDe = {
         doneTab: "Erledigt",
       },
       form: {
-        projectNameLabel: "Projektname",
-        projectNamePlaceholder: "Küchenumbau",
+        projectNameLabel: "Ort",
+        projectNamePlaceholder: "Musterstraße 15, Berlin",
         locationLabel: "Ort",
         locationPlaceholder: "Musterstraße 15, Berlin",
         customerLabel: "Kunde",
         noCustomerOption: "Kein Kunde",
       },
       customerDialog: {
-        titleNamed: "Kunde für {projectName}",
+        titleNamed: "Kunde für {projectLocation}",
         titleDefault: "Kunde für Projekt",
         description:
           "Ordne einen bestehenden Kunden zu, erstelle einen neuen oder aktualisiere den verknüpften Kunden direkt hier.",
@@ -745,18 +745,18 @@ export const messagesDe = {
       dialogs: {
         createTitle: "Projekt erstellen",
         createDescription:
-          "Projekte sammeln WhatsApp-Dokumentationspakete, einen Einsatzort und optional eine Kundenverknüpfung.",
+          "Projekte sammeln WhatsApp-Dokumentationspakete und verwenden den Ort als eindeutige Bezeichnung. Optional kannst du einen Kunden verknüpfen.",
         editTitle: "Projekt bearbeiten",
         editDescription:
-          "Halte Projektdetails stabil, damit künftige WhatsApp-Updates zuverlässig zugeordnet werden können.",
+          "Halte den Projektort und den verknüpften Kunden stabil, damit künftige WhatsApp-Updates zuverlässig zugeordnet werden können.",
         archiveTitle: "Projekt archivieren?",
         archiveDescriptionDefault:
           "Verschiebt das ausgewählte Projekt ins Archiv.",
         archiveDescriptionNamed:
-          "Verschiebt {projectName} ins Archiv.",
+          "Verschiebt {location} ins Archiv.",
         detailEditTitle: "Projekt bearbeiten",
         detailEditDescription:
-          "Aktualisiere Projektname, Ort oder verknüpften Kunden.",
+          "Aktualisiere den Ort oder den verknüpften Kunden.",
         moveBatchTitle: "Dokumentationspaket verschieben",
         moveBatchDescription:
           "Ordne dieses Paket neu zu, wenn die WhatsApp-Verarbeitung es dem falschen Projekt zugeordnet hat.",
@@ -866,7 +866,7 @@ export const messagesDe = {
           "Kunden-E-Mail konnte nicht aktualisiert werden.",
         emailSent: "E-Mail an den Kunden gesendet.",
         emailSendFailed: "E-Mail konnte nicht gesendet werden.",
-        projectNameRequired: "Ein Projektname ist erforderlich.",
+        locationRequired: "Ein Ort ist erforderlich.",
         customerRemoved: "Kunde aus dem Projekt entfernt.",
         customerCreatedAndLinked: "Kunde erstellt und verknüpft.",
         customerSelectionRequired: "Wähle zuerst einen Kunden aus.",

@@ -3,7 +3,6 @@ import type { Id } from "@mvp-template/backend/convex/_generated/dataModel";
 import {
   RiArchiveLine,
   RiFolder3Line,
-  RiMapPinLine,
   RiRepeatLine,
   RiUser3Line,
 } from "@remixicon/react";
@@ -39,8 +38,7 @@ type ArchivedCustomer = {
 
 type ArchivedProject = {
   _id: Id<"projects">;
-  name: string;
-  location?: string;
+  location: string;
   status: "active" | "done";
   deletedAt: number;
   customer?: {
@@ -215,19 +213,13 @@ function ArchiveRoute() {
                     <RiArchiveLine className="size-4" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium">{project.name}</p>
+                    <p className="truncate font-medium">{project.location}</p>
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                       <span>
                         {t("app.archive.labels.archivedAt", {
                           date: dateFormatter.format(project.deletedAt),
                         })}
                       </span>
-                      {project.location ? (
-                        <span className="inline-flex items-center gap-1">
-                          <RiMapPinLine className="size-3.5" />
-                          {project.location}
-                        </span>
-                      ) : null}
                       {project.customer?.name ? (
                         <span>
                           {t("app.archive.projects.customer", { name: project.customer.name })}

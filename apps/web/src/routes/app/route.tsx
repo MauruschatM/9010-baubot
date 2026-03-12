@@ -673,7 +673,7 @@ function AppRouteContent() {
       : "skip",
   );
   const isProjectHeaderTitleLoading = currentProjectHeader === undefined;
-  const projectHeaderTitle = currentProjectHeader?.name ?? t("app.shell.projects");
+  const projectHeaderTitle = currentProjectHeader?.location ?? t("app.shell.projects");
   const isCustomerHeaderTitleLoading = currentCustomerHeader === undefined;
   const customerHeaderTitle = currentCustomerHeader?.name ?? t("app.shell.customers");
   const projectBackCustomerId = useMemo(() => {
@@ -787,7 +787,7 @@ function AppRouteContent() {
       : "app.workspace";
 
     const title = isProjectDetailPage
-      ? currentProjectForAgent?.name ?? "Project detail"
+      ? currentProjectForAgent?.location ?? "Project detail"
       : isCustomerDetailPage
         ? currentCustomerHeader?.name ?? "Customer detail"
       : headerTitle;
@@ -846,13 +846,13 @@ function AppRouteContent() {
             currentProject: currentProjectForAgent
               ? {
                   id: String(currentProjectForAgent._id),
-                  name: currentProjectForAgent.name,
+                  location: currentProjectForAgent.location,
                   status: currentProjectForAgent.status,
                 }
               : null,
             visibleProjects: allProjects.slice(0, 12).map((project) => ({
               id: String(project._id),
-              name: project.name,
+              location: project.location,
               status: project.status,
               hasUnreviewedChanges: project.hasUnreviewedChanges,
               hasNachtrag: project.hasNachtrag,
@@ -870,7 +870,7 @@ function AppRouteContent() {
             })),
             visibleArchivedProjects: archivedProjects.slice(0, 12).map((project) => ({
               id: String(project._id),
-              name: project.name,
+              location: project.location,
               status: project.status,
               deletedAt: project.deletedAt,
             })),

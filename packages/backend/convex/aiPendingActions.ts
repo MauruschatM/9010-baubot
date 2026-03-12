@@ -51,7 +51,7 @@ export const vPendingActionPayload = v.object({
   customerId: v.optional(v.id("customers")),
   customerName: v.optional(v.string()),
   projectId: v.optional(v.id("projects")),
-  projectName: v.optional(v.string()),
+  projectLabel: v.optional(v.string()),
   batchId: v.optional(v.id("whatsappSendBatches")),
   memberId: v.optional(v.string()),
   memberName: v.optional(v.string()),
@@ -82,7 +82,7 @@ export type PendingActionPayload = {
   customerId?: Id<"customers">;
   customerName?: string;
   projectId?: Id<"projects">;
-  projectName?: string;
+  projectLabel?: string;
   batchId?: Id<"whatsappSendBatches">;
   memberId?: string;
   memberName?: string;

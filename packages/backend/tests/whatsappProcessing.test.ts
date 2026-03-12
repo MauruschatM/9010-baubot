@@ -4,10 +4,12 @@ import {
   batchSearchText,
   buildProjectSearchDocument,
   buildRoutingContextText,
+  findProjectsByLocation,
+  resolveProjectChoiceFromSignals,
 } from "../convex/whatsappProcessing";
 
 describe("whatsapp routing helpers", () => {
-  test("project search document includes project name, location, and customer name", () => {
+  test("project search document includes project location and customer name", () => {
     const customer = {
       _id: "customer-1",
       name: "Musterkunde GmbH",
@@ -16,25 +18,22 @@ describe("whatsapp routing helpers", () => {
     const customerById = new Map([[String(customer._id), customer]]);
     const project = {
       customerId: "customer-1",
-      name: "Dachsanierung Haus 4",
-      location: "Hauptstrasse 12",
+      location: "Dachsanierung Haus 4",
       description: "Geruest und Abdichtung",
     } as any;
 
     const document = buildProjectSearchDocument(project, customerById);
 
     expect(document).toContain("Dachsanierung Haus 4");
-    expect(document).toContain("Hauptstrasse 12");
     expect(document).toContain("Musterkunde GmbH");
   });
 
-  test("routing context surfaces project location and customer for high-similarity hits", () => {
+  test("routing context surfaces canonical project location and customer for high-similarity hits", () => {
     const context = buildRoutingContextText({
       projectHits: [
         {
           projectId: "project-1",
-          projectName: "Dachsanierung Haus 4",
-          projectLocation: "Hauptstrasse 12",
+          projectLocation: "Dachsanierung Haus 4",
           customerName: "Musterkunde GmbH",
           similarity: 0.92,
         },
@@ -43,7 +42,6 @@ describe("whatsapp routing helpers", () => {
     });
 
     expect(context).toContain("Dachsanierung Haus 4");
-    expect(context).toContain("location Hauptstrasse 12");
     expect(context).toContain("customer Musterkunde GmbH");
   });
 
@@ -63,5 +61,51 @@ describe("whatsapp routing helpers", () => {
     expect(searchText).toContain("baustelle hauptstrasse");
     expect(searchText).toContain("musterkunde bittet um rueckruf");
     expect(searchText).not.toContain("ocr sollte ignoriert werden");
+  });
+
+  test("project location matching ignores punctuation and accents", () => {
+    const projects = [
+      {
+        _id: "project-1",
+        location: "Bornstedter Straße 12.",
+      },
+    ] as any;
+
+    expect(findProjectsByLocation(projects, "bornstedter strasse 12")).toHaveLength(1);
+  });
+
+  test("routing falls back to a choice when one plausible project hit exists", () => {
+    const project = {
+      _id: "project-1",
+      location: "Nikias Wohnung",
+    } as any;
+
+    const result = resolveProjectChoiceFromSignals({
+      projects: [project],
+      customers: [],
+      exactProjectMatches: [],
+      projectHits: [
+        {
+          projectId: "project-1",
+          projectLocation: "Nikias Wohnung",
+          similarity: 0.81,
+        },
+      ] as any,
+      routingDecision: {
+        decision: "none",
+        confidence: 0.2,
+        reason: "low_confidence_ai_result",
+      },
+      suggestedProjectLocation: "Nikias Wohnung",
+      routingContext: "Relevant workspace matches",
+    });
+
+    expect(result).toEqual({
+      kind: "choose",
+      options: [project],
+      reason: "low_confidence_ai_result",
+      suggestedProjectLocation: "Nikias Wohnung",
+      routingContext: "Relevant workspace matches",
+    });
   });
 });

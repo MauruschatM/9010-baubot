@@ -20,10 +20,8 @@ type ProjectFormFieldsProps = {
   disabled?: boolean;
   idPrefix: string;
   location: string;
-  name: string;
   onCustomerIdChange: (value: string) => void;
   onLocationChange: (value: string) => void;
-  onNameChange: (value: string) => void;
 };
 
 function buildCustomerLabel(customer: CustomerOption) {
@@ -40,27 +38,13 @@ export function ProjectFormFields({
   disabled,
   idPrefix,
   location,
-  name,
   onCustomerIdChange,
   onLocationChange,
-  onNameChange,
 }: ProjectFormFieldsProps) {
   const { t } = useI18n();
 
   return (
     <div className="space-y-4">
-      <div className="space-y-2">
-        <Label htmlFor={`${idPrefix}-project-name`}>
-          {t("app.projects.form.projectNameLabel")}
-        </Label>
-        <Input
-          id={`${idPrefix}-project-name`}
-          value={name}
-          onChange={(event) => onNameChange(event.target.value)}
-          disabled={disabled}
-          placeholder={t("app.projects.form.projectNamePlaceholder")}
-        />
-      </div>
       <div className="space-y-2">
         <Label htmlFor={`${idPrefix}-project-location`}>
           {t("app.projects.form.locationLabel")}

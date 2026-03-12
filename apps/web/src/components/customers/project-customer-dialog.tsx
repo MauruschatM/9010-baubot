@@ -31,7 +31,7 @@ type CustomerSummary = {
 
 type ProjectSummary = {
   _id: Id<"projects">;
-  name: string;
+  location: string;
   customerId?: Id<"customers">;
   customer?: CustomerSummary;
 };
@@ -199,9 +199,9 @@ export function ProjectCustomerDialog({
       <DialogContent>
         <DialogHeader>
           <DialogTitle>
-            {project?.name
+            {project?.location
               ? t("app.projects.customerDialog.titleNamed", {
-                  projectName: project.name,
+                  projectLocation: project.location,
                 })
               : t("app.projects.customerDialog.titleDefault")}
           </DialogTitle>

@@ -56,8 +56,7 @@ const exportProjectValidator = v.object({
   projectId: v.id("projects"),
   customerId: v.optional(v.id("customers")),
   customerName: v.optional(v.string()),
-  name: v.string(),
-  location: v.optional(v.string()),
+  location: v.string(),
   status: projectStatusValidator,
   batches: v.array(exportBatchValidator),
 });
@@ -157,8 +156,7 @@ type ExportProject = {
   projectId: Id<"projects">;
   customerId?: Id<"customers">;
   customerName?: string;
-  name: string;
-  location?: string;
+  location: string;
   status: "active" | "done";
   batches: ExportBatch[];
 };
@@ -202,6 +200,18 @@ function dedupeIds<T>(values: T[]) {
 function trimToUndefined(value: string | undefined | null) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+function resolveProjectLocation(project: Doc<"projects">) {
+  const location =
+    trimToUndefined(project.location) ??
+    trimToUndefined((project as Doc<"projects"> & { name?: string }).name);
+
+  if (!location) {
+    throw new ConvexError("Project location is required");
+  }
+
+  return location;
 }
 
 function trimArray(values: string[] | undefined) {
@@ -438,8 +448,7 @@ async function buildProjectExport(
     projectId: project._id,
     customerId: customer?._id,
     customerName: trimToUndefined(customer?.name),
-    name: project.name,
-    location: trimToUndefined(project.location),
+    location: resolveProjectLocation(project),
     status: resolveProjectStatus(project.status),
     batches,
   };
@@ -469,7 +478,7 @@ async function buildCustomerRoots(
     );
     const projectExports = await Promise.all(
       visibleProjects
-        .sort((left, right) => left.name.localeCompare(right.name))
+        .sort((left, right) => resolveProjectLocation(left).localeCompare(resolveProjectLocation(right)))
         .map((project) => buildProjectExport(ctx, organizationId, project, customer)),
     );
 
@@ -508,7 +517,7 @@ async function buildProjectRoots(
       kind: "project" as const,
       customerId: undefined,
       projectId: project._id,
-      name: project.name,
+      name: resolveProjectLocation(project),
       projects: [projectExport],
     });
   }

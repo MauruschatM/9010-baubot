@@ -9,23 +9,49 @@ import type { Id } from "./_generated/dataModel";
 import { action, internalAction } from "./_generated/server";
 import { requireActiveOrganization } from "./authhelpers";
 import { authComponent } from "./auth";
+import { detectStoredLocalesForTextItems } from "./contentLocale";
 import { hashText, translateTextsWithGemini } from "./i18nCore";
 import { normalizeAppLocale, vAppLocale } from "./lib/locales";
 
-const timelineRef = api.projects.timeline as FunctionReference<
-  "query",
-  "public",
-  { projectId: Id<"projects">; limit?: number },
-  Array<{
-    _id: Id<"projectTimelineItems">;
-    batchId: Id<"whatsappSendBatches">;
-    sourceType: "whatsapp_message" | "whatsapp_batch_summary";
-    messageId?: Id<"whatsappMessages">;
-    addedAt: number;
-    dayBucketUtc: string;
-    addedByMemberId: string;
-    addedByUserId: string;
-    addedByName?: string;
+type TimelineLocalizedMedia = {
+  mediaAssetId: Id<"whatsappMediaAssets">;
+  mimeType: string;
+  kind: "image" | "audio" | "video" | "file";
+  url?: string;
+  summary?: string;
+  transcript?: string;
+  extractedText?: string;
+  fieldLocales?: {
+    transcript?: string;
+    extractedText?: string;
+    summary?: string;
+  };
+};
+
+type TimelineLocalizedRow = {
+  _id: Id<"projectTimelineItems">;
+  batchId: Id<"whatsappSendBatches">;
+  sourceType: "whatsapp_message" | "whatsapp_batch_summary";
+  messageId?: Id<"whatsappMessages">;
+  addedAt: number;
+  dayBucketUtc: string;
+  addedByMemberId: string;
+  addedByUserId: string;
+  addedByName?: string;
+  sourceText?: string;
+  text?: string;
+  transcript?: string;
+  extractedText?: string;
+  summary?: string;
+  batchTitle?: string;
+  batchOverview?: string;
+  hasNachtrag?: boolean;
+  nachtragNeedsClarification?: boolean;
+  nachtragItems?: string[];
+  nachtragDetails?: string;
+  nachtragLanguage?: AppLocale;
+  keywords?: string[];
+  fieldLocales?: {
     sourceText?: string;
     text?: string;
     transcript?: string;
@@ -33,38 +59,17 @@ const timelineRef = api.projects.timeline as FunctionReference<
     summary?: string;
     batchTitle?: string;
     batchOverview?: string;
-    hasNachtrag?: boolean;
-    nachtragNeedsClarification?: boolean;
-    nachtragItems?: string[];
     nachtragDetails?: string;
-    nachtragLanguage?: AppLocale;
-    keywords?: string[];
-    fieldLocales?: {
-      sourceText?: string;
-      text?: string;
-      transcript?: string;
-      extractedText?: string;
-      summary?: string;
-      batchTitle?: string;
-      batchOverview?: string;
-      nachtragDetails?: string;
-      nachtragItems?: string[];
-    };
-    media: Array<{
-      mediaAssetId: Id<"whatsappMediaAssets">;
-      mimeType: string;
-      kind: "image" | "audio" | "video" | "file";
-      url?: string;
-      summary?: string;
-      transcript?: string;
-      extractedText?: string;
-      fieldLocales?: {
-        transcript?: string;
-        extractedText?: string;
-        summary?: string;
-      };
-    }>;
-  }>
+    nachtragItems?: string[];
+  };
+  media: TimelineLocalizedMedia[];
+};
+
+const timelineRef = api.projects.timeline as FunctionReference<
+  "query",
+  "public",
+  { projectId: Id<"projects">; limit?: number },
+  TimelineLocalizedRow[]
 >;
 
 const getLocaleByUserIdRef = internal.preferences.getLocaleForUser as FunctionReference<
@@ -148,9 +153,61 @@ const MEDIA_FIELDS = ["summary", "transcript", "extractedText"] as const;
 
 type TimelineTranslatableField = (typeof TIMELINE_FIELDS)[number];
 type MediaTranslatableField = (typeof MEDIA_FIELDS)[number];
+type TranslationQueueEntry = {
+  id: string;
+  text: string;
+  kind: "timeline" | "media";
+  entityId: Id<"projectTimelineItems"> | Id<"whatsappMediaAssets">;
+  field: string;
+  sourceHash: string;
+};
+type TimelineTranslationCacheEntry = {
+  _id: Id<"timelineItemTranslations">;
+  timelineItemId: Id<"projectTimelineItems">;
+  field: string;
+  locale: string;
+  sourceHash: string;
+  text: string;
+};
+type MediaTranslationCacheEntry = {
+  _id: Id<"whatsappMediaAssetTranslations">;
+  mediaAssetId: Id<"whatsappMediaAssets">;
+  field: string;
+  locale: string;
+  sourceHash: string;
+  text: string;
+};
 
 function resolveStoredLocale(value: string | undefined): AppLocale | null {
   return normalizeAppLocale(value);
+}
+
+function timelineTranslationKey(
+  timelineItemId: Id<"projectTimelineItems">,
+  field: string,
+) {
+  return `timeline:${timelineItemId}:${field}`;
+}
+
+function mediaTranslationKey(
+  mediaAssetId: Id<"whatsappMediaAssets">,
+  field: string,
+) {
+  return `media:${mediaAssetId}:${field}`;
+}
+
+export function resolveTimelineTranslationLocale(
+  preferredLocale: AppLocale | null | undefined,
+  viewerLocale: AppLocale | null | undefined,
+): AppLocale {
+  return preferredLocale ?? viewerLocale ?? "en";
+}
+
+export function shouldTranslateStoredValue(
+  sourceLocale: AppLocale | null,
+  targetLocale: AppLocale,
+) {
+  return sourceLocale !== null && sourceLocale !== targetLocale;
 }
 
 function assignTimelineField(
@@ -221,10 +278,354 @@ function assignMediaField(
   row.extractedText = value;
 }
 
+function collectLocaleDetectionItems(rows: TimelineLocalizedRow[]) {
+  const detectionItems: Array<{ id: string; text: string }> = [];
+
+  for (const row of rows) {
+    for (const field of TIMELINE_FIELDS) {
+      const currentValue = row[field];
+
+      if (typeof currentValue !== "string" || currentValue.trim().length === 0) {
+        continue;
+      }
+
+      if (resolveStoredLocale(row.fieldLocales?.[field])) {
+        continue;
+      }
+
+      detectionItems.push({
+        id: timelineTranslationKey(row._id, field),
+        text: currentValue,
+      });
+    }
+
+    const nachtragItems = Array.isArray(row.nachtragItems) ? row.nachtragItems : [];
+
+    for (const [itemIndex, item] of nachtragItems.entries()) {
+      if (typeof item !== "string" || item.trim().length === 0) {
+        continue;
+      }
+
+      if (resolveStoredLocale(row.fieldLocales?.nachtragItems?.[itemIndex])) {
+        continue;
+      }
+
+      detectionItems.push({
+        id: timelineTranslationKey(row._id, `nachtragItems.${itemIndex}`),
+        text: item,
+      });
+    }
+
+    for (const media of row.media) {
+      for (const field of MEDIA_FIELDS) {
+        const currentValue = media[field];
+
+        if (typeof currentValue !== "string" || currentValue.trim().length === 0) {
+          continue;
+        }
+
+        if (resolveStoredLocale(media.fieldLocales?.[field])) {
+          continue;
+        }
+
+        detectionItems.push({
+          id: mediaTranslationKey(media.mediaAssetId, field),
+          text: currentValue,
+        });
+      }
+    }
+  }
+
+  return detectionItems;
+}
+
+async function localizeTimelineRows(options: {
+  ctx: any;
+  organizationId: string;
+  userId: string;
+  locale: AppLocale;
+  rows: TimelineLocalizedRow[];
+}) {
+  if (options.rows.length === 0) {
+    return options.rows;
+  }
+
+  const timelineItemIds = options.rows.map((row) => row._id);
+  const mediaAssetIds = Array.from(
+    new Set(
+      options.rows.flatMap((row) =>
+        row.media.map((media) => String(media.mediaAssetId)),
+      ),
+    ),
+  ).map((value) => value as Id<"whatsappMediaAssets">);
+  const [timelineCache, mediaCache, detectedLocales] = await Promise.all([
+    options.ctx.runQuery(getTimelineTranslationsForItemsRef, {
+      timelineItemIds,
+      locale: options.locale,
+    }),
+    options.ctx.runQuery(getMediaTranslationsForAssetsRef, {
+      mediaAssetIds,
+      locale: options.locale,
+    }),
+    detectStoredLocalesForTextItems({
+      items: collectLocaleDetectionItems(options.rows),
+    }),
+  ]);
+  const timelineCacheByKey = new Map(
+    (timelineCache as TimelineTranslationCacheEntry[]).map((entry) => [
+      `${entry.timelineItemId}:${entry.field}`,
+      entry,
+    ]),
+  );
+  const mediaCacheByKey = new Map(
+    (mediaCache as MediaTranslationCacheEntry[]).map((entry) => [
+      `${entry.mediaAssetId}:${entry.field}`,
+      entry,
+    ]),
+  );
+  const translationQueue: TranslationQueueEntry[] = [];
+  const localizedRows = await Promise.all(
+    options.rows.map(async (row) => {
+      const localizedRow: TimelineLocalizedRow = {
+        ...row,
+        media: row.media.map((media) => ({ ...media })),
+      };
+
+      for (const field of TIMELINE_FIELDS) {
+        const currentValue = localizedRow[field];
+
+        if (typeof currentValue !== "string" || currentValue.trim().length === 0) {
+          continue;
+        }
+
+        const translationKey = timelineTranslationKey(localizedRow._id, field);
+        const sourceLocale =
+          resolveStoredLocale(localizedRow.fieldLocales?.[field]) ??
+          detectedLocales[translationKey] ??
+          null;
+
+        if (!shouldTranslateStoredValue(sourceLocale, options.locale)) {
+          continue;
+        }
+
+        const sourceHash = await hashText(currentValue);
+        const cacheKey = `${localizedRow._id}:${field}`;
+        const cached = timelineCacheByKey.get(cacheKey);
+
+        if (cached?.sourceHash === sourceHash) {
+          const cachedLooksUntranslated = cached.text.trim() === currentValue.trim();
+
+          if (cachedLooksUntranslated) {
+            translationQueue.push({
+              id: translationKey,
+              text: currentValue,
+              kind: "timeline",
+              entityId: localizedRow._id,
+              field,
+              sourceHash,
+            });
+            continue;
+          }
+
+          assignTimelineField(localizedRow, field, cached.text);
+          continue;
+        }
+
+        translationQueue.push({
+          id: translationKey,
+          text: currentValue,
+          kind: "timeline",
+          entityId: localizedRow._id,
+          field,
+          sourceHash,
+        });
+      }
+
+      const currentNachtragItems = Array.isArray(localizedRow.nachtragItems)
+        ? localizedRow.nachtragItems
+        : [];
+      const localizedNachtragItems = [...currentNachtragItems];
+
+      for (const [itemIndex, item] of currentNachtragItems.entries()) {
+        if (typeof item !== "string" || item.trim().length === 0) {
+          continue;
+        }
+
+        const field = `nachtragItems.${itemIndex}`;
+        const translationKey = timelineTranslationKey(localizedRow._id, field);
+        const sourceLocale =
+          resolveStoredLocale(localizedRow.fieldLocales?.nachtragItems?.[itemIndex]) ??
+          detectedLocales[translationKey] ??
+          null;
+
+        if (!shouldTranslateStoredValue(sourceLocale, options.locale)) {
+          continue;
+        }
+
+        const sourceHash = await hashText(item);
+        const cacheKey = `${localizedRow._id}:${field}`;
+        const cached = timelineCacheByKey.get(cacheKey);
+
+        if (cached?.sourceHash === sourceHash) {
+          const cachedLooksUntranslated = cached.text.trim() === item.trim();
+
+          if (cachedLooksUntranslated) {
+            translationQueue.push({
+              id: translationKey,
+              text: item,
+              kind: "timeline",
+              entityId: localizedRow._id,
+              field,
+              sourceHash,
+            });
+            continue;
+          }
+
+          localizedNachtragItems[itemIndex] = cached.text;
+          continue;
+        }
+
+        translationQueue.push({
+          id: translationKey,
+          text: item,
+          kind: "timeline",
+          entityId: localizedRow._id,
+          field,
+          sourceHash,
+        });
+      }
+
+      if (localizedNachtragItems.length > 0) {
+        localizedRow.nachtragItems = localizedNachtragItems;
+      }
+
+      for (const media of localizedRow.media) {
+        for (const field of MEDIA_FIELDS) {
+          const currentValue = media[field];
+
+          if (typeof currentValue !== "string" || currentValue.trim().length === 0) {
+            continue;
+          }
+
+          const translationKey = mediaTranslationKey(media.mediaAssetId, field);
+          const sourceLocale =
+            resolveStoredLocale(media.fieldLocales?.[field]) ??
+            detectedLocales[translationKey] ??
+            null;
+
+          if (!shouldTranslateStoredValue(sourceLocale, options.locale)) {
+            continue;
+          }
+
+          const sourceHash = await hashText(currentValue);
+          const cacheKey = `${media.mediaAssetId}:${field}`;
+          const cached = mediaCacheByKey.get(cacheKey);
+
+          if (cached?.sourceHash === sourceHash) {
+            const cachedLooksUntranslated = cached.text.trim() === currentValue.trim();
+
+            if (cachedLooksUntranslated) {
+              translationQueue.push({
+                id: translationKey,
+                text: currentValue,
+                kind: "media",
+                entityId: media.mediaAssetId,
+                field,
+                sourceHash,
+              });
+              continue;
+            }
+
+            assignMediaField(media, field, cached.text);
+            continue;
+          }
+
+          translationQueue.push({
+            id: translationKey,
+            text: currentValue,
+            kind: "media",
+            entityId: media.mediaAssetId,
+            field,
+            sourceHash,
+          });
+        }
+      }
+
+      return localizedRow;
+    }),
+  );
+
+  if (translationQueue.length === 0) {
+    return localizedRows;
+  }
+
+  const translations = await translateTextsWithGemini(options.ctx, {
+    organizationId: options.organizationId,
+    targetLocale: options.locale,
+    items: translationQueue.map((entry) => ({ id: entry.id, text: entry.text })),
+    userId: options.userId,
+  });
+
+  for (const row of localizedRows) {
+    for (const field of TIMELINE_FIELDS) {
+      const translated = translations[timelineTranslationKey(row._id, field)];
+
+      if (translated) {
+        assignTimelineField(row, field, translated);
+      }
+    }
+
+    if (Array.isArray(row.nachtragItems)) {
+      row.nachtragItems = row.nachtragItems.map((item: string, itemIndex: number) => {
+        const translated = translations[timelineTranslationKey(row._id, `nachtragItems.${itemIndex}`)];
+        return translated ?? item;
+      });
+    }
+
+    for (const media of row.media) {
+      for (const field of MEDIA_FIELDS) {
+        const translated = translations[mediaTranslationKey(media.mediaAssetId, field)];
+
+        if (translated) {
+          assignMediaField(media, field, translated);
+        }
+      }
+    }
+  }
+
+  for (const entry of translationQueue) {
+    const translatedText = translations[entry.id] ?? entry.text;
+
+    if (entry.kind === "timeline") {
+      await options.ctx.runMutation(upsertTimelineTranslationRef, {
+        organizationId: options.organizationId,
+        timelineItemId: entry.entityId as Id<"projectTimelineItems">,
+        field: entry.field,
+        locale: options.locale,
+        sourceHash: entry.sourceHash,
+        text: translatedText,
+      });
+      continue;
+    }
+
+    await options.ctx.runMutation(upsertMediaTranslationRef, {
+      organizationId: options.organizationId,
+      mediaAssetId: entry.entityId as Id<"whatsappMediaAssets">,
+      field: entry.field,
+      locale: options.locale,
+      sourceHash: entry.sourceHash,
+      text: translatedText,
+    });
+  }
+
+  return localizedRows;
+}
+
 export const timelineLocalized = action({
   args: {
     projectId: v.id("projects"),
     limit: v.optional(v.number()),
+    viewerLocale: v.optional(vAppLocale),
   },
   returns: v.object({
     locale: vAppLocale,
@@ -299,9 +700,10 @@ export const timelineLocalized = action({
     }
 
     const organization = await requireActiveOrganization(ctx);
-    const locale = (await ctx.runQuery(getLocaleByUserIdRef, {
+    const preferredLocale = await ctx.runQuery(getLocaleByUserIdRef, {
       userId: user._id,
-    })) ?? "en";
+    });
+    const locale = resolveTimelineTranslationLocale(preferredLocale, args.viewerLocale);
     const rows = await ctx.runQuery(timelineRef, {
       projectId: args.projectId,
       limit: Math.min(Math.max(args.limit ?? 500, 1), 500),
@@ -314,267 +716,15 @@ export const timelineLocalized = action({
       };
     }
 
-    const timelineItemIds = rows.map((row) => row._id);
-    const mediaAssetIds = Array.from(
-      new Set(
-        rows.flatMap((row) =>
-          row.media.map((media: { mediaAssetId: Id<"whatsappMediaAssets"> }) =>
-            String(media.mediaAssetId),
-          ),
-        ),
-      ),
-    ).map((value) => value as Id<"whatsappMediaAssets">);
-    const [timelineCache, mediaCache] = await Promise.all([
-      ctx.runQuery(getTimelineTranslationsForItemsRef, {
-        timelineItemIds,
-        locale,
-      }),
-      ctx.runQuery(getMediaTranslationsForAssetsRef, {
-        mediaAssetIds,
-        locale,
-      }),
-    ]);
-    const timelineCacheByKey = new Map(
-      timelineCache.map((entry) => [`${entry.timelineItemId}:${entry.field}`, entry]),
-    );
-    const mediaCacheByKey = new Map(
-      mediaCache.map((entry) => [`${entry.mediaAssetId}:${entry.field}`, entry]),
-    );
-    const translationQueue: Array<{
-      id: string;
-      text: string;
-      kind: "timeline" | "media";
-      entityId: Id<"projectTimelineItems"> | Id<"whatsappMediaAssets">;
-      field: string;
-      sourceHash: string;
-    }> = [];
-    const localizedRows = await Promise.all(
-      rows.map(async (row) => {
-        const localizedRow = { ...row };
-
-        for (const field of TIMELINE_FIELDS) {
-          const currentValue = localizedRow[field];
-
-          if (typeof currentValue !== "string" || currentValue.trim().length === 0) {
-            continue;
-          }
-
-          const sourceLocale = resolveStoredLocale(localizedRow.fieldLocales?.[field]);
-          const shouldTranslateTranscript = field === "transcript";
-
-          if (sourceLocale === locale && !shouldTranslateTranscript) {
-            continue;
-          }
-
-          const sourceHash = await hashText(currentValue);
-          const cacheKey = `${localizedRow._id}:${field}`;
-          const cached = timelineCacheByKey.get(cacheKey);
-
-          if (cached?.sourceHash === sourceHash) {
-            const cachedLooksUntranslated =
-              sourceLocale !== null &&
-              sourceLocale !== locale &&
-              cached.text.trim() === currentValue.trim();
-
-            if (cachedLooksUntranslated) {
-              translationQueue.push({
-                id: `timeline:${localizedRow._id}:${field}`,
-                text: currentValue,
-                kind: "timeline",
-                entityId: localizedRow._id,
-                field,
-                sourceHash,
-              });
-              continue;
-            }
-
-            assignTimelineField(localizedRow, field, cached.text);
-            continue;
-          }
-
-          translationQueue.push({
-            id: `timeline:${localizedRow._id}:${field}`,
-            text: currentValue,
-            kind: "timeline",
-            entityId: localizedRow._id,
-            field,
-            sourceHash,
-          });
-        }
-
-        const currentNachtragItems = Array.isArray(localizedRow.nachtragItems)
-          ? localizedRow.nachtragItems
-          : [];
-        const localizedNachtragItems = [...currentNachtragItems];
-
-        for (const [itemIndex, item] of currentNachtragItems.entries()) {
-          if (typeof item !== "string" || item.trim().length === 0) {
-            continue;
-          }
-
-          const sourceLocale = resolveStoredLocale(localizedRow.fieldLocales?.nachtragItems?.[itemIndex]);
-
-          if (sourceLocale === locale) {
-            continue;
-          }
-
-          const field = `nachtragItems.${itemIndex}`;
-          const sourceHash = await hashText(item);
-          const cacheKey = `${localizedRow._id}:${field}`;
-          const cached = timelineCacheByKey.get(cacheKey);
-
-          if (cached?.sourceHash === sourceHash) {
-            localizedNachtragItems[itemIndex] = cached.text;
-            continue;
-          }
-
-          translationQueue.push({
-            id: `timeline:${localizedRow._id}:${field}`,
-            text: item,
-            kind: "timeline",
-            entityId: localizedRow._id,
-            field,
-            sourceHash,
-          });
-        }
-
-        if (localizedNachtragItems.length > 0) {
-          localizedRow.nachtragItems = localizedNachtragItems;
-        }
-
-        localizedRow.media = await Promise.all(
-          localizedRow.media.map(async (media: any) => {
-            const localizedMedia = { ...media };
-
-            for (const field of MEDIA_FIELDS) {
-              const currentValue = localizedMedia[field];
-
-              if (typeof currentValue !== "string" || currentValue.trim().length === 0) {
-                continue;
-              }
-
-              const sourceLocale = resolveStoredLocale(localizedMedia.fieldLocales?.[field]);
-              const shouldTranslateTranscript = field === "transcript";
-
-              if (sourceLocale === locale && !shouldTranslateTranscript) {
-                continue;
-              }
-
-              const sourceHash = await hashText(currentValue);
-              const cacheKey = `${localizedMedia.mediaAssetId}:${field}`;
-              const cached = mediaCacheByKey.get(cacheKey);
-
-              if (cached?.sourceHash === sourceHash) {
-                const cachedLooksUntranslated =
-                  sourceLocale !== null &&
-                  sourceLocale !== locale &&
-                  cached.text.trim() === currentValue.trim();
-
-                if (cachedLooksUntranslated) {
-                  translationQueue.push({
-                    id: `media:${localizedMedia.mediaAssetId}:${field}`,
-                    text: currentValue,
-                    kind: "media",
-                    entityId: localizedMedia.mediaAssetId,
-                    field,
-                    sourceHash,
-                  });
-                  continue;
-                }
-
-                assignMediaField(localizedMedia, field, cached.text);
-                continue;
-              }
-
-              translationQueue.push({
-                id: `media:${localizedMedia.mediaAssetId}:${field}`,
-                text: currentValue,
-                kind: "media",
-                entityId: localizedMedia.mediaAssetId,
-                field,
-                sourceHash,
-              });
-            }
-
-            return localizedMedia;
-          }),
-        );
-
-        return localizedRow;
-      }),
-    );
-
-    if (translationQueue.length === 0) {
-      return {
-        locale,
-        rows: localizedRows,
-      };
-    }
-
-    const translations = await translateTextsWithGemini(ctx, {
-      organizationId: organization.id,
-      targetLocale: locale,
-      items: translationQueue.map((entry) => ({ id: entry.id, text: entry.text })),
-      userId: user._id,
-    });
-
-    for (const row of localizedRows) {
-      for (const field of TIMELINE_FIELDS) {
-        const id = `timeline:${row._id}:${field}`;
-        const translated = translations[id];
-
-        if (translated) {
-          assignTimelineField(row, field, translated);
-        }
-      }
-
-      if (Array.isArray(row.nachtragItems)) {
-        row.nachtragItems = row.nachtragItems.map((item: string, itemIndex: number) => {
-          const translated = translations[`timeline:${row._id}:nachtragItems.${itemIndex}`];
-          return translated ?? item;
-        });
-      }
-
-      for (const media of row.media) {
-        for (const field of MEDIA_FIELDS) {
-          const id = `media:${media.mediaAssetId}:${field}`;
-          const translated = translations[id];
-
-          if (translated) {
-            assignMediaField(media, field, translated);
-          }
-        }
-      }
-    }
-
-    for (const entry of translationQueue) {
-      const translatedText = translations[entry.id] ?? entry.text;
-
-      if (entry.kind === "timeline") {
-        await ctx.runMutation(upsertTimelineTranslationRef, {
-          organizationId: organization.id,
-          timelineItemId: entry.entityId as Id<"projectTimelineItems">,
-          field: entry.field,
-          locale,
-          sourceHash: entry.sourceHash,
-          text: translatedText,
-        });
-        continue;
-      }
-
-      await ctx.runMutation(upsertMediaTranslationRef, {
-        organizationId: organization.id,
-        mediaAssetId: entry.entityId as Id<"whatsappMediaAssets">,
-        field: entry.field,
-        locale,
-        sourceHash: entry.sourceHash,
-        text: translatedText,
-      });
-    }
-
     return {
       locale,
-      rows: localizedRows,
+      rows: await localizeTimelineRows({
+        ctx,
+        organizationId: organization.id,
+        userId: user._id,
+        locale,
+        rows,
+      }),
     };
   },
 });
@@ -585,11 +735,13 @@ export const timelineLocalizedForOrganizationUser = internalAction({
     userId: v.string(),
     projectId: v.id("projects"),
     limit: v.optional(v.number()),
+    viewerLocale: v.optional(vAppLocale),
   },
   handler: async (ctx, args) => {
-    const locale = (await ctx.runQuery(getLocaleByUserIdRef, {
+    const preferredLocale = await ctx.runQuery(getLocaleByUserIdRef, {
       userId: args.userId,
-    })) ?? "en";
+    });
+    const locale = resolveTimelineTranslationLocale(preferredLocale, args.viewerLocale);
     const rows = (await ctx.runQuery((internal as any).projects.timelineForOrganization, {
       organizationId: args.organizationId,
       userId: args.userId,
@@ -604,265 +756,15 @@ export const timelineLocalizedForOrganizationUser = internalAction({
       };
     }
 
-    const timelineItemIds = rows.map((row) => row._id);
-    const mediaAssetIds = Array.from(
-      new Set(
-        rows.flatMap((row) =>
-          row.media.map((media: any) => String(media.mediaAssetId)),
-        ),
-      ),
-    ).map((value) => value as Id<"whatsappMediaAssets">);
-    const [timelineCache, mediaCache] = await Promise.all([
-      ctx.runQuery(getTimelineTranslationsForItemsRef, {
-        timelineItemIds,
-        locale,
-      }),
-      ctx.runQuery(getMediaTranslationsForAssetsRef, {
-        mediaAssetIds,
-        locale,
-      }),
-    ]);
-    const timelineCacheByKey = new Map(
-      timelineCache.map((entry) => [`${entry.timelineItemId}:${entry.field}`, entry]),
-    );
-    const mediaCacheByKey = new Map(
-      mediaCache.map((entry) => [`${entry.mediaAssetId}:${entry.field}`, entry]),
-    );
-    const translationQueue: Array<{
-      id: string;
-      text: string;
-      kind: "timeline" | "media";
-      entityId: Id<"projectTimelineItems"> | Id<"whatsappMediaAssets">;
-      field: string;
-      sourceHash: string;
-    }> = [];
-    const localizedRows = await Promise.all(
-      rows.map(async (row) => {
-        const localizedRow = { ...row };
-
-        for (const field of TIMELINE_FIELDS) {
-          const currentValue = localizedRow[field];
-
-          if (typeof currentValue !== "string" || currentValue.trim().length === 0) {
-            continue;
-          }
-
-          const sourceLocale = resolveStoredLocale(localizedRow.fieldLocales?.[field]);
-          const shouldTranslateTranscript = field === "transcript";
-
-          if (sourceLocale === locale && !shouldTranslateTranscript) {
-            continue;
-          }
-
-          const sourceHash = await hashText(currentValue);
-          const cacheKey = `${localizedRow._id}:${field}`;
-          const cached = timelineCacheByKey.get(cacheKey);
-
-          if (cached?.sourceHash === sourceHash) {
-            const cachedLooksUntranslated =
-              sourceLocale !== null &&
-              sourceLocale !== locale &&
-              cached.text.trim() === currentValue.trim();
-
-            if (cachedLooksUntranslated) {
-              translationQueue.push({
-                id: `timeline:${localizedRow._id}:${field}`,
-                text: currentValue,
-                kind: "timeline",
-                entityId: localizedRow._id,
-                field,
-                sourceHash,
-              });
-              continue;
-            }
-
-            assignTimelineField(localizedRow, field, cached.text);
-            continue;
-          }
-
-          translationQueue.push({
-            id: `timeline:${localizedRow._id}:${field}`,
-            text: currentValue,
-            kind: "timeline",
-            entityId: localizedRow._id,
-            field,
-            sourceHash,
-          });
-        }
-
-        const currentNachtragItems = Array.isArray(localizedRow.nachtragItems)
-          ? localizedRow.nachtragItems
-          : [];
-        const localizedNachtragItems = [...currentNachtragItems];
-
-        for (const [itemIndex, item] of currentNachtragItems.entries()) {
-          if (typeof item !== "string" || item.trim().length === 0) {
-            continue;
-          }
-
-          const sourceLocale = resolveStoredLocale(localizedRow.fieldLocales?.nachtragItems?.[itemIndex]);
-
-          if (sourceLocale === locale) {
-            continue;
-          }
-
-          const field = `nachtragItems.${itemIndex}`;
-          const sourceHash = await hashText(item);
-          const cacheKey = `${localizedRow._id}:${field}`;
-          const cached = timelineCacheByKey.get(cacheKey);
-
-          if (cached?.sourceHash === sourceHash) {
-            localizedNachtragItems[itemIndex] = cached.text;
-            continue;
-          }
-
-          translationQueue.push({
-            id: `timeline:${localizedRow._id}:${field}`,
-            text: item,
-            kind: "timeline",
-            entityId: localizedRow._id,
-            field,
-            sourceHash,
-          });
-        }
-
-        if (localizedNachtragItems.length > 0) {
-          localizedRow.nachtragItems = localizedNachtragItems;
-        }
-
-        localizedRow.media = await Promise.all(
-          localizedRow.media.map(async (media: any) => {
-            const localizedMedia = { ...media };
-
-            for (const field of MEDIA_FIELDS) {
-              const currentValue = localizedMedia[field];
-
-              if (typeof currentValue !== "string" || currentValue.trim().length === 0) {
-                continue;
-              }
-
-              const sourceLocale = resolveStoredLocale(localizedMedia.fieldLocales?.[field]);
-              const shouldTranslateTranscript = field === "transcript";
-
-              if (sourceLocale === locale && !shouldTranslateTranscript) {
-                continue;
-              }
-
-              const sourceHash = await hashText(currentValue);
-              const cacheKey = `${localizedMedia.mediaAssetId}:${field}`;
-              const cached = mediaCacheByKey.get(cacheKey);
-
-              if (cached?.sourceHash === sourceHash) {
-                const cachedLooksUntranslated =
-                  sourceLocale !== null &&
-                  sourceLocale !== locale &&
-                  cached.text.trim() === currentValue.trim();
-
-                if (cachedLooksUntranslated) {
-                  translationQueue.push({
-                    id: `media:${localizedMedia.mediaAssetId}:${field}`,
-                    text: currentValue,
-                    kind: "media",
-                    entityId: localizedMedia.mediaAssetId,
-                    field,
-                    sourceHash,
-                  });
-                  continue;
-                }
-
-                assignMediaField(localizedMedia, field, cached.text);
-                continue;
-              }
-
-              translationQueue.push({
-                id: `media:${localizedMedia.mediaAssetId}:${field}`,
-                text: currentValue,
-                kind: "media",
-                entityId: localizedMedia.mediaAssetId,
-                field,
-                sourceHash,
-              });
-            }
-
-            return localizedMedia;
-          }),
-        );
-
-        return localizedRow;
-      }),
-    );
-
-    if (translationQueue.length === 0) {
-      return {
-        locale,
-        rows: localizedRows,
-      };
-    }
-
-    const translations = await translateTextsWithGemini(ctx, {
-      organizationId: args.organizationId,
-      targetLocale: locale,
-      items: translationQueue.map((entry) => ({ id: entry.id, text: entry.text })),
-      userId: args.userId,
-    });
-
-    for (const row of localizedRows) {
-      for (const field of TIMELINE_FIELDS) {
-        const id = `timeline:${row._id}:${field}`;
-        const translated = translations[id];
-
-        if (translated) {
-          assignTimelineField(row, field, translated);
-        }
-      }
-
-      if (Array.isArray(row.nachtragItems)) {
-        row.nachtragItems = row.nachtragItems.map((item: string, itemIndex: number) => {
-          const translated = translations[`timeline:${row._id}:nachtragItems.${itemIndex}`];
-          return translated ?? item;
-        });
-      }
-
-      for (const media of row.media) {
-        for (const field of MEDIA_FIELDS) {
-          const id = `media:${media.mediaAssetId}:${field}`;
-          const translated = translations[id];
-
-          if (translated) {
-            assignMediaField(media, field, translated);
-          }
-        }
-      }
-    }
-
-    for (const entry of translationQueue) {
-      const translatedText = translations[entry.id] ?? entry.text;
-
-      if (entry.kind === "timeline") {
-        await ctx.runMutation(upsertTimelineTranslationRef, {
-          organizationId: args.organizationId,
-          timelineItemId: entry.entityId as Id<"projectTimelineItems">,
-          field: entry.field,
-          locale,
-          sourceHash: entry.sourceHash,
-          text: translatedText,
-        });
-        continue;
-      }
-
-      await ctx.runMutation(upsertMediaTranslationRef, {
-        organizationId: args.organizationId,
-        mediaAssetId: entry.entityId as Id<"whatsappMediaAssets">,
-        field: entry.field,
-        locale,
-        sourceHash: entry.sourceHash,
-        text: translatedText,
-      });
-    }
-
     return {
       locale,
-      rows: localizedRows,
+      rows: await localizeTimelineRows({
+        ctx,
+        organizationId: args.organizationId,
+        userId: args.userId,
+        locale,
+        rows: rows as TimelineLocalizedRow[],
+      }),
     };
   },
 });

@@ -12,9 +12,8 @@ type ExportRoot = {
 };
 
 type ExportProject = {
-  name: string;
+  location: string;
   customerName?: string;
-  location?: string;
   status: "active" | "done";
   batches: ExportBatch[];
 };
@@ -225,7 +224,7 @@ function buildRootFolderName(root: ExportRoot) {
 }
 
 function buildProjectFolderName(project: ExportProject) {
-  return sanitizePathSegment(project.name, "project");
+  return sanitizePathSegment(project.location, "project");
 }
 
 function buildBatchFolderName(batch: ExportBatch) {
@@ -254,7 +253,7 @@ function buildSummaryText(
   const lines: string[] = [
     t("app.export.labels.exported", { date: new Date().toISOString() }),
     t("app.export.labels.rootType", { kind: root.kind }),
-    t("app.export.labels.project", { name: project.name }),
+    t("app.export.labels.location", { location: project.location }),
     t("app.export.labels.status", {
       status: project.status === "active" ? t("common.misc.active") : t("common.misc.done"),
     }),
@@ -266,10 +265,6 @@ function buildSummaryText(
     lines.push(t("app.export.labels.customer", { name: root.name }));
   } else if (project.customerName) {
     lines.push(t("app.export.labels.customer", { name: project.customerName }));
-  }
-
-  if (project.location) {
-    lines.push(t("app.export.labels.location", { location: project.location }));
   }
 
   lines.push("");

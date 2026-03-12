@@ -52,8 +52,9 @@ import {
   documentationCapturedMessage,
   documentationEmptyMessage,
   documentationProjectChoiceMessage,
-  documentationProjectNameLengthMessage,
-  documentationProjectNamePrompt,
+  documentationProjectLocationLengthMessage,
+  documentationProjectLocationPrompt,
+  formatProjectChoiceOption,
   documentationReminderMessage,
   documentationStartedMessage,
   invalidEmailMessage,
@@ -87,7 +88,10 @@ import {
   normalizePhoneNumber,
   slugFromOrganizationSeed,
 } from "./whatsapp/normalize";
-import { transcribeWhatsAppMedia } from "./whatsapp/transcription";
+import {
+  isTranscribableWhatsAppContentType,
+  transcribeWhatsAppMedia,
+} from "./whatsapp/transcription";
 import { detectTurnReadiness } from "./whatsapp/turnDetection";
 import {
   getConfiguredTwilioWhatsAppFromNumber,
@@ -193,7 +197,8 @@ type WhatsAppPendingResolutionDoc = {
   customerId?: Id<"customers">;
   options?: Array<{
     projectId: Id<"projects">;
-    projectName: string;
+    location: string;
+    customerName?: string;
   }>;
   aiSuggestedProjectName?: string;
   createdAt: number;
@@ -353,7 +358,7 @@ function isNewProjectCommand(value: string) {
   );
 }
 
-function normalizeProjectNameCandidate(value: string) {
+function normalizeProjectLocationCandidate(value: string) {
   const normalized = value.replace(/\s+/g, " ").trim();
 
   if (normalized.length < 2 || normalized.length > 120) {
@@ -361,10 +366,6 @@ function normalizeProjectNameCandidate(value: string) {
   }
 
   return normalized;
-}
-
-function isTranscribableMediaContentType(contentType: string) {
-  return contentType.startsWith("audio/") || contentType.startsWith("video/");
 }
 
 async function fetchInboundMediaBlob(mediaItem: TwilioInboundPayload["media"][number]) {
@@ -399,7 +400,7 @@ async function transcribePendingReplyMedia(options: {
   let transcriptionAttempted = false;
 
   for (const mediaItem of options.media) {
-    if (!isTranscribableMediaContentType(mediaItem.contentType)) {
+    if (!isTranscribableWhatsAppContentType(mediaItem.contentType)) {
       continue;
     }
 
@@ -411,13 +412,12 @@ async function transcribePendingReplyMedia(options: {
       }
 
       const mediaBytes = new Uint8Array(await mediaBlob.arrayBuffer());
-      const transcription = await transcribeWhatsAppMedia({
+      const transcriptionResult = await transcribeWhatsAppMedia({
         fileBytes: mediaBytes,
         contentType: mediaItem.contentType,
-        locale: options.locale,
       });
 
-      const normalizedTranscription = clampMessageText(transcription ?? "");
+      const normalizedTranscription = clampMessageText(transcriptionResult?.text ?? "");
       if (normalizedTranscription) {
         transcriptions.push(normalizedTranscription);
       }
@@ -448,10 +448,9 @@ async function buildStoredInboundMediaEntries(options: {
 
       const mediaBytes = new Uint8Array(await mediaBlob.arrayBuffer());
       const storageId = await options.store(mediaBlob);
-      const transcription = await transcribeWhatsAppMedia({
+      const transcriptionResult = await transcribeWhatsAppMedia({
         fileBytes: mediaBytes,
         contentType: mediaItem.contentType,
-        locale: options.locale,
       });
 
       mediaEntries.push({
@@ -459,8 +458,9 @@ async function buildStoredInboundMediaEntries(options: {
         contentType: mediaItem.contentType,
         fileName: mediaItem.fileName,
         mediaUrl: mediaItem.mediaUrl,
-        transcription: transcription ?? undefined,
-        transcriptionModel: transcription ? "groq:whisper-large-v3" : undefined,
+        transcription: transcriptionResult?.text ?? undefined,
+        transcriptionLocale: transcriptionResult?.detectedLocale ?? undefined,
+        transcriptionModel: transcriptionResult ? "groq:whisper-large-v3" : undefined,
       });
     } catch {
       // Skip failed media item.
@@ -549,7 +549,7 @@ export async function resolvePendingReplyInput(options: {
 
   const hadMedia = options.media.length > 0;
   const transcribableMedia = options.media.filter((mediaItem) =>
-    isTranscribableMediaContentType(mediaItem.contentType),
+    isTranscribableWhatsAppContentType(mediaItem.contentType),
   );
   if (transcribableMedia.length === 0) {
     return {
@@ -1959,9 +1959,10 @@ export async function handlePendingProjectResolution(options: {
     const choicePrompt = documentationProjectChoiceMessage({
       locale: options.locale,
       projects: optionsList.map((option) => ({
-        name: option.projectName,
+        location: option.location,
+        customerName: option.customerName,
       })),
-      suggestedProjectName: pendingResolution.aiSuggestedProjectName,
+      suggestedProjectLocation: pendingResolution.aiSuggestedProjectName,
     });
 
     if (!normalizedMessage && pendingReplyInput.hadMedia) {
@@ -1974,9 +1975,14 @@ export async function handlePendingProjectResolution(options: {
     }
 
     const numericChoice = Number.parseInt(normalizedMessage, 10);
-    const exactChoice = optionsList.find(
-      (option) => normalizeCommandText(option.projectName) === normalizedMessage,
-    );
+    const exactChoiceMatches = optionsList.filter((option) => {
+      if (normalizeCommandText(option.location) === normalizedMessage) {
+        return true;
+      }
+
+      return normalizeCommandText(formatProjectChoiceOption(option)) === normalizedMessage;
+    });
+    const exactChoice = exactChoiceMatches.length === 1 ? exactChoiceMatches[0] : null;
 
     if (isNewProjectCommand(normalizedMessage)) {
       await options.ctx.runMutation((internal as any).whatsappProcessingData.updateSendBatch, {
@@ -1997,9 +2003,9 @@ export async function handlePendingProjectResolution(options: {
 
       return {
         handled: true,
-        reply: documentationProjectNamePrompt({
+        reply: documentationProjectLocationPrompt({
           locale: options.locale,
-          suggestedProjectName: pendingResolution.aiSuggestedProjectName,
+          suggestedProjectLocation: pendingResolution.aiSuggestedProjectName,
         }),
         batchId: pendingResolution.batchId,
         deliveryStage: "pre_persistence",
@@ -2050,24 +2056,24 @@ export async function handlePendingProjectResolution(options: {
     }
   }
 
-  const projectNamePrompt = documentationProjectNamePrompt({
+  const projectLocationPrompt = documentationProjectLocationPrompt({
     locale: options.locale,
-    suggestedProjectName: pendingResolution.aiSuggestedProjectName,
+    suggestedProjectLocation: pendingResolution.aiSuggestedProjectName,
   });
   if (!pendingReplyInput.text && pendingReplyInput.hadMedia) {
     return {
       handled: true,
-      reply: buildPendingVoiceReplyPrompt(options.locale, projectNamePrompt),
+      reply: buildPendingVoiceReplyPrompt(options.locale, projectLocationPrompt),
       batchId: pendingResolution.batchId,
       deliveryStage: "pre_persistence",
     };
   }
 
-  const projectName = normalizeProjectNameCandidate(pendingReplyInput.text);
-  if (!projectName) {
+  const projectLocation = normalizeProjectLocationCandidate(pendingReplyInput.text);
+  if (!projectLocation) {
     return {
       handled: true,
-      reply: documentationProjectNameLengthMessage(options.locale),
+      reply: documentationProjectLocationLengthMessage(options.locale),
       batchId: pendingResolution.batchId,
       deliveryStage: "pre_persistence",
     };
@@ -2078,17 +2084,18 @@ export async function handlePendingProjectResolution(options: {
       (internal as any).whatsappProcessing.createProjectAndFinalizeBatch,
       {
         batchId: pendingResolution.batchId,
-        projectName,
+        location: projectLocation,
         customerId: pendingResolution.customerId,
         locale: options.locale,
       },
-    )) as { message: string };
+    )) as { status: "saved" | "awaiting_choice"; message: string };
 
     return {
       handled: true,
       reply: result.message,
       batchId: pendingResolution.batchId,
-      deliveryStage: "post_persistence",
+      deliveryStage:
+        result.status === "awaiting_choice" ? "pre_persistence" : "post_persistence",
     };
   } catch (error) {
     console.error("WhatsApp pending project naming failed", {

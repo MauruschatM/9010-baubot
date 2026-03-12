@@ -19,7 +19,7 @@ type DocumentationOverviewSource = {
   timelineItemId: Id<"projectTimelineItems">;
   organizationId: string;
   projectId: Id<"projects">;
-  projectName: string;
+  projectLocation: string;
   customerName: string | null;
   batchTitle: string;
   summary: string | null;
@@ -160,7 +160,7 @@ async function ensureDocumentationOverviewEmbeddings(
             timelineItemId: source.timelineItemId,
             organizationId: source.organizationId,
             projectId: source.projectId,
-            projectName: source.projectName,
+            projectLocation: source.projectLocation,
             customerName: source.customerName ?? undefined,
             batchTitle: source.batchTitle,
             summary: source.summary ?? undefined,
@@ -235,7 +235,7 @@ export const indexDocumentationOverviewByBatch = internalAction({
         timelineItemId: source.timelineItemId,
         organizationId: source.organizationId,
         projectId: source.projectId,
-        projectName: source.projectName,
+        projectLocation: source.projectLocation,
         customerName: source.customerName ?? undefined,
         batchTitle: source.batchTitle,
         summary: source.summary ?? undefined,
@@ -268,7 +268,7 @@ export const searchDocumentationOverviews = internalAction({
       v.object({
         batchId: v.string(),
         projectId: v.string(),
-        projectName: v.string(),
+        projectLocation: v.string(),
         customerName: v.union(v.string(), v.null()),
         title: v.string(),
         summary: v.union(v.string(), v.null()),
@@ -334,7 +334,7 @@ export const searchDocumentationOverviews = internalAction({
           return {
             batchId: String(source.batchId),
             projectId: String(source.projectId),
-            projectName: source.projectName,
+            projectLocation: source.projectLocation,
             customerName: source.customerName,
             title: source.batchTitle,
             summary: source.summary,
@@ -360,7 +360,7 @@ export const searchDocumentationOverviews = internalAction({
       .map((source) => ({
         batchId: String(source.batchId),
         projectId: String(source.projectId),
-        projectName: source.projectName,
+        projectLocation: source.projectLocation,
         customerName: source.customerName,
         title: source.batchTitle,
         summary: source.summary,

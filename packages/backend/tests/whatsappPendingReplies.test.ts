@@ -8,6 +8,7 @@ import {
 } from "../convex/whatsapp";
 import {
   documentationProjectChoiceMessage,
+  formatProjectChoiceOption,
   pendingVoiceReplyTypingFallbackMessage,
 } from "../convex/whatsapp/messages";
 
@@ -54,6 +55,27 @@ describe("whatsapp pending reply handling", () => {
 
     expect(result).toEqual({
       text: "Nikias Wohnung",
+      source: "transcript",
+      hadMedia: true,
+      transcriptionAttempted: true,
+    });
+  });
+
+  test("treats application/ogg voice notes as transcribable media", async () => {
+    const result = await resolvePendingReplyInput({
+      body: "",
+      locale: "de",
+      media: [
+        {
+          mediaUrl: "https://example.com/voice-note",
+          contentType: "application/ogg",
+        },
+      ],
+      resolveTranscript: async () => "Sprachnachricht erkannt",
+    });
+
+    expect(result).toEqual({
+      text: "Sprachnachricht erkannt",
       source: "transcript",
       hadMedia: true,
       transcriptionAttempted: true,
@@ -124,7 +146,7 @@ describe("whatsapp pending reply handling", () => {
     ).toBe(true);
   });
 
-  test("finalizes an awaiting project-name batch from a transcribed voice reply", async () => {
+  test("finalizes an awaiting project-location batch from a transcribed voice reply", async () => {
     const runActionCalls: Array<Record<string, unknown>> = [];
     const ctx = {
       runQuery: async () =>
@@ -172,7 +194,7 @@ describe("whatsapp pending reply handling", () => {
     expect(runActionCalls).toHaveLength(1);
     expect(runActionCalls[0]).toMatchObject({
       batchId: "batch-1",
-      projectName: "Nikias Wohnung",
+      location: "Nikias Wohnung",
       customerId: "customer-1",
       locale: "de",
     });
@@ -184,7 +206,7 @@ describe("whatsapp pending reply handling", () => {
     });
   });
 
-  test("matches a transcribed project choice by project name", async () => {
+  test("matches a transcribed project choice by project location", async () => {
     const runActionCalls: Array<Record<string, unknown>> = [];
     const ctx = {
       runQuery: async () =>
@@ -198,11 +220,11 @@ describe("whatsapp pending reply handling", () => {
           options: [
             {
               projectId: "project-1",
-              projectName: "Nikias Wohnung",
+              location: "Nikias Wohnung",
             },
             {
               projectId: "project-2",
-              projectName: "Bornstedter Straße",
+              location: "Bornstedter Straße",
             },
           ],
           createdAt: Date.now(),
@@ -264,7 +286,7 @@ describe("whatsapp pending reply handling", () => {
           options: [
             {
               projectId: "project-1",
-              projectName: "Nikias Wohnung",
+              location: "Nikias Wohnung",
             },
           ],
           aiSuggestedProjectName: "Nikias Wohnung",
@@ -308,10 +330,82 @@ describe("whatsapp pending reply handling", () => {
     expect(result.reply).toContain(
       documentationProjectChoiceMessage({
         locale: "de",
-        projects: [{ name: "Nikias Wohnung" }],
-        suggestedProjectName: "Nikias Wohnung",
+        projects: [{ location: "Nikias Wohnung" }],
+        suggestedProjectLocation: "Nikias Wohnung",
       }),
     );
+  });
+
+  test("matches a transcribed project choice by formatted option label", async () => {
+    const runActionCalls: Array<Record<string, unknown>> = [];
+    const ctx = {
+      runQuery: async () =>
+        ({
+          _id: "pending-1",
+          organizationId: "org-1",
+          phoneE164: "+491234",
+          memberId: "member-1",
+          batchId: "batch-1",
+          state: "awaiting_choice",
+          options: [
+            {
+              projectId: "project-1",
+              location: "Nikias Wohnung",
+              customerName: "Nikias GmbH",
+            },
+            {
+              projectId: "project-2",
+              location: "Nikias Wohnung",
+              customerName: "Andere GmbH",
+            },
+          ],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }) as any,
+      runMutation: async () => null,
+      runAction: async (_ref: unknown, args: Record<string, unknown>) => {
+        runActionCalls.push(args);
+        return { message: "saved" };
+      },
+    };
+
+    const result = await handlePendingProjectResolution({
+      ctx,
+      locale: "de",
+      resolvePendingReplyInput: async () => ({
+        text: formatProjectChoiceOption({
+          location: "Nikias Wohnung",
+          customerName: "Nikias GmbH",
+        }),
+        source: "transcript",
+        hadMedia: true,
+        transcriptionAttempted: true,
+      }),
+      connection: {
+        _id: "connection-1",
+        organizationId: "org-1",
+        memberId: "member-1",
+        userId: "user-1",
+        phoneNumberE164: "+491234",
+        phoneNumberDigits: "491234",
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      } as any,
+    });
+
+    expect(runActionCalls).toHaveLength(1);
+    expect(runActionCalls[0]).toMatchObject({
+      batchId: "batch-1",
+      projectId: "project-1",
+      locale: "de",
+    });
+    expect(result).toMatchObject({
+      handled: true,
+      reply: "saved",
+      batchId: "batch-1",
+      deliveryStage: "post_persistence",
+    });
   });
 
   test("accepts a transcribed clarification reply", async () => {

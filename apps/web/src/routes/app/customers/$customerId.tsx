@@ -6,7 +6,6 @@ import {
   RiCheckLine,
   RiDownloadLine,
   RiEditLine,
-  RiMapPinLine,
   RiMoreFill,
 } from "@remixicon/react";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
@@ -72,8 +71,7 @@ type CustomerSummary = {
 
 type ProjectListItem = {
   _id: Id<"projects">;
-  name: string;
-  location?: string;
+  location: string;
   status: "active" | "done";
   updatedAt: number;
   hasUnreviewedChanges: boolean;
@@ -117,11 +115,9 @@ function CustomerDetailRoute() {
   const [phone, setPhone] = useState("");
   const [isSavingCustomer, setIsSavingCustomer] = useState(false);
   const [isCreateProjectDialogOpen, setIsCreateProjectDialogOpen] = useState(false);
-  const [projectName, setProjectName] = useState("");
-  const [projectLocation, setProjectLocation] = useState("");
+  const [newProjectLocation, setNewProjectLocation] = useState("");
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [editingProject, setEditingProject] = useState<ProjectListItem | null>(null);
-  const [editProjectName, setEditProjectName] = useState("");
   const [editProjectLocation, setEditProjectLocation] = useState("");
   const [editProjectCustomerId, setEditProjectCustomerId] = useState("");
   const [isSavingProjectEdit, setIsSavingProjectEdit] = useState(false);
@@ -199,12 +195,10 @@ function CustomerDetailRoute() {
     setIsCreatingProject(true);
     try {
       const projectId = await createProject({
-        name: projectName,
-        location: projectLocation || undefined,
+        location: newProjectLocation,
         customerId: customer._id,
       });
-      setProjectName("");
-      setProjectLocation("");
+      setNewProjectLocation("");
       setIsCreateProjectDialogOpen(false);
       toast.success(t("app.customers.toasts.projectCreated"));
       void navigate({
@@ -254,8 +248,7 @@ function CustomerDetailRoute() {
     try {
       await updateProject({
         projectId: editingProject._id,
-        name: editProjectName,
-        location: editProjectLocation || null,
+        location: editProjectLocation,
         customerId: editProjectCustomerId ? (editProjectCustomerId as Id<"customers">) : null,
       });
       setEditingProject(null);
@@ -465,19 +458,13 @@ function CustomerDetailRoute() {
                       search={{ customerId: String(customer._id) }}
                       className="min-w-0 truncate font-medium text-sm hover:underline"
                     >
-                      {project.name}
+                      {project.location}
                     </Link>
                     <span className="shrink-0 text-xs text-muted-foreground">
                       {dateFormatter.format(project.updatedAt)}
                     </span>
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                    {project.location ? (
-                      <span className="inline-flex items-center gap-1.5">
-                        <RiMapPinLine className="size-3.5" />
-                        {project.location}
-                      </span>
-                    ) : null}
                     {project.hasUnreviewedChanges ? (
                       <Badge variant="secondary">{t("app.customers.detail.needsReview")}</Badge>
                     ) : null}
@@ -505,8 +492,7 @@ function CustomerDetailRoute() {
                     <DropdownMenuItem
                       onClick={() => {
                         setEditingProject(project);
-                        setEditProjectName(project.name);
-                        setEditProjectLocation(project.location ?? "");
+                        setEditProjectLocation(project.location);
                         setEditProjectCustomerId(String(customer._id));
                       }}
                     >
@@ -603,25 +589,13 @@ function CustomerDetailRoute() {
           </DialogHeader>
           <form onSubmit={handleCreateProject} className="space-y-4">
             <div className="space-y-2">
-              <label htmlFor="customer-project-name" className="text-sm font-medium">
-                {t("app.projects.form.projectNameLabel")}
-              </label>
-              <Input
-                id="customer-project-name"
-                value={projectName}
-                onChange={(event) => setProjectName(event.target.value)}
-                disabled={isCreatingProject}
-                placeholder={t("app.projects.form.projectNamePlaceholder")}
-              />
-            </div>
-            <div className="space-y-2">
               <label htmlFor="customer-project-location" className="text-sm font-medium">
                 {t("app.projects.form.locationLabel")}
               </label>
               <Input
                 id="customer-project-location"
-                value={projectLocation}
-                onChange={(event) => setProjectLocation(event.target.value)}
+                value={newProjectLocation}
+                onChange={(event) => setNewProjectLocation(event.target.value)}
                 disabled={isCreatingProject}
                 placeholder={t("app.projects.form.locationPlaceholder")}
               />
@@ -659,11 +633,9 @@ function CustomerDetailRoute() {
           <form onSubmit={handleSaveProjectEdit} className="space-y-4">
             <ProjectFormFields
               idPrefix="customer-project-edit"
-              name={editProjectName}
               location={editProjectLocation}
               customerId={editProjectCustomerId}
               customers={customers}
-              onNameChange={setEditProjectName}
               onLocationChange={setEditProjectLocation}
               onCustomerIdChange={setEditProjectCustomerId}
               disabled={isSavingProjectEdit}
@@ -699,7 +671,7 @@ function CustomerDetailRoute() {
             <DialogDescription>
               {archivingProject
                 ? t("app.projects.dialogs.archiveDescriptionNamed", {
-                    projectName: archivingProject.name,
+                    location: archivingProject.location,
                   })
                 : null}
             </DialogDescription>

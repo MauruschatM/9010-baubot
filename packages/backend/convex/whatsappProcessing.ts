@@ -9,18 +9,24 @@ import { z } from "zod";
 import { components, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction } from "./_generated/server";
+import { detectStoredLocalesForTextItems } from "./contentLocale";
+import { normalizeAppLocale } from "./lib/locales";
 import {
   isPhoneOnlyMemberEmail,
 } from "./memberProfiles";
 import {
   documentationFailedMessage,
   documentationProjectChoiceMessage,
-  documentationProjectNamePrompt,
+  documentationProjectLocationPrompt,
   documentationSavedMessage,
 } from "./whatsapp/messages";
 import { WHATSAPP_AGENT_MODEL } from "./whatsapp/constants";
 import { inferLocaleFromPhoneNumber } from "./whatsapp/normalize";
 import { cosineSimilarity, embedTextsWithVoyage } from "./lib/voyage";
+import {
+  MAX_PROJECT_LOCATION_LENGTH,
+  readProjectLocation,
+} from "./projectFields";
 
 type BatchProcessingData = {
   batch: Doc<"whatsappSendBatches">;
@@ -37,6 +43,18 @@ type BetterAuthUserDoc = {
 };
 
 type MemberProfileDoc = Doc<"memberProfiles">;
+
+type TimelineFieldLocales = {
+  sourceText?: AppLocale;
+  text?: AppLocale;
+  transcript?: AppLocale;
+  extractedText?: AppLocale;
+  summary?: AppLocale;
+  batchTitle?: AppLocale;
+  batchOverview?: AppLocale;
+  nachtragDetails?: AppLocale;
+  nachtragItems?: AppLocale[];
+};
 
 type TimelineMediaAsset = {
   mediaAssetId: Id<"whatsappMediaAssets">;
@@ -66,6 +84,7 @@ type PreparedTimelineItem = {
   extractedText?: string;
   summary?: string;
   keywords?: string[];
+  fieldLocales?: TimelineFieldLocales;
   mediaAssets: TimelineMediaAsset[];
 };
 
@@ -87,8 +106,7 @@ type RoutingWorkspaceData = {
 
 type ProjectRoutingHit = {
   projectId: Id<"projects">;
-  projectName: string;
-  projectLocation?: string;
+  projectLocation: string;
   customerId?: Id<"customers">;
   customerName?: string;
   similarity: number;
@@ -103,19 +121,49 @@ type CustomerRoutingHit = {
 type RoutingDecision = {
   decision: "project" | "customer" | "ambiguous" | "none";
   confidence: number;
-  projectName?: string;
+  projectLocation?: string;
   customerName?: string;
   reason: string;
 };
 
+type ProjectChoiceResult =
+  | {
+      kind: "selected";
+      project: Doc<"projects">;
+      reason: string;
+      confidence: number;
+      routingContext: string | null;
+    }
+  | {
+      kind: "choose";
+      options: Doc<"projects">[];
+      reason: string;
+      suggestedProjectLocation: string;
+      customerId?: Id<"customers">;
+      routingContext: string | null;
+    }
+  | {
+      kind: "need_name";
+      suggestedProjectLocation: string;
+      customerId?: Id<"customers">;
+      reason: string;
+      routingContext: string | null;
+    };
+
+type PendingProjectChoiceOption = {
+  projectId: Id<"projects">;
+  location: string;
+  customerName?: string;
+};
+
 const MAX_PROJECT_OPTIONS = 5;
-const MAX_PROJECT_NAME_LENGTH = 120;
 const MAX_BATCH_TITLE_LENGTH = 80;
 const MAX_SUMMARY_LENGTH = 320;
 const AUTO_ATTACH_MIN_CONFIDENCE = 0.85;
 const VERY_SIMILAR_MATCH_THRESHOLD = 0.87;
 const ROUTING_CONTEXT_LIMIT = 3;
 const ROUTING_CONTEXT_MIN_SIMILARITY = 0.78;
+const PROJECT_CHOICE_MIN_SIMILARITY = ROUTING_CONTEXT_MIN_SIMILARITY;
 const batchNarrativeSchema = z.object({
   batchTitle: z.string(),
   summary: z.string(),
@@ -179,10 +227,10 @@ function truncateText(value: string, maxLength: number) {
   return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
-function normalizeProjectName(value: string) {
+function normalizeProjectLocation(value: string) {
   const normalized = value.replace(/\s+/g, " ").trim();
 
-  if (normalized.length < 2 || normalized.length > MAX_PROJECT_NAME_LENGTH) {
+  if (normalized.length < 2 || normalized.length > MAX_PROJECT_LOCATION_LENGTH) {
     return null;
   }
 
@@ -190,7 +238,14 @@ function normalizeProjectName(value: string) {
 }
 
 function normalizeNameMatch(value: string) {
-  return value.trim().toLowerCase().replace(/\s+/g, " ");
+  return value
+    .normalize("NFKD")
+    .replace(/ß/gu, "ss")
+    .replace(/\p{M}+/gu, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
 }
 
 function kindFromMimeType(mimeType: string): "image" | "audio" | "video" | "file" {
@@ -239,13 +294,13 @@ function buildProjectSearchDocument(
 ) {
   const customer =
     project.customerId !== undefined ? customerById.get(String(project.customerId)) : undefined;
+  const projectLocation = readProjectLocation(project);
 
   return normalizeWhitespace(
     [
-      project.name,
+      projectLocation,
       customer?.name,
       customer?.contactName,
-      project.location,
       project.description,
     ]
       .filter(Boolean)
@@ -306,8 +361,7 @@ async function searchSimilarProjectsByEmbedding(
 
       return {
         projectId: entry.project._id,
-        projectName: entry.project.name,
-        projectLocation: entry.project.location,
+        projectLocation: readProjectLocation(entry.project) ?? "Unknown project",
         customerId: entry.project.customerId,
         customerName: customer?.name,
         similarity: cosineSimilarity(queryEmbedding, projectEmbeddings[index] ?? []),
@@ -368,7 +422,7 @@ const routingDecisionSchema = z.object({
     z.literal("none"),
   ]),
   confidence: z.number(),
-  projectName: z.string().optional(),
+  projectLocation: z.string().optional(),
   customerName: z.string().optional(),
   reason: z.string(),
 });
@@ -383,7 +437,7 @@ function buildRoutingDecisionFallback(options: {
     return {
       decision: "project",
       confidence: 1,
-      projectName: options.exactProjectMatches[0]!.name,
+      projectLocation: readProjectLocation(options.exactProjectMatches[0]!) ?? "Unknown project",
       reason: "exact_project_mention",
     };
   }
@@ -408,7 +462,7 @@ function buildRoutingDecisionFallback(options: {
     return {
       decision: "project",
       confidence: topProjectHit.similarity,
-      projectName: topProjectHit.projectName,
+      projectLocation: topProjectHit.projectLocation,
       reason: "very_similar_project_match",
     };
   }
@@ -470,12 +524,14 @@ async function resolveRoutingDecision(options: {
         "Choose 'none' when the text is generic, missing, or too weak. Prefer 'none' over guessing.",
         "Use only the provided names. Never invent, paraphrase, or normalize to unseen names.",
         "Set confidence between 0 and 1. Lower confidence when the evidence comes mostly from noisy transcript or OCR text.",
-        "If decision is 'project', set projectName exactly as provided. If decision is 'customer', set customerName exactly as provided. Otherwise omit both.",
+        "If decision is 'project', set projectLocation exactly as provided. If decision is 'customer', set customerName exactly as provided. Otherwise omit both.",
         "Keep reason short, snake_case, and free of entity names.",
         "Context:",
         JSON.stringify({
           searchText: options.searchText,
-          exactProjectMatches: options.exactProjectMatches.map((project) => project.name),
+          exactProjectMatches: options.exactProjectMatches
+            .map((project) => readProjectLocation(project))
+            .filter((projectLocation): projectLocation is string => Boolean(projectLocation)),
           exactCustomerMatches: options.exactCustomerMatches.map((customer) => customer.name),
           topProjectHits: options.projectHits.slice(0, ROUTING_CONTEXT_LIMIT),
           topCustomerHits: options.customerHits.slice(0, ROUTING_CONTEXT_LIMIT),
@@ -490,16 +546,30 @@ async function resolveRoutingDecision(options: {
   }
 }
 
-function matchProjectByName(projects: Doc<"projects">[], projectName: string | undefined) {
-  const normalizedProjectName = normalizeWhitespace(projectName);
-  if (!normalizedProjectName) {
-    return null;
+function matchProjectByLocation(
+  projects: Doc<"projects">[],
+  projectLocation: string | undefined,
+) {
+  return findProjectsByLocation(projects, projectLocation)[0] ?? null;
+}
+
+function findProjectsByLocation(
+  projects: Doc<"projects">[],
+  projectLocation: string | undefined,
+) {
+  const normalizedProjectLocation = normalizeWhitespace(projectLocation);
+  if (!normalizedProjectLocation) {
+    return [];
   }
 
-  return (
-    projects.find((project) => normalizeNameMatch(project.name) === normalizeNameMatch(normalizedProjectName)) ??
-    null
-  );
+  const normalizedMatch = normalizeNameMatch(normalizedProjectLocation);
+  return projects.filter((project) => {
+    const candidateLocation = readProjectLocation(project);
+    return (
+      candidateLocation !== undefined &&
+      normalizeNameMatch(candidateLocation) === normalizedMatch
+    );
+  });
 }
 
 function matchCustomerByName(customers: Doc<"customers">[], customerName: string | undefined) {
@@ -563,15 +633,182 @@ function selectProjectsForCustomer(options: {
   if (ranked.length === 0) {
     return scopedProjects
       .slice()
-      .sort((left, right) => left.name.localeCompare(right.name))
+      .sort((left, right) =>
+        (readProjectLocation(left) ?? "").localeCompare(readProjectLocation(right) ?? ""),
+      )
       .slice(0, MAX_PROJECT_OPTIONS);
   }
 
   const remaining = scopedProjects
     .filter((project) => !ranked.some((rankedProject) => rankedProject._id === project._id))
-    .sort((left, right) => left.name.localeCompare(right.name));
+    .sort((left, right) =>
+      (readProjectLocation(left) ?? "").localeCompare(readProjectLocation(right) ?? ""),
+    );
 
   return [...ranked, ...remaining].slice(0, MAX_PROJECT_OPTIONS);
+}
+
+function buildPendingProjectChoiceOptions(
+  projects: Doc<"projects">[],
+  customers: Doc<"customers">[],
+): PendingProjectChoiceOption[] {
+  const customerById = buildCustomerById(customers);
+
+  return projects
+    .slice(0, MAX_PROJECT_OPTIONS)
+    .map((project) => {
+      const customer =
+        project.customerId !== undefined
+          ? customerById.get(String(project.customerId))
+          : undefined;
+
+      return {
+        projectId: project._id,
+        location: readProjectLocation(project) ?? "Unknown project",
+        customerName: customer?.name,
+      } satisfies PendingProjectChoiceOption;
+    });
+}
+
+function pickLocationMatches(options: {
+  projects: Doc<"projects">[];
+  projectLocation: string;
+  customerId?: Id<"customers">;
+}) {
+  const matches = findProjectsByLocation(options.projects, options.projectLocation);
+  if (matches.length === 0) {
+    return [];
+  }
+
+  if (options.customerId === undefined) {
+    return matches;
+  }
+
+  const sameCustomerMatches = matches.filter(
+    (project) => project.customerId === options.customerId,
+  );
+
+  return sameCustomerMatches.length > 0 ? sameCustomerMatches : matches;
+}
+
+function resolveProjectChoiceFromSignals(options: {
+  projects: Doc<"projects">[];
+  customers: Doc<"customers">[];
+  exactProjectMatches: Doc<"projects">[];
+  projectHits: ProjectRoutingHit[];
+  routingDecision: RoutingDecision;
+  suggestedProjectLocation: string;
+  routingContext: string | null;
+}): ProjectChoiceResult {
+  if (options.exactProjectMatches.length > 1) {
+    return {
+      kind: "choose",
+      options: options.exactProjectMatches.slice(0, MAX_PROJECT_OPTIONS),
+      reason: "multiple_exact_project_matches",
+      suggestedProjectLocation: options.suggestedProjectLocation,
+      routingContext: options.routingContext,
+    };
+  }
+
+  const matchedProject = matchProjectByLocation(
+    options.projects,
+    options.routingDecision.projectLocation,
+  );
+  if (options.routingDecision.decision === "project" && matchedProject) {
+    if (options.routingDecision.confidence >= AUTO_ATTACH_MIN_CONFIDENCE) {
+      return {
+        kind: "selected",
+        project: matchedProject,
+        reason: options.routingDecision.reason,
+        confidence: options.routingDecision.confidence,
+        routingContext: options.routingContext,
+      };
+    }
+
+    return {
+      kind: "choose",
+      options: [matchedProject],
+      reason: options.routingDecision.reason,
+      suggestedProjectLocation: options.suggestedProjectLocation,
+      routingContext: options.routingContext,
+    };
+  }
+
+  const matchedCustomer = matchCustomerByName(
+    options.customers,
+    options.routingDecision.customerName,
+  );
+  if (options.routingDecision.decision === "customer" && matchedCustomer) {
+    const customerProjects = selectProjectsForCustomer({
+      projects: options.projects,
+      customerId: matchedCustomer._id,
+      projectHits: options.projectHits,
+    });
+
+    if (customerProjects.length === 1) {
+      if (options.routingDecision.confidence >= AUTO_ATTACH_MIN_CONFIDENCE) {
+        return {
+          kind: "selected",
+          project: customerProjects[0]!,
+          reason: options.routingDecision.reason,
+          confidence: options.routingDecision.confidence,
+          routingContext: options.routingContext,
+        };
+      }
+
+      return {
+        kind: "choose",
+        options: customerProjects,
+        reason: options.routingDecision.reason,
+        suggestedProjectLocation: options.suggestedProjectLocation,
+        customerId: matchedCustomer._id,
+        routingContext: options.routingContext,
+      };
+    }
+
+    if (customerProjects.length > 1) {
+      return {
+        kind: "choose",
+        options: customerProjects,
+        reason: options.routingDecision.reason,
+        suggestedProjectLocation: options.suggestedProjectLocation,
+        customerId: matchedCustomer._id,
+        routingContext: options.routingContext,
+      };
+    }
+
+    return {
+      kind: "need_name",
+      suggestedProjectLocation: options.suggestedProjectLocation,
+      customerId: matchedCustomer._id,
+      reason: options.routingDecision.reason,
+      routingContext: options.routingContext,
+    };
+  }
+
+  const plausibleProjectOptions = selectProjectOptionsFromHits(
+    options.projects,
+    options.projectHits.filter(
+      (hit) => hit.similarity >= PROJECT_CHOICE_MIN_SIMILARITY,
+    ),
+  );
+
+  if (plausibleProjectOptions.length > 0) {
+    return {
+      kind: "choose",
+      options: plausibleProjectOptions,
+      reason: options.routingDecision.reason,
+      suggestedProjectLocation: options.suggestedProjectLocation,
+      routingContext: options.routingContext,
+    };
+  }
+
+  return {
+    kind: "need_name",
+    suggestedProjectLocation: options.suggestedProjectLocation,
+    reason: options.routingDecision.reason,
+    routingContext: options.routingContext,
+  };
 }
 
 function buildRoutingContextText(options: {
@@ -582,12 +819,11 @@ function buildRoutingContextText(options: {
     .filter((hit) => hit.similarity >= ROUTING_CONTEXT_MIN_SIMILARITY)
     .slice(0, ROUTING_CONTEXT_LIMIT)
     .map((hit) => {
-      const details = [
-        hit.projectLocation ? `location ${hit.projectLocation}` : null,
-        hit.customerName ? `customer ${hit.customerName}` : null,
-      ].filter((detail): detail is string => detail !== null);
+      const details = [hit.customerName ? `customer ${hit.customerName}` : null].filter(
+        (detail): detail is string => detail !== null,
+      );
       const detailsText = details.length > 0 ? `${details.join(", ")}, ` : "";
-      return `- ${hit.projectName} (${detailsText}similarity ${hit.similarity.toFixed(2)})`;
+      return `- ${hit.projectLocation} (${detailsText}similarity ${hit.similarity.toFixed(2)})`;
     });
   const customerLines = options.customerHits
     .filter((hit) => hit.similarity >= ROUTING_CONTEXT_MIN_SIMILARITY)
@@ -606,7 +842,7 @@ function buildRoutingContextText(options: {
   ].join("\n");
 }
 
-function suggestProjectName(messages: Doc<"whatsappMessages">[], batchCreatedAt: number) {
+function suggestProjectLocation(messages: Doc<"whatsappMessages">[], batchCreatedAt: number) {
   for (const message of messages) {
     const sourceText = normalizeWhitespace(message.text);
     if (!sourceText || sourceText.startsWith("/")) {
@@ -614,9 +850,9 @@ function suggestProjectName(messages: Doc<"whatsappMessages">[], batchCreatedAt:
     }
 
     const firstLine = normalizeWhitespace(sourceText.split("\n")[0] ?? "");
-    const candidate = firstLine ? truncateText(firstLine, MAX_PROJECT_NAME_LENGTH) : undefined;
+    const candidate = firstLine ? truncateText(firstLine, MAX_PROJECT_LOCATION_LENGTH) : undefined;
 
-    if (candidate && normalizeProjectName(candidate)) {
+    if (candidate && normalizeProjectLocation(candidate)) {
       return candidate;
     }
   }
@@ -833,6 +1069,55 @@ function dedupeKeywords(values: Array<string | undefined>) {
   return keywords.length > 0 ? keywords : undefined;
 }
 
+function resolveUniformLocale(locales: Array<string | undefined>) {
+  const uniqueLocales = Array.from(
+    new Set(
+      locales
+        .map((locale) => (locale === undefined ? undefined : normalizeAppLocale(locale)))
+        .filter((locale): locale is AppLocale => !!locale),
+    ),
+  );
+  return uniqueLocales.length === 1 ? uniqueLocales[0] : undefined;
+}
+
+export function derivePreparedTimelineFieldLocales(options: {
+  sourceText?: string;
+  sourceTextLocale?: AppLocale;
+  transcript?: string;
+  transcriptLocale?: AppLocale;
+  extractedText?: string;
+  extractedTextLocale?: AppLocale;
+  summary?: string;
+}) {
+  const fieldLocales: TimelineFieldLocales = {};
+
+  if (options.sourceText && options.sourceTextLocale) {
+    fieldLocales.sourceText = options.sourceTextLocale;
+    fieldLocales.text = options.sourceTextLocale;
+  }
+
+  if (options.transcript && options.transcriptLocale) {
+    fieldLocales.transcript = options.transcriptLocale;
+  }
+
+  if (options.extractedText && options.extractedTextLocale) {
+    fieldLocales.extractedText = options.extractedTextLocale;
+  }
+
+  if (options.summary) {
+    const summaryLocale =
+      (options.summary === options.sourceText ? options.sourceTextLocale : undefined) ??
+      (options.summary === options.transcript ? options.transcriptLocale : undefined) ??
+      (options.summary === options.extractedText ? options.extractedTextLocale : undefined);
+
+    if (summaryLocale) {
+      fieldLocales.summary = summaryLocale;
+    }
+  }
+
+  return Object.keys(fieldLocales).length > 0 ? fieldLocales : undefined;
+}
+
 async function resolveBatchLocale(ctx: {
   runQuery: (queryRef: any, args: Record<string, unknown>) => Promise<unknown>;
 }, batch: Doc<"whatsappSendBatches">): Promise<AppLocale> {
@@ -927,6 +1212,11 @@ async function ensureMediaAssets(
           kind: kindFromMimeType(media.contentType),
           storageId: media.storageId,
           transcript: media.transcription,
+          fieldLocales: media.transcriptionLocale
+            ? {
+                transcript: media.transcriptionLocale,
+              }
+            : undefined,
           processingStatus: "processed",
         },
       )) as Id<"whatsappMediaAssets">;
@@ -936,6 +1226,11 @@ async function ensureMediaAssets(
         mimeType: media.contentType,
         kind: kindFromMimeType(media.contentType),
         transcript: media.transcription,
+        fieldLocales: media.transcriptionLocale
+          ? {
+              transcript: media.transcriptionLocale,
+            }
+          : undefined,
       });
     }
   }
@@ -943,13 +1238,13 @@ async function ensureMediaAssets(
   return assetsByKey;
 }
 
-async function resolveProjectChoice(data: BatchProcessingData) {
-  const suggestedProjectName = suggestProjectName(data.messages, data.batch.createdAt);
+async function resolveProjectChoice(data: BatchProcessingData): Promise<ProjectChoiceResult> {
+  const suggestedProjectLocation = suggestProjectLocation(data.messages, data.batch.createdAt);
 
   if (data.projects.length === 0) {
     return {
       kind: "need_name" as const,
-      suggestedProjectName,
+      suggestedProjectLocation,
       reason: "no_active_projects",
       routingContext: null,
     };
@@ -957,7 +1252,7 @@ async function resolveProjectChoice(data: BatchProcessingData) {
 
   const searchText = batchSearchText(data.messages);
   const exactProjectMatches = data.projects.filter((project) =>
-    hasExactNameMention(searchText, project.name),
+    hasExactNameMention(searchText, readProjectLocation(project)),
   );
   const exactCustomerMatches = data.customers.filter(
     (customer) =>
@@ -989,84 +1284,15 @@ async function resolveProjectChoice(data: BatchProcessingData) {
     customerHits,
   });
 
-  const matchedProject = matchProjectByName(data.projects, routingDecision.projectName);
-  if (
-    routingDecision.decision === "project" &&
-    matchedProject &&
-    routingDecision.confidence >= AUTO_ATTACH_MIN_CONFIDENCE
-  ) {
-    return {
-      kind: "selected" as const,
-      project: matchedProject,
-      reason: routingDecision.reason,
-      confidence: routingDecision.confidence,
-      routingContext,
-    };
-  }
-
-  const matchedCustomer = matchCustomerByName(data.customers, routingDecision.customerName);
-  if (
-    routingDecision.decision === "customer" &&
-    matchedCustomer &&
-    routingDecision.confidence >= AUTO_ATTACH_MIN_CONFIDENCE
-  ) {
-    const customerProjects = selectProjectsForCustomer({
-      projects: data.projects,
-      customerId: matchedCustomer._id,
-      projectHits,
-    });
-
-    if (customerProjects.length === 1) {
-      return {
-        kind: "selected" as const,
-        project: customerProjects[0]!,
-        reason: routingDecision.reason,
-        confidence: routingDecision.confidence,
-        routingContext,
-      };
-    }
-
-    if (customerProjects.length > 1) {
-      return {
-        kind: "choose" as const,
-        options: customerProjects,
-        reason: routingDecision.reason,
-        suggestedProjectName,
-        customerId: matchedCustomer._id,
-        routingContext,
-      };
-    }
-
-    return {
-      kind: "need_name" as const,
-      suggestedProjectName,
-      customerId: matchedCustomer._id,
-      reason: routingDecision.reason,
-      routingContext,
-    };
-  }
-
-  const similarProjectOptions = selectProjectOptionsFromHits(
-    data.projects,
-    projectHits.filter((hit) => hit.similarity >= VERY_SIMILAR_MATCH_THRESHOLD),
-  );
-
-  if (similarProjectOptions.length > 1 || (routingDecision.decision === "ambiguous" && similarProjectOptions.length > 0)) {
-    return {
-      kind: "choose" as const,
-      options: similarProjectOptions.slice(0, MAX_PROJECT_OPTIONS),
-      reason: routingDecision.reason,
-      suggestedProjectName,
-      routingContext,
-    };
-  }
-
-  return {
-    kind: "need_name" as const,
-    suggestedProjectName,
-    reason: routingDecision.reason,
+  return resolveProjectChoiceFromSignals({
+    projects: data.projects,
+    customers: data.customers,
+    exactProjectMatches,
+    projectHits,
+    routingDecision,
+    suggestedProjectLocation,
     routingContext,
-  };
+  });
 }
 
 async function finalizePreparedBatch(
@@ -1078,12 +1304,20 @@ async function finalizePreparedBatch(
   options: {
     data: BatchProcessingData;
     projectId: Id<"projects">;
-    projectName: string;
+    projectLocation: string;
     locale: AppLocale;
   },
 ): Promise<FinalizeResult> {
   const addedByName = await resolveAddedByName(ctx, options.data.batch);
   const mediaAssetsByKey = await ensureMediaAssets(ctx, options.data);
+  const detectedSourceTextLocales = await detectStoredLocalesForTextItems({
+    items: options.data.messages
+      .map((message) => ({
+        id: String(message._id),
+        text: normalizeWhitespace(message.text) ?? "",
+      }))
+      .filter((item) => item.text.length > 0),
+  });
   const preparedTimelineItems: PreparedTimelineItem[] = options.data.messages.map((message) => {
     const messageMediaAssets = message.media.map((_media, index) => {
       const entry = mediaAssetsByKey.get(`${String(message._id)}:${index}`);
@@ -1101,10 +1335,16 @@ async function finalizePreparedBatch(
         .map((asset) => asset.transcript ?? "")
         .join("\n"),
     );
+    const transcriptLocale = resolveUniformLocale(
+      messageMediaAssets.map((asset) => asset.fieldLocales?.transcript),
+    );
     const extractedText = normalizeWhitespace(
       messageMediaAssets
         .map((asset) => asset.extractedText ?? "")
         .join("\n"),
+    );
+    const extractedTextLocale = resolveUniformLocale(
+      messageMediaAssets.map((asset) => asset.fieldLocales?.extractedText),
     );
     const keywords = dedupeKeywords(
       messageMediaAssets.flatMap((asset) => asset.keywords ?? []),
@@ -1116,6 +1356,7 @@ async function finalizePreparedBatch(
       (messageMediaAssets.length > 0
         ? `${messageMediaAssets.length} media attachment${messageMediaAssets.length === 1 ? "" : "s"}`
         : undefined);
+    const sourceTextLocale = detectedSourceTextLocales[String(message._id)];
 
     return {
       messageId: message._id,
@@ -1126,6 +1367,15 @@ async function finalizePreparedBatch(
       extractedText,
       summary,
       keywords,
+      fieldLocales: derivePreparedTimelineFieldLocales({
+        sourceText,
+        sourceTextLocale,
+        transcript,
+        transcriptLocale,
+        extractedText,
+        extractedTextLocale,
+        summary,
+      }),
       mediaAssets: messageMediaAssets,
     };
   });
@@ -1165,7 +1415,7 @@ async function finalizePreparedBatch(
   });
 
   try {
-    await ctx.runAction((internal as any).documentationSearch.indexDocumentationOverviewByBatch, {
+      await ctx.runAction((internal as any).documentationSearch.indexDocumentationOverviewByBatch, {
       batchId: options.data.batch._id,
     });
   } catch (error) {
@@ -1176,7 +1426,7 @@ async function finalizePreparedBatch(
     message: documentationSavedMessage({
       locale: options.locale,
       count: options.data.messages.length,
-      projectName: options.projectName,
+      projectLocation: options.projectLocation,
     }),
   };
 }
@@ -1294,7 +1544,7 @@ export const processSendBatch = internalAction({
         const result = await finalizePreparedBatch(ctx, {
           data,
           projectId: choice.project._id,
-          projectName: choice.project.name,
+          projectLocation: readProjectLocation(choice.project) ?? "Unknown project",
           locale,
         });
         batchPersisted = true;
@@ -1335,15 +1585,15 @@ export const processSendBatch = internalAction({
           batchId: args.batchId,
           state: "awaiting_project_name",
           customerId: choice.customerId,
-          aiSuggestedProjectName: choice.suggestedProjectName,
+          aiSuggestedProjectName: choice.suggestedProjectLocation,
         });
 
         await ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
           phoneNumberE164: data.batch.phoneE164,
           locale,
-          text: documentationProjectNamePrompt({
+          text: documentationProjectLocationPrompt({
             locale,
-            suggestedProjectName: choice.suggestedProjectName,
+            suggestedProjectLocation: choice.suggestedProjectLocation,
           }),
         });
 
@@ -1366,11 +1616,8 @@ export const processSendBatch = internalAction({
         batchId: args.batchId,
         state: "awaiting_choice",
         customerId: choice.customerId,
-        options: choice.options.map((project) => ({
-          projectId: project._id,
-          projectName: project.name,
-        })),
-        aiSuggestedProjectName: choice.suggestedProjectName,
+        options: buildPendingProjectChoiceOptions(choice.options, data.customers),
+        aiSuggestedProjectName: choice.suggestedProjectLocation,
       });
 
       await ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
@@ -1378,10 +1625,8 @@ export const processSendBatch = internalAction({
         locale,
         text: documentationProjectChoiceMessage({
           locale,
-          projects: choice.options.map((project) => ({
-            name: project.name,
-          })),
-          suggestedProjectName: choice.suggestedProjectName,
+          projects: buildPendingProjectChoiceOptions(choice.options, data.customers),
+          suggestedProjectLocation: choice.suggestedProjectLocation,
         }),
       });
 
@@ -1443,7 +1688,7 @@ export const finalizeBatchToProject = internalAction({
       return await finalizePreparedBatch(ctx, {
         data,
         projectId: selectedProject._id,
-        projectName: selectedProject.name,
+        projectLocation: readProjectLocation(selectedProject) ?? "Unknown project",
         locale: args.locale,
       });
     } catch (error) {
@@ -1462,35 +1707,76 @@ export const finalizeBatchToProject = internalAction({
 export const createProjectAndFinalizeBatch = internalAction({
   args: {
     batchId: v.id("whatsappSendBatches"),
-    projectName: v.string(),
+    location: v.string(),
     customerId: v.optional(v.id("customers")),
     locale: v.union(v.literal("en"), v.literal("de")),
   },
-  returns: v.object({
-    message: v.string(),
-  }),
-  handler: async (ctx, args): Promise<{ message: string }> => {
+  returns: v.union(
+    v.object({
+      status: v.literal("saved"),
+      message: v.string(),
+    }),
+    v.object({
+      status: v.literal("awaiting_choice"),
+      message: v.string(),
+    }),
+  ),
+  handler: async (ctx, args): Promise<
+    | { status: "saved"; message: string }
+    | { status: "awaiting_choice"; message: string }
+  > => {
     const data = await loadBatchData(ctx, args.batchId);
 
     if (!data) {
       throw new ConvexError("Batch not found.");
     }
 
-    const normalizedProjectName = normalizeProjectName(args.projectName);
-    if (!normalizedProjectName) {
-      throw new ConvexError("Project name is invalid.");
+    const normalizedProjectLocation = normalizeProjectLocation(args.location);
+    if (!normalizedProjectLocation) {
+      throw new ConvexError("Project location is invalid.");
     }
 
-    const existingProject =
-      data.projects.find(
-        (project) =>
-          project.customerId === args.customerId &&
-          normalizeNameMatch(project.name) === normalizeNameMatch(normalizedProjectName),
-      ) ??
-      data.projects.find(
-        (project) => normalizeNameMatch(project.name) === normalizeNameMatch(normalizedProjectName),
-      ) ??
-      null;
+    const locationMatches = pickLocationMatches({
+      projects: data.projects,
+      projectLocation: normalizedProjectLocation,
+      customerId: args.customerId,
+    });
+
+    if (locationMatches.length > 1) {
+      const choiceOptions = buildPendingProjectChoiceOptions(
+        locationMatches,
+        data.customers,
+      );
+
+      await ctx.runMutation((internal as any).whatsappProcessingData.updateSendBatch, {
+        batchId: args.batchId,
+        status: "awaiting_project_choice",
+        error: "",
+        projectMatchReason: "multiple_existing_location_matches",
+        candidateProjectIds: choiceOptions.map((option) => option.projectId),
+      });
+      await ctx.runMutation((internal as any).whatsappProcessingData.upsertPendingResolution, {
+        organizationId: data.batch.organizationId,
+        phoneE164: data.batch.phoneE164,
+        memberId: data.batch.memberId,
+        batchId: args.batchId,
+        state: "awaiting_choice",
+        customerId: args.customerId,
+        options: choiceOptions,
+        aiSuggestedProjectName: normalizedProjectLocation,
+      });
+
+      return {
+        status: "awaiting_choice",
+        message: documentationProjectChoiceMessage({
+          locale: args.locale,
+          projects: choiceOptions,
+          suggestedProjectLocation: normalizedProjectLocation,
+        }),
+      };
+    }
+
+    const existingProject = locationMatches[0] ?? null;
 
     try {
       await ctx.runMutation((internal as any).whatsappProcessingData.clearPendingResolutionByBatch, {
@@ -1501,7 +1787,7 @@ export const createProjectAndFinalizeBatch = internalAction({
         status: "processing",
         error: "",
         projectId: existingProject?._id,
-        projectMatchReason: existingProject ? "selected_by_name" : "created_from_whatsapp",
+        projectMatchReason: existingProject ? "selected_by_location" : "created_from_whatsapp",
         candidateProjectIds: existingProject ? [existingProject._id] : [],
       });
 
@@ -1511,15 +1797,22 @@ export const createProjectAndFinalizeBatch = internalAction({
           organizationId: data.batch.organizationId,
           createdBy: data.batch.userId,
           customerId: args.customerId,
-          name: normalizedProjectName,
+          location: normalizedProjectLocation,
         })) as Id<"projects">);
 
-      return await finalizePreparedBatch(ctx, {
+      const result = await finalizePreparedBatch(ctx, {
         data,
         projectId,
-        projectName: existingProject?.name ?? normalizedProjectName,
+        projectLocation:
+          readProjectLocation(existingProject ?? { location: normalizedProjectLocation }) ??
+          normalizedProjectLocation,
         locale: args.locale,
       });
+
+      return {
+        status: "saved",
+        message: result.message,
+      };
     } catch (error) {
       await failBatch(ctx, {
         batchId: args.batchId,
@@ -1585,4 +1878,6 @@ export {
   batchSearchText,
   buildProjectSearchDocument,
   buildRoutingContextText,
+  findProjectsByLocation,
+  resolveProjectChoiceFromSignals,
 };

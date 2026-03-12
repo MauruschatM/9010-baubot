@@ -9,8 +9,8 @@ import {
   resolveProjectStatus,
 } from "./projectStatus";
 
-const PROJECT_NAME_MIN_LENGTH = 2;
-const PROJECT_NAME_MAX_LENGTH = 120;
+const PROJECT_LOCATION_MIN_LENGTH = 2;
+const PROJECT_LOCATION_MAX_LENGTH = 120;
 
 const sendBatchStatusValidator = v.union(
   v.literal("queued"),
@@ -48,14 +48,14 @@ function toUtcDayBucket(timestamp: number) {
   return new Date(timestamp).toISOString().slice(0, 10);
 }
 
-function normalizeProjectName(value: string) {
+function normalizeProjectLocation(value: string) {
   const normalized = value.trim();
 
-  if (normalized.length < PROJECT_NAME_MIN_LENGTH) {
+  if (normalized.length < PROJECT_LOCATION_MIN_LENGTH) {
     return null;
   }
 
-  if (normalized.length > PROJECT_NAME_MAX_LENGTH) {
+  if (normalized.length > PROJECT_LOCATION_MAX_LENGTH) {
     return null;
   }
 
@@ -467,7 +467,8 @@ export const upsertPendingResolution = internalMutation({
       v.array(
         v.object({
           projectId: v.id("projects"),
-          projectName: v.string(),
+          location: v.string(),
+          customerName: v.optional(v.string()),
         }),
       ),
     ),
@@ -691,16 +692,16 @@ export const createProjectForOrganization = internalMutation({
   args: {
     organizationId: v.string(),
     createdBy: v.string(),
-    name: v.string(),
+    location: v.string(),
     customerId: v.optional(v.id("customers")),
   },
   returns: v.id("projects"),
   handler: async (ctx, args) => {
-    const projectName = normalizeProjectName(args.name);
+    const projectLocation = normalizeProjectLocation(args.location);
 
-    if (!projectName) {
+    if (!projectLocation) {
       throw new ConvexError(
-        `Project name must be between ${PROJECT_NAME_MIN_LENGTH} and ${PROJECT_NAME_MAX_LENGTH} characters.`,
+        `Project location must be between ${PROJECT_LOCATION_MIN_LENGTH} and ${PROJECT_LOCATION_MAX_LENGTH} characters.`,
       );
     }
 
@@ -709,7 +710,7 @@ export const createProjectForOrganization = internalMutation({
       organizationId: args.organizationId,
       createdBy: args.createdBy,
       customerId: args.customerId,
-      name: projectName,
+      location: projectLocation,
       status: PROJECT_STATUS_ACTIVE,
       createdAt: now,
       updatedAt: now,

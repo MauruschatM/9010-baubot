@@ -25,7 +25,8 @@ const timelineMediaKindValidator = v.union(
 
 const pendingResolutionOptionValidator = v.object({
   projectId: v.id("projects"),
-  projectName: v.string(),
+  location: v.string(),
+  customerName: v.optional(v.string()),
 });
 
 const timelineMediaAssetValidator = v.object({
@@ -87,7 +88,7 @@ export default defineSchema({
     organizationId: v.string(),
     createdBy: v.string(),
     customerId: v.optional(v.id("customers")),
-    name: v.string(),
+    // Kept optional until legacy project names are backfilled into location.
     location: v.optional(v.string()),
     status: v.optional(projectStatusValidator),
     description: v.optional(v.string()),
@@ -149,7 +150,7 @@ export default defineSchema({
     timelineItemId: v.id("projectTimelineItems"),
     organizationId: v.string(),
     projectId: v.id("projects"),
-    projectName: v.string(),
+    projectLocation: v.string(),
     customerName: v.optional(v.string()),
     batchTitle: v.string(),
     summary: v.optional(v.string()),
@@ -379,6 +380,7 @@ export default defineSchema({
         fileName: v.optional(v.string()),
         mediaUrl: v.optional(v.string()),
         transcription: v.optional(v.string()),
+        transcriptionLocale: v.optional(vAppLocale),
         transcriptionModel: v.optional(v.string()),
       }),
     ),

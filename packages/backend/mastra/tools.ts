@@ -635,8 +635,7 @@ export type ArchivedCustomerSummary = {
 
 export type ProjectSummary = {
   id: string;
-  name: string;
-  location: string | null;
+  location: string;
   status: "active" | "done";
   customerId: string | null;
   customerName: string | null;
@@ -649,8 +648,7 @@ export type ProjectSummary = {
 
 export type ArchivedProjectSummary = {
   id: string;
-  name: string;
-  location: string | null;
+  location: string;
   status: "active" | "done";
   customerName: string | null;
   deletedAt: number;
@@ -675,7 +673,7 @@ export type ProjectTimelineBatchSummary = {
 export type DocumentationOverviewSearchHit = {
   batchId: string;
   projectId: string;
-  projectName: string;
+  projectLocation: string;
   customerName: string | null;
   title: string;
   summary: string | null;
@@ -788,14 +786,12 @@ export type CreateProjectToolsOptions = {
   }) => Promise<ProjectSummary[]>;
   getProject: (input: { projectId: string }) => Promise<ProjectSummary | null>;
   createProject?: (input: {
-    name: string;
-    location?: string;
+    location: string;
     customerId?: string;
   }) => Promise<ProjectSummary>;
   updateProject?: (input: {
     projectId: string;
-    name?: string;
-    location?: string | null;
+    location?: string;
     customerId?: string | null;
     status?: "active" | "done";
   }) => Promise<ProjectSummary>;
@@ -884,8 +880,7 @@ const archivedCustomerSummarySchema = z.object({
 
 const projectSummarySchema = z.object({
   id: z.string(),
-  name: z.string(),
-  location: z.union([z.string(), z.null()]),
+  location: z.string(),
   status: z.union([z.literal("active"), z.literal("done")]),
   customerId: z.union([z.string(), z.null()]),
   customerName: z.union([z.string(), z.null()]),
@@ -898,8 +893,7 @@ const projectSummarySchema = z.object({
 
 const archivedProjectSummarySchema = z.object({
   id: z.string(),
-  name: z.string(),
-  location: z.union([z.string(), z.null()]),
+  location: z.string(),
   status: z.union([z.literal("active"), z.literal("done")]),
   customerName: z.union([z.string(), z.null()]),
   deletedAt: z.number(),
@@ -924,7 +918,7 @@ const projectTimelineBatchSummarySchema = z.object({
 const documentationOverviewSearchHitSchema = z.object({
   batchId: z.string(),
   projectId: z.string(),
-  projectName: z.string(),
+  projectLocation: z.string(),
   customerName: z.union([z.string(), z.null()]),
   title: z.string(),
   summary: z.union([z.string(), z.null()]),
@@ -1453,8 +1447,7 @@ export function createProjectTools(options: CreateProjectToolsOptions) {
       id: "createProject",
       description: "Creates a project in the current organization.",
       inputSchema: z.object({
-        name: z.string(),
-        location: z.string().optional(),
+        location: z.string(),
         customerId: z.string().optional(),
       }),
       outputSchema: z.object({
@@ -1475,8 +1468,7 @@ export function createProjectTools(options: CreateProjectToolsOptions) {
         "Updates project fields. Provide only the fields that should change.",
       inputSchema: z.object({
         projectId: z.string(),
-        name: z.string().optional(),
-        location: z.union([z.string(), z.null()]).optional(),
+        location: z.string().optional(),
         customerId: z.union([z.string(), z.null()]).optional(),
         status: z.union([z.literal("active"), z.literal("done")]).optional(),
       }),

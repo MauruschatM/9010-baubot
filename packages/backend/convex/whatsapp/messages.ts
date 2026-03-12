@@ -210,14 +210,16 @@ export function documentationBusyMessage(locale: AppLocale) {
 
 export function documentationProjectChoiceMessage(options: {
   locale: AppLocale;
-  projects: Array<{ name: string }>;
-  suggestedProjectName?: string | null;
+  projects: Array<{ location: string; customerName?: string | null }>;
+  suggestedProjectLocation?: string | null;
 }) {
-  const lines = options.projects.map((project, index) => `${index + 1}. ${project.name}`);
+  const lines = options.projects.map(
+    (project, index) => `${index + 1}. ${formatProjectChoiceOption(project)}`,
+  );
 
   if (toBinaryLocale(options.locale) === "de") {
-    const suggestion = options.suggestedProjectName?.trim()
-      ? `Neues Projekt: ${options.suggestedProjectName.trim()}`
+    const suggestion = options.suggestedProjectLocation?.trim()
+      ? `Neues Projekt: ${options.suggestedProjectLocation.trim()}`
       : "Antworte mit 'Neu', wenn ich ein neues Projekt anlegen soll.";
 
     return [
@@ -230,8 +232,8 @@ export function documentationProjectChoiceMessage(options: {
       .join("\n");
   }
 
-  const suggestion = options.suggestedProjectName?.trim()
-    ? `New project suggestion: ${options.suggestedProjectName.trim()}`
+  const suggestion = options.suggestedProjectLocation?.trim()
+    ? `New project suggestion: ${options.suggestedProjectLocation.trim()}`
     : "Reply with 'New' if I should create a new project.";
 
   return [
@@ -244,41 +246,49 @@ export function documentationProjectChoiceMessage(options: {
     .join("\n");
 }
 
-export function documentationProjectNamePrompt(options: {
+export function documentationProjectLocationPrompt(options: {
   locale: AppLocale;
-  suggestedProjectName?: string | null;
+  suggestedProjectLocation?: string | null;
 }) {
   if (toBinaryLocale(options.locale) === "de") {
-    const suggestion = options.suggestedProjectName?.trim()
-      ? `Vorschlag: ${options.suggestedProjectName.trim()}`
+    const suggestion = options.suggestedProjectLocation?.trim()
+      ? `Vorschlag: ${options.suggestedProjectLocation.trim()}`
       : null;
 
     return [
-      "Wie soll das Projekt heißen?",
-      "Antworte einfach mit dem Projektnamen. Ich nutze ein bestehendes Projekt, falls es passt, oder lege es neu an.",
+      "Wie lautet der Projektort?",
+      "Antworte einfach mit dem Projektort. Ich nutze ein bestehendes Projekt, falls es passt, oder lege es neu an.",
       suggestion,
     ]
       .filter(Boolean)
       .join("\n");
   }
 
-  const suggestion = options.suggestedProjectName?.trim()
-    ? `Suggestion: ${options.suggestedProjectName.trim()}`
+  const suggestion = options.suggestedProjectLocation?.trim()
+    ? `Suggestion: ${options.suggestedProjectLocation.trim()}`
     : null;
 
   return [
-    "What should the project be called?",
-    "Reply with the project name. I’ll use an existing project if it matches, or create it if needed.",
+    "What is the project location?",
+    "Reply with the project location. I’ll use an existing project if it matches, or create it if needed.",
     suggestion,
   ]
     .filter(Boolean)
     .join("\n");
 }
 
-export function documentationProjectNameLengthMessage(locale: AppLocale) {
+export function formatProjectChoiceOption(project: {
+  location: string;
+  customerName?: string | null;
+}) {
+  const customerName = project.customerName?.trim();
+  return customerName ? `${project.location} (${customerName})` : project.location;
+}
+
+export function documentationProjectLocationLengthMessage(locale: AppLocale) {
   return toBinaryLocale(locale) === "de"
-    ? "Der Projektname muss zwischen 2 und 120 Zeichen lang sein."
-    : "The project name must be between 2 and 120 characters.";
+    ? "Der Projektort muss zwischen 2 und 120 Zeichen lang sein."
+    : "The project location must be between 2 and 120 characters.";
 }
 
 export function pendingVoiceReplyTypingFallbackMessage(locale: AppLocale) {
@@ -290,13 +300,13 @@ export function pendingVoiceReplyTypingFallbackMessage(locale: AppLocale) {
 export function documentationSavedMessage(options: {
   locale: AppLocale;
   count: number;
-  projectName: string;
+  projectLocation: string;
 }) {
   if (toBinaryLocale(options.locale) === "de") {
-    return `Erledigt. Ich habe ${options.count} WhatsApp-Nachricht${options.count === 1 ? "" : "en"} in ${options.projectName} dokumentiert.`;
+    return `Erledigt. Ich habe ${options.count} WhatsApp-Nachricht${options.count === 1 ? "" : "en"} in ${options.projectLocation} dokumentiert.`;
   }
 
-  return `Done. I documented ${options.count} WhatsApp message${options.count === 1 ? "" : "s"} in ${options.projectName}.`;
+  return `Done. I documented ${options.count} WhatsApp message${options.count === 1 ? "" : "s"} in ${options.projectLocation}.`;
 }
 
 export function documentationFailedMessage(locale: AppLocale) {

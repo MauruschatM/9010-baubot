@@ -610,8 +610,8 @@ export const messagesEn = {
         contactPersonPlaceholder: "Jane Miller",
         phoneLabel: "Phone",
         phonePlaceholder: "+49 171 123456",
-        projectNameLabel: "Project name",
-        projectNamePlaceholder: "Bathroom renovation",
+        projectNameLabel: "Location",
+        projectNamePlaceholder: "Musterstrasse 15, Berlin",
         locationLabel: "Location",
         locationPlaceholder: "Musterstrasse 15, Berlin",
       },
@@ -704,15 +704,15 @@ export const messagesEn = {
         doneTab: "Done",
       },
       form: {
-        projectNameLabel: "Project name",
-        projectNamePlaceholder: "Kitchen remodel",
+        projectNameLabel: "Location",
+        projectNamePlaceholder: "Musterstrasse 15, Berlin",
         locationLabel: "Location",
         locationPlaceholder: "Musterstrasse 15, Berlin",
         customerLabel: "Customer",
         noCustomerOption: "No customer",
       },
       customerDialog: {
-        titleNamed: "Customer for {projectName}",
+        titleNamed: "Customer for {projectLocation}",
         titleDefault: "Customer for project",
         description:
           "Assign an existing customer, create a new one, or update the linked customer in place.",
@@ -723,18 +723,18 @@ export const messagesEn = {
       dialogs: {
         createTitle: "Create project",
         createDescription:
-          "Projects collect WhatsApp documentation batches, a site location, and an optional customer link.",
+          "Projects collect WhatsApp documentation batches and use the location as the canonical label. You can optionally link a customer.",
         editTitle: "Edit project",
         editDescription:
-          "Keep project details stable so future WhatsApp updates can match reliably.",
+          "Keep the project location and linked customer stable so future WhatsApp updates can match reliably.",
         archiveTitle: "Archive project?",
         archiveDescriptionDefault:
           "This moves the selected project to the archive.",
         archiveDescriptionNamed:
-          "This moves {projectName} to the archive.",
+          "This moves {location} to the archive.",
         detailEditTitle: "Edit project",
         detailEditDescription:
-          "Update the project name, location, or linked customer.",
+          "Update the location or linked customer.",
         moveBatchTitle: "Move documentation batch",
         moveBatchDescription:
           "Reassign this batch if WhatsApp processing matched it to the wrong project.",
@@ -842,7 +842,7 @@ export const messagesEn = {
         customerEmailUpdateFailed: "Failed to update customer email.",
         emailSent: "Email sent to customer.",
         emailSendFailed: "Failed to send email.",
-        projectNameRequired: "Project name is required.",
+        locationRequired: "Location is required.",
         customerRemoved: "Customer removed from project.",
         customerCreatedAndLinked: "Customer created and linked.",
         customerSelectionRequired: "Select a customer first.",

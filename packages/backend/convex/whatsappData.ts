@@ -65,6 +65,7 @@ type WhatsAppMessageDoc = {
     fileName?: string;
     mediaUrl?: string;
     transcription?: string;
+    transcriptionLocale?: AppLocale;
     transcriptionModel?: string;
   }>;
   turnStatus: "buffered" | "sent_to_agent" | "ignored";
@@ -1018,6 +1019,7 @@ export const insertWhatsAppMessage = internalMutation({
         fileName: v.optional(v.string()),
         mediaUrl: v.optional(v.string()),
         transcription: v.optional(v.string()),
+        transcriptionLocale: v.optional(vAppLocale),
         transcriptionModel: v.optional(v.string()),
       }),
     ),

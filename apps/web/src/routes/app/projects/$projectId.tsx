@@ -122,8 +122,7 @@ type ProjectRecord = {
   _id: Id<"projects">;
   customerId?: Id<"customers">;
   customer?: CustomerSummary;
-  location?: string;
-  name: string;
+  location: string;
   status: ProjectStatus;
   createdAt: number;
   updatedAt: number;
@@ -363,8 +362,8 @@ function buildTimelineBatches(rows: TimelineItem[], t: Translator): BatchViewMod
     .sort((left, right) => right.badgeDate - left.badgeDate);
 }
 
-function buildDefaultEmailSubject(projectName: string, batchTitle: string) {
-  return `${projectName}: ${batchTitle}`;
+function buildDefaultEmailSubject(projectLocation: string, batchTitle: string) {
+  return `${projectLocation}: ${batchTitle}`;
 }
 
 function formatMediaDuration(durationInSeconds: number | undefined) {
@@ -722,8 +721,7 @@ function ProjectDetailRoute() {
   const [localizedRows, setLocalizedRows] = useState<TimelineItem[] | null>(null);
   const [isLoadingLocalizedRows, setIsLoadingLocalizedRows] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
-  const [projectName, setProjectName] = useState("");
-  const [projectLocation, setProjectLocation] = useState("");
+  const [editProjectLocation, setEditProjectLocation] = useState("");
   const [projectCustomerId, setProjectCustomerId] = useState("");
   const [isSavingProject, setIsSavingProject] = useState(false);
   const [isArchiveDialogOpen, setIsArchiveDialogOpen] = useState(false);
@@ -788,7 +786,7 @@ function ProjectDetailRoute() {
     }
 
     return activeProjectOptions.filter((candidate) =>
-      candidate.name.toLowerCase().includes(normalizedQuery),
+      candidate.location.toLowerCase().includes(normalizedQuery),
     );
   }, [activeProjectOptions, projectSearchQuery]);
   const dateFormatter = useMemo(
@@ -914,7 +912,7 @@ function ProjectDetailRoute() {
     let cancelled = false;
     setIsLoadingLocalizedRows(true);
 
-    void timelineLocalized({ projectId, limit: 500 })
+    void timelineLocalized({ projectId, limit: 500, viewerLocale: locale })
       .then((result) => {
         if (!cancelled) {
           setLocalizedRows(result.rows as TimelineItem[]);
@@ -936,15 +934,14 @@ function ProjectDetailRoute() {
     return () => {
       cancelled = true;
     };
-  }, [projectId, t, timelineLocalized]);
+  }, [locale, projectId, t, timelineLocalized]);
 
   useEffect(() => {
     if (!project) {
       return;
     }
 
-    setProjectName(project.name);
-    setProjectLocation(project.location ?? "");
+    setEditProjectLocation(project.location);
     setProjectCustomerId(project.customerId ? String(project.customerId) : "");
     void markReviewed({ projectId: project._id });
   }, [markReviewed, project]);
@@ -1005,9 +1002,9 @@ function ProjectDetailRoute() {
       return;
     }
 
-    const normalizedProjectName = projectName.trim();
-    if (!normalizedProjectName) {
-      toast.error(t("app.projects.toasts.projectNameRequired"));
+    const normalizedProjectLocation = editProjectLocation.trim();
+    if (!normalizedProjectLocation) {
+      toast.error(t("app.projects.toasts.locationRequired"));
       return;
     }
 
@@ -1015,8 +1012,7 @@ function ProjectDetailRoute() {
     try {
       await updateProject({
         projectId: project._id,
-        name: normalizedProjectName,
-        location: projectLocation || null,
+        location: normalizedProjectLocation,
         customerId: projectCustomerId ? (projectCustomerId as Id<"customers">) : null,
       });
       setIsEditDialogOpen(false);
@@ -1149,7 +1145,7 @@ function ProjectDetailRoute() {
     setPendingEmailBatchId(null);
     setComposingBatchId(batchId);
     setEmailRecipient(recipientEmail.trim());
-    setEmailSubject(buildDefaultEmailSubject(project.name, localizedBatch.title));
+    setEmailSubject(buildDefaultEmailSubject(project.location, localizedBatch.title));
     setEmailBody(localizedBatch.overview);
     setSelectedImageIds(
       localizedBatch.allMedia
@@ -1621,12 +1617,10 @@ function ProjectDetailRoute() {
           <form onSubmit={handleSaveProject} className="space-y-4">
             <ProjectFormFields
               idPrefix="project-detail"
-              name={projectName}
-              location={projectLocation}
+              location={editProjectLocation}
               customerId={projectCustomerId}
               customers={customers}
-              onNameChange={setProjectName}
-              onLocationChange={setProjectLocation}
+              onLocationChange={setEditProjectLocation}
               onCustomerIdChange={setProjectCustomerId}
               disabled={isSavingProject}
             />
@@ -1666,7 +1660,7 @@ function ProjectDetailRoute() {
             <DialogTitle>{t("app.projects.dialogs.archiveTitle")}</DialogTitle>
             <DialogDescription>
               {t("app.projects.dialogs.archiveDescriptionNamed", {
-                projectName: project.name,
+                location: project.location,
               })}
             </DialogDescription>
           </DialogHeader>
@@ -1743,7 +1737,7 @@ function ProjectDetailRoute() {
                         : "border-border hover:bg-muted/30",
                     ].join(" ")}
                   >
-                    <span>{candidate.name}</span>
+                    <span>{candidate.location}</span>
                     {isSelected ? <RiArrowRightSLine className="size-4" /> : null}
                   </button>
                 );

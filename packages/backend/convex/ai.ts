@@ -103,12 +103,12 @@ type ChatPageContext = {
     doneCount: number;
     currentProject?: {
       id: string;
-      name: string;
+      location: string;
       status: string;
     } | null;
     visibleProjects: Array<{
       id: string;
-      name: string;
+      location: string;
       status: string;
       hasUnreviewedChanges: boolean;
       hasNachtrag: boolean;
@@ -124,7 +124,7 @@ type ChatPageContext = {
     }>;
     visibleArchivedProjects: Array<{
       id: string;
-      name: string;
+      location: string;
       status: string;
       deletedAt: number;
     }>;
@@ -365,7 +365,7 @@ function normalizePageContext(
         currentProject: pageContext.projects.currentProject
           ? {
               id: normalizePageContextText(pageContext.projects.currentProject.id),
-              name: normalizePageContextText(pageContext.projects.currentProject.name),
+              location: normalizePageContextText(pageContext.projects.currentProject.location),
               status: normalizePageContextText(pageContext.projects.currentProject.status),
             }
           : null,
@@ -373,12 +373,12 @@ function normalizePageContext(
           .slice(0, MAX_PAGE_CONTEXT_ITEMS)
           .map((project) => ({
             id: normalizePageContextText(project.id),
-            name: normalizePageContextText(project.name),
+            location: normalizePageContextText(project.location),
             status: normalizePageContextText(project.status),
             hasUnreviewedChanges: Boolean(project.hasUnreviewedChanges),
             hasNachtrag: Boolean(project.hasNachtrag),
           }))
-          .filter((project) => project.id.length > 0 || project.name.length > 0),
+          .filter((project) => project.id.length > 0 || project.location.length > 0),
       }
     : null;
   const archive = pageContext.archive
@@ -401,11 +401,11 @@ function normalizePageContext(
           .slice(0, MAX_PAGE_CONTEXT_ITEMS)
           .map((project) => ({
             id: normalizePageContextText(project.id),
-            name: normalizePageContextText(project.name),
+            location: normalizePageContextText(project.location),
             status: normalizePageContextText(project.status),
             deletedAt: normalizeNonNegativeInteger(project.deletedAt),
           }))
-          .filter((project) => project.id.length > 0 || project.name.length > 0),
+          .filter((project) => project.id.length > 0 || project.location.length > 0),
       }
     : null;
   const shell = pageContext.shell
@@ -1145,7 +1145,7 @@ export const chat: any = action({
                 v.union(
                   v.object({
                     id: v.string(),
-                    name: v.string(),
+                    location: v.string(),
                     status: v.string(),
                   }),
                   v.null(),
@@ -1154,7 +1154,7 @@ export const chat: any = action({
               visibleProjects: v.array(
                 v.object({
                   id: v.string(),
-                  name: v.string(),
+                  location: v.string(),
                   status: v.string(),
                   hasUnreviewedChanges: v.boolean(),
                   hasNachtrag: v.boolean(),
@@ -1179,7 +1179,7 @@ export const chat: any = action({
               visibleArchivedProjects: v.array(
                 v.object({
                   id: v.string(),
-                  name: v.string(),
+                  location: v.string(),
                   status: v.string(),
                   deletedAt: v.number(),
                 }),

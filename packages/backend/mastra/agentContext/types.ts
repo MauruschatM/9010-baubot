@@ -58,7 +58,7 @@ export type AgentContextMembersPageSummary = {
 
 export type AgentContextProjectPreview = {
   id: string;
-  name: string;
+  location: string;
   status: string;
   hasUnreviewedChanges: boolean;
   hasNachtrag: boolean;
@@ -70,7 +70,7 @@ export type AgentContextProjectsPageSummary = {
   doneCount: number;
   currentProject: {
     id: string;
-    name: string;
+    location: string;
     status: string;
   } | null;
   visibleProjects: AgentContextProjectPreview[];
@@ -105,7 +105,7 @@ export type AgentContextArchivedCustomerPreview = {
 
 export type AgentContextArchivedProjectPreview = {
   id: string;
-  name: string;
+  location: string;
   status: string;
   deletedAt: number;
 };

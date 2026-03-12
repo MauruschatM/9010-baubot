@@ -94,12 +94,12 @@ export type AgentChatPageContext = {
     doneCount: number;
     currentProject: {
       id: string;
-      name: string;
+      location: string;
       status: string;
     } | null;
     visibleProjects: Array<{
       id: string;
-      name: string;
+      location: string;
       status: string;
       hasUnreviewedChanges: boolean;
       hasNachtrag: boolean;
@@ -115,7 +115,7 @@ export type AgentChatPageContext = {
     }>;
     visibleArchivedProjects: Array<{
       id: string;
-      name: string;
+      location: string;
       status: string;
       deletedAt: number;
     }>;

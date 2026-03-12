@@ -6,7 +6,6 @@ import {
   RiCheckLine,
   RiDownloadLine,
   RiEditLine,
-  RiMapPinLine,
   RiMoreFill,
   RiSearchLine,
   RiUser3Line,
@@ -72,8 +71,7 @@ type ProjectListItem = {
   _id: Id<"projects">;
   customerId?: Id<"customers">;
   customer?: CustomerSummary;
-  location?: string;
-  name: string;
+  location: string;
   status: ProjectStatus;
   updatedAt: number;
   createdAt: number;
@@ -91,13 +89,11 @@ function ProjectsRoute() {
   const [statusFilter, setStatusFilter] = useState<ProjectStatus>("active");
   const [searchQuery, setSearchQuery] = useState("");
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
-  const [createName, setCreateName] = useState("");
-  const [createLocation, setCreateLocation] = useState("");
+  const [createProjectLocation, setCreateProjectLocation] = useState("");
   const [createCustomerId, setCreateCustomerId] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [editingProject, setEditingProject] = useState<ProjectListItem | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editLocation, setEditLocation] = useState("");
+  const [editProjectLocation, setEditProjectLocation] = useState("");
   const [editCustomerId, setEditCustomerId] = useState("");
   const [isSavingEdit, setIsSavingEdit] = useState(false);
   const [archivingProject, setArchivingProject] = useState<ProjectListItem | null>(null);
@@ -134,8 +130,7 @@ function ProjectsRoute() {
 
         return (
           normalized.length === 0 ||
-          project.name.toLowerCase().includes(normalized) ||
-          project.location?.toLowerCase().includes(normalized)
+          project.location.toLowerCase().includes(normalized)
         );
       }),
       done: projects.filter((project) => {
@@ -145,8 +140,7 @@ function ProjectsRoute() {
 
         return (
           normalized.length === 0 ||
-          project.name.toLowerCase().includes(normalized) ||
-          project.location?.toLowerCase().includes(normalized)
+          project.location.toLowerCase().includes(normalized)
         );
       }),
     };
@@ -172,8 +166,7 @@ function ProjectsRoute() {
   }, []);
 
   const resetCreateForm = () => {
-    setCreateName("");
-    setCreateLocation("");
+    setCreateProjectLocation("");
     setCreateCustomerId("");
   };
 
@@ -182,8 +175,7 @@ function ProjectsRoute() {
     setIsCreating(true);
     try {
       const projectId = await createProject({
-        name: createName,
-        location: createLocation || undefined,
+        location: createProjectLocation,
         customerId: createCustomerId ? (createCustomerId as Id<"customers">) : undefined,
       });
       resetCreateForm();
@@ -211,8 +203,7 @@ function ProjectsRoute() {
     try {
       await updateProject({
         projectId: editingProject._id,
-        name: editName,
-        location: editLocation || null,
+        location: editProjectLocation,
         customerId: editCustomerId ? (editCustomerId as Id<"customers">) : null,
       });
       setEditingProject(null);
@@ -357,7 +348,7 @@ function ProjectsRoute() {
               <Checkbox
                 checked={selectedProjectIdSet.has(String(project._id))}
                 onCheckedChange={(checked) => handleProjectSelectionChange(project._id, checked)}
-                aria-label={t("app.projects.card.select", { name: project.name })}
+                aria-label={t("app.projects.card.select", { name: project.location })}
                 className="mt-0.5"
               />
               <div className="min-w-0 flex-1 space-y-2">
@@ -368,19 +359,13 @@ function ProjectsRoute() {
                     search={{ customerId: undefined }}
                     className="min-w-0 truncate font-medium text-sm hover:underline"
                   >
-                    {project.name}
+                    {project.location}
                   </Link>
                   <span className="shrink-0 text-xs text-muted-foreground">
                     {dateFormatter.format(project.updatedAt)}
                   </span>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                  {project.location ? (
-                    <span className="inline-flex items-center gap-1.5">
-                      <RiMapPinLine className="size-3.5" />
-                      {project.location}
-                    </span>
-                  ) : null}
                   {project.customer?.name ? <span>{project.customer.name}</span> : null}
                   {project.hasUnreviewedChanges ? (
                     <Badge variant="secondary">{t("app.projects.card.needsReview")}</Badge>
@@ -409,8 +394,7 @@ function ProjectsRoute() {
                   <DropdownMenuItem
                     onClick={() => {
                       setEditingProject(project);
-                      setEditName(project.name);
-                      setEditLocation(project.location ?? "");
+                      setEditProjectLocation(project.location);
                       setEditCustomerId(project.customerId ? String(project.customerId) : "");
                     }}
                   >
@@ -525,12 +509,10 @@ function ProjectsRoute() {
           <form onSubmit={handleCreateProject} className="space-y-4">
             <ProjectFormFields
               idPrefix="create"
-              name={createName}
-              location={createLocation}
+              location={createProjectLocation}
               customerId={createCustomerId}
               customers={customers}
-              onNameChange={setCreateName}
-              onLocationChange={setCreateLocation}
+              onLocationChange={setCreateProjectLocation}
               onCustomerIdChange={setCreateCustomerId}
               disabled={isCreating}
             />
@@ -562,12 +544,10 @@ function ProjectsRoute() {
           <form onSubmit={handleSaveEdit} className="space-y-4">
             <ProjectFormFields
               idPrefix="edit"
-              name={editName}
-              location={editLocation}
+              location={editProjectLocation}
               customerId={editCustomerId}
               customers={customers}
-              onNameChange={setEditName}
-              onLocationChange={setEditLocation}
+              onLocationChange={setEditProjectLocation}
               onCustomerIdChange={setEditCustomerId}
               disabled={isSavingEdit}
             />
@@ -597,7 +577,7 @@ function ProjectsRoute() {
             <DialogDescription>
               {archivingProject
                 ? t("app.projects.dialogs.archiveDescriptionNamed", {
-                    projectName: archivingProject.name,
+                    location: archivingProject.location,
                   })
                 : t("app.projects.dialogs.archiveDescriptionDefault")}
             </DialogDescription>

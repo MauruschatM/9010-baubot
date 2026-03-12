@@ -1,3 +1,5 @@
+import type { AppLocale } from "@mvp-template/i18n";
+
 import type { Id } from "../_generated/dataModel";
 
 export type TwilioInboundMedia = {
@@ -21,6 +23,7 @@ export type StoredWhatsAppMedia = {
   fileName?: string;
   mediaUrl?: string;
   transcription?: string;
+  transcriptionLocale?: AppLocale;
   transcriptionModel?: string;
 };
 

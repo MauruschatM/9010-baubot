@@ -14,7 +14,7 @@ import * as React from "react";
 
 type ProjectTimelineUpdateEmailProps = {
   preview: string;
-  projectName: string;
+  projectLocation: string;
   batchTitle: string;
   bodyText: string;
   imageAttachmentCount: number;
@@ -37,7 +37,7 @@ function renderBodyText(bodyText: string) {
 
 export function ProjectTimelineUpdateEmail({
   preview,
-  projectName,
+  projectLocation,
   batchTitle,
   bodyText,
   imageAttachmentCount,
@@ -51,7 +51,7 @@ export function ProjectTimelineUpdateEmail({
         <Container style={container}>
           <Text style={eyebrow}>Project documentation update</Text>
           <Heading style={heading}>{batchTitle}</Heading>
-          <Text style={subheading}>{projectName}</Text>
+          <Text style={subheading}>{projectLocation}</Text>
 
           <Section style={messageSection}>
             <Text style={messageText}>{renderBodyText(bodyText)}</Text>

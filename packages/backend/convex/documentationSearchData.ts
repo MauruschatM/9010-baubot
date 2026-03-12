@@ -14,7 +14,7 @@ function normalizeWhitespace(value: string | null | undefined) {
 }
 
 function buildDocumentationOverviewSearchText(options: {
-  projectName?: string;
+  projectLocation?: string;
   customerName?: string;
   batchTitle?: string;
   summary?: string;
@@ -24,7 +24,7 @@ function buildDocumentationOverviewSearchText(options: {
 }) {
   return normalizeWhitespace(
     [
-      options.projectName ? `Project: ${options.projectName}` : null,
+      options.projectLocation ? `Project: ${options.projectLocation}` : null,
       options.customerName ? `Customer: ${options.customerName}` : null,
       options.batchTitle ? `Title: ${options.batchTitle}` : null,
       options.summary ? `Summary: ${options.summary}` : null,
@@ -93,8 +93,9 @@ function mapDocumentationOverviewSource(options: {
     return null;
   }
 
-  const projectName =
-    normalizeWhitespace(options.project?.name) ??
+  const projectLocation =
+    normalizeWhitespace(options.project?.location) ??
+    normalizeWhitespace((options.project as (Doc<"projects"> & { name?: string }) | null)?.name) ??
     normalizeWhitespace(options.row.batchTitle) ??
     "Unknown project";
   const customerName = normalizeWhitespace(options.customer?.name) ?? null;
@@ -102,7 +103,7 @@ function mapDocumentationOverviewSource(options: {
   const summary = normalizeWhitespace(options.row.summary) ?? null;
   const nachtragDetails = normalizeWhitespace(options.row.nachtragDetails);
   const searchText = buildDocumentationOverviewSearchText({
-    projectName,
+    projectLocation,
     customerName: customerName ?? undefined,
     batchTitle,
     summary: summary ?? undefined,
@@ -120,7 +121,7 @@ function mapDocumentationOverviewSource(options: {
     timelineItemId: options.row._id,
     organizationId: options.row.organizationId,
     projectId: options.row.projectId,
-    projectName,
+    projectLocation,
     customerName,
     batchTitle,
     summary,
@@ -266,7 +267,7 @@ export const upsertDocumentationOverviewEmbedding = internalMutation({
     timelineItemId: v.id("projectTimelineItems"),
     organizationId: v.string(),
     projectId: v.id("projects"),
-    projectName: v.string(),
+    projectLocation: v.string(),
     customerName: v.optional(v.string()),
     batchTitle: v.string(),
     summary: v.optional(v.string()),
@@ -291,7 +292,7 @@ export const upsertDocumentationOverviewEmbedding = internalMutation({
         timelineItemId: args.timelineItemId,
         organizationId: args.organizationId,
         projectId: args.projectId,
-        projectName: args.projectName,
+        projectLocation: args.projectLocation,
         customerName: args.customerName,
         batchTitle: args.batchTitle,
         summary: args.summary,
@@ -312,7 +313,7 @@ export const upsertDocumentationOverviewEmbedding = internalMutation({
       timelineItemId: args.timelineItemId,
       organizationId: args.organizationId,
       projectId: args.projectId,
-      projectName: args.projectName,
+      projectLocation: args.projectLocation,
       customerName: args.customerName,
       batchTitle: args.batchTitle,
       summary: args.summary,

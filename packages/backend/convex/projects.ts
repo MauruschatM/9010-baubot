@@ -17,14 +17,19 @@ import {
 } from "./customerFields";
 import { normalizeAppLocale, vAppLocale } from "./lib/locales";
 import {
+  normalizeProjectLocationInput,
+  normalizeOptionalProjectLocationInput,
+  requireProjectLocation,
+  readProjectLocation,
+} from "./projectFields";
+import {
   PROJECT_STATUS_ACTIVE,
   projectStatusValidator,
   resolveProjectStatus,
 } from "./projectStatus";
 
-const MAX_PROJECT_NAME_LENGTH = 120;
-const MAX_PROJECT_LOCATION_LENGTH = 160;
 const MAX_TIMELINE_ITEMS = 500;
+const LEGACY_PROJECT_BACKFILL_BATCH_SIZE = 100;
 
 const timelineMediaKindValidator = v.union(
   v.literal("image"),
@@ -68,8 +73,7 @@ const projectResponseFields = {
   organizationId: v.string(),
   createdBy: v.string(),
   customerId: v.optional(v.id("customers")),
-  name: v.string(),
-  location: v.optional(v.string()),
+  location: v.string(),
   status: projectStatusValidator,
   createdAt: v.number(),
   updatedAt: v.number(),
@@ -94,6 +98,14 @@ type MemberDoc = {
   userId: string;
 };
 
+type LegacyProjectDoc = Doc<"projects"> & {
+  name?: string;
+};
+
+function resolveProjectLocation(project: Doc<"projects">) {
+  return requireProjectLocation(project as LegacyProjectDoc);
+}
+
 function toProjectResponse(
   project: Doc<"projects">,
   customer?: ReturnType<typeof toCustomerResponse>,
@@ -104,8 +116,7 @@ function toProjectResponse(
     organizationId: project.organizationId,
     createdBy: project.createdBy,
     customerId: project.customerId,
-    name: project.name,
-    location: project.location,
+    location: resolveProjectLocation(project),
     status: resolveProjectStatus(project.status),
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
@@ -121,41 +132,6 @@ function toArchivedProjectResponse(
     ...toProjectResponse(project, customer),
     deletedAt: project.deletedAt ?? project.updatedAt,
   };
-}
-
-function normalizeName(name: string) {
-  const normalized = name.trim();
-
-  if (normalized.length === 0) {
-    throw new ConvexError("Project name is required");
-  }
-
-  if (normalized.length > MAX_PROJECT_NAME_LENGTH) {
-    throw new ConvexError(
-      `Project name cannot exceed ${MAX_PROJECT_NAME_LENGTH} characters`,
-    );
-  }
-
-  return normalized;
-}
-
-function normalizeLocation(location: string | undefined) {
-  if (location === undefined) {
-    return undefined;
-  }
-
-  const normalized = location.trim();
-  if (normalized.length === 0) {
-    return undefined;
-  }
-
-  if (normalized.length > MAX_PROJECT_LOCATION_LENGTH) {
-    throw new ConvexError(
-      `Project location cannot exceed ${MAX_PROJECT_LOCATION_LENGTH} characters`,
-    );
-  }
-
-  return normalized;
 }
 
 function ensureProjectBelongsToOrganization(
@@ -819,8 +795,7 @@ export const timeline = query({
 
 export const create = mutation({
   args: {
-    name: v.string(),
-    location: v.optional(v.string()),
+    location: v.string(),
     customerId: v.optional(v.id("customers")),
   },
   returns: v.id("projects"),
@@ -836,8 +811,7 @@ export const create = mutation({
       organizationId: organization.id,
       createdBy: userId,
       customerId: customer?._id,
-      name: normalizeName(args.name),
-      location: normalizeLocation(args.location),
+      location: normalizeProjectLocationInput(args.location),
       status: PROJECT_STATUS_ACTIVE,
       createdAt: now,
       updatedAt: now,
@@ -942,8 +916,7 @@ export const createForOrganization = internalMutation({
   args: {
     organizationId: v.string(),
     userId: v.string(),
-    name: v.string(),
-    location: v.optional(v.string()),
+    location: v.string(),
     customerId: v.optional(v.id("customers")),
   },
   returns: v.id("projects"),
@@ -956,8 +929,7 @@ export const createForOrganization = internalMutation({
       organizationId: args.organizationId,
       createdBy: args.userId,
       customerId: customer?._id,
-      name: normalizeName(args.name),
-      location: normalizeLocation(args.location),
+      location: normalizeProjectLocationInput(args.location),
       status: PROJECT_STATUS_ACTIVE,
       createdAt: now,
       updatedAt: now,
@@ -970,8 +942,7 @@ export const updateForOrganization = internalMutation({
     organizationId: v.string(),
     userId: v.string(),
     projectId: v.id("projects"),
-    name: v.optional(v.string()),
-    location: v.optional(v.union(v.string(), v.null())),
+    location: v.optional(v.string()),
     customerId: v.optional(v.union(v.id("customers"), v.null())),
     status: v.optional(projectStatusValidator),
   },
@@ -984,7 +955,6 @@ export const updateForOrganization = internalMutation({
     }
 
     const noFieldChanges =
-      args.name === undefined &&
       args.location === undefined &&
       args.customerId === undefined &&
       args.status === undefined;
@@ -996,12 +966,8 @@ export const updateForOrganization = internalMutation({
       updatedAt: Date.now(),
     };
 
-    if (args.name !== undefined) {
-      patch.name = normalizeName(args.name);
-    }
-
     if (args.location !== undefined) {
-      patch.location = normalizeLocation(args.location ?? undefined);
+      patch.location = normalizeProjectLocationInput(args.location);
     }
 
     if (args.customerId !== undefined) {
@@ -1062,8 +1028,7 @@ export const restoreForOrganization = internalMutation({
 export const update = mutation({
   args: {
     projectId: v.id("projects"),
-    name: v.optional(v.string()),
-    location: v.optional(v.union(v.string(), v.null())),
+    location: v.optional(v.string()),
     customerId: v.optional(v.union(v.id("customers"), v.null())),
     status: v.optional(projectStatusValidator),
   },
@@ -1076,7 +1041,6 @@ export const update = mutation({
     }
 
     const noFieldChanges =
-      args.name === undefined &&
       args.location === undefined &&
       args.customerId === undefined &&
       args.status === undefined;
@@ -1088,12 +1052,8 @@ export const update = mutation({
       updatedAt: Date.now(),
     };
 
-    if (args.name !== undefined) {
-      patch.name = normalizeName(args.name);
-    }
-
     if (args.location !== undefined) {
-      patch.location = normalizeLocation(args.location ?? undefined);
+      patch.location = normalizeProjectLocationInput(args.location);
     }
 
     if (args.customerId !== undefined) {
@@ -1251,5 +1211,61 @@ export const reassignBatchProjectForOrganizationUser = internalMutation({
       batchId: args.batchId,
       targetProjectId: args.targetProjectId,
     });
+  },
+});
+
+export const backfillLocationsFromLegacyNames = internalMutation({
+  args: {
+    cursor: v.optional(v.string()),
+  },
+  returns: v.object({
+    processed: v.number(),
+    hasMore: v.boolean(),
+    continueCursor: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const result = await ctx.db
+      .query("projects")
+      .paginate({
+        numItems: LEGACY_PROJECT_BACKFILL_BATCH_SIZE,
+        cursor: args.cursor ?? null,
+      });
+
+    let processed = 0;
+
+    for (const project of result.page) {
+      const legacyProject = project as LegacyProjectDoc;
+      const legacyLocation = readProjectLocation(legacyProject);
+
+      if (!legacyLocation) {
+        continue;
+      }
+
+      const {
+        _creationTime,
+        _id,
+        name: legacyName,
+        ...replacement
+      } = legacyProject;
+
+      if (
+        legacyName === undefined &&
+        normalizeOptionalProjectLocationInput(replacement.location) === legacyLocation
+      ) {
+        continue;
+      }
+
+      await ctx.db.replace(project._id, {
+        ...replacement,
+        location: legacyLocation,
+      });
+      processed += 1;
+    }
+
+    return {
+      processed,
+      hasMore: !result.isDone,
+      continueCursor: result.isDone ? undefined : result.continueCursor,
+    };
   },
 });
