@@ -75,6 +75,7 @@ import {
   workingOnThatMessage,
 } from "./whatsapp/messages";
 import {
+  extractDocumentationTextFromSendCommand,
   extractEmailCandidate,
   inferLocaleFromPhoneNumber,
   isAffirmativeAnswer,
@@ -459,6 +460,65 @@ async function buildStoredInboundMediaEntries(options: {
   }
 
   return mediaEntries;
+}
+
+type StoredInboundMediaResolver = typeof buildStoredInboundMediaEntries;
+
+export async function persistInboundDocumentationMessage(options: {
+  ctx: {
+    runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
+    storage: {
+      store: (blob: Blob) => Promise<Id<"_storage">>;
+    };
+  };
+  locale: AppLocale;
+  payload: TwilioInboundPayload;
+  phoneNumberE164: string;
+  connection: WhatsAppConnectionDoc;
+  threadId: string;
+  bodyText: string;
+  resolveMediaEntries?: StoredInboundMediaResolver;
+}) {
+  const resolveMediaEntries =
+    options.resolveMediaEntries ?? buildStoredInboundMediaEntries;
+  const mediaEntries = await resolveMediaEntries({
+    locale: options.locale,
+    media: options.payload.media,
+    store: options.ctx.storage.store,
+  });
+  const normalizedBody = clampMessageText(options.bodyText);
+
+  if (!normalizedBody && mediaEntries.length === 0) {
+    return null;
+  }
+
+  const insertedMessage = (await options.ctx.runMutation(
+    internal.whatsappData.insertWhatsAppMessage,
+    {
+      providerMessageSid: options.payload.messageSid,
+      direction: "inbound",
+      phoneNumberE164: options.phoneNumberE164,
+      connectionId: options.connection._id,
+      organizationId: options.connection.organizationId,
+      userId: options.connection.userId,
+      memberId: options.connection.memberId,
+      threadId: options.threadId,
+      text: normalizedBody,
+      media: mediaEntries,
+      turnStatus: "buffered",
+    },
+  )) as { id: Id<"whatsappMessages"> };
+
+  await options.ctx.runMutation(internal.whatsappData.addMessageToTurnBuffer, {
+    connectionId: options.connection._id,
+    organizationId: options.connection.organizationId,
+    userId: options.connection.userId,
+    memberId: options.connection.memberId,
+    threadId: options.threadId,
+    messageId: insertedMessage.id,
+  });
+
+  return insertedMessage.id;
 }
 
 export async function resolvePendingReplyInput(options: {
@@ -2261,6 +2321,16 @@ async function processConnectedInbound(options: {
     const effectiveCommandText = normalizeCommandText(pendingReplyInput.text);
 
     if (isAffirmativeAnswer(effectiveCommandText)) {
+      await persistInboundDocumentationMessage({
+        ctx: options.ctx,
+        locale: options.locale,
+        payload: options.payload,
+        phoneNumberE164: options.phoneNumberE164,
+        connection: options.connection,
+        threadId,
+        bodyText: isAffirmativeAnswer(options.payload.body) ? "" : options.payload.body,
+      });
+
       const batchResult = await startDocumentationBatch({
         ctx: options.ctx,
         locale: options.locale,
@@ -2369,6 +2439,16 @@ async function processConnectedInbound(options: {
   }
 
   if (isSendCommand(commandText)) {
+    await persistInboundDocumentationMessage({
+      ctx: options.ctx,
+      locale: options.locale,
+      payload: options.payload,
+      phoneNumberE164: options.phoneNumberE164,
+      connection: options.connection,
+      threadId,
+      bodyText: extractDocumentationTextFromSendCommand(options.payload.body),
+    });
+
     const batchResult = await startDocumentationBatch({
       ctx: options.ctx,
       locale: options.locale,

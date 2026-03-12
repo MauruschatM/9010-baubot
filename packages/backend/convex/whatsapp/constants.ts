@@ -14,6 +14,7 @@ export const WHATSAPP_AGENT_MODEL = "google/gemini-3.1-pro";
 export const WHATSAPP_TRANSCRIPTION_MODEL = "whisper-large-v3";
 
 export const WHATSAPP_SUPPORTED_SEND_COMMANDS = [
+  "/send",
   "abschicken",
   "abschicken bitte",
   "dokumentiere das",

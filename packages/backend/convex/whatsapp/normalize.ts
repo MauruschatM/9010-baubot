@@ -72,6 +72,26 @@ export function isSendCommand(value: string) {
   );
 }
 
+export function extractDocumentationTextFromSendCommand(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const normalized = normalizeCommandText(trimmed);
+  if (WHATSAPP_SUPPORTED_SEND_COMMANDS.some((command) => normalized === command)) {
+    return "";
+  }
+
+  return trimmed
+    .replace(/(^|\s)\/send(?=$|\s)/gi, " ")
+    .replace(/(^|\s)send(?=$|\s)/gi, " ")
+    .replace(/(^|\s)senden(?=$|\s)/gi, " ")
+    .replace(/(^|\s)abschicken(?=$|\s)/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function isNegativeCommand(value: string) {
   const normalized = normalizeCommandText(value);
   return WHATSAPP_SUPPORTED_NEGATIVE_COMMANDS.some((command) => normalized === command);
