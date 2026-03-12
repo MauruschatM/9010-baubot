@@ -19,7 +19,8 @@
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build",
-    "check-types": "turbo check-types",
+    "check-types": "turbo run check-types",
+    "typecheck": "bun run check-types",
     "dev:native": "turbo -F native dev",
     "dev:web": "turbo -F web dev",
     "dev:server": "turbo -F @mvp-template/backend dev",

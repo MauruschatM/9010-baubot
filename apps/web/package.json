@@ -5,6 +5,7 @@
   "scripts": {
     "build": "vite build",
     "build:vercel": "if [ \"$VERCEL_ENV\" = \"production\" ]; then cd ../../packages/backend && ./node_modules/.bin/convex deploy --cmd 'export VITE_CONVEX_SITE_URL=\"$CONVEX_SITE_URL\" && cd ../../apps/web && bun run build' --cmd-url-env-var-name VITE_CONVEX_URL; else bun run build; fi",
+    "check-types": "tsc -p tsconfig.json --noEmit",
     "serve": "vite preview",
     "dev": "vite dev"
   },
