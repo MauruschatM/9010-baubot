@@ -508,6 +508,18 @@ export async function resolvePendingReplyInput(options: {
   };
 }
 
+export function shouldDeferMediaOnlyTurn(options: {
+  currentMessageHasMedia: boolean;
+  hasAnyText: boolean;
+  transcriptionText: string | null;
+}) {
+  return (
+    options.currentMessageHasMedia &&
+    !options.hasAnyText &&
+    !(options.transcriptionText?.trim() ?? "")
+  );
+}
+
 function sleep(milliseconds: number) {
   return new Promise((resolve) => {
     setTimeout(resolve, milliseconds);
@@ -2428,7 +2440,13 @@ async function processConnectedInbound(options: {
     (message) => message.text.trim().length > 0,
   );
 
-  if (options.payload.media.length > 0) {
+  if (
+    shouldDeferMediaOnlyTurn({
+      currentMessageHasMedia: options.payload.media.length > 0,
+      hasAnyText,
+      transcriptionText: aggregatedTranscription || null,
+    })
+  ) {
     await scheduleDocumentationReminder({
       ctx: options.ctx,
       bufferId: turnBuffer._id,

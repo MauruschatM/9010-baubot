@@ -4,6 +4,7 @@ import {
   handlePendingProjectResolution,
   processPendingClarification,
   resolvePendingReplyInput,
+  shouldDeferMediaOnlyTurn,
 } from "../convex/whatsapp";
 import {
   documentationProjectChoiceMessage,
@@ -78,6 +79,26 @@ describe("whatsapp pending reply handling", () => {
       hadMedia: true,
       transcriptionAttempted: true,
     });
+  });
+
+  test("does not defer a voice-only turn when a transcript exists", () => {
+    expect(
+      shouldDeferMediaOnlyTurn({
+        currentMessageHasMedia: true,
+        hasAnyText: false,
+        transcriptionText: "Bitte dokumentiere das fuer Nikias Wohnung",
+      }),
+    ).toBe(false);
+  });
+
+  test("still defers true media-only turns without text or transcript", () => {
+    expect(
+      shouldDeferMediaOnlyTurn({
+        currentMessageHasMedia: true,
+        hasAnyText: false,
+        transcriptionText: null,
+      }),
+    ).toBe(true);
   });
 
   test("finalizes an awaiting project-name batch from a transcribed voice reply", async () => {
