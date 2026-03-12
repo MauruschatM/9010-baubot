@@ -281,6 +281,12 @@ export function documentationProjectNameLengthMessage(locale: AppLocale) {
     : "The project name must be between 2 and 120 characters.";
 }
 
+export function pendingVoiceReplyTypingFallbackMessage(locale: AppLocale) {
+  return toBinaryLocale(locale) === "de"
+    ? "Ich konnte deine Sprachnachricht nicht sicher lesen. Bitte antworte kurz als Text."
+    : "I couldn't reliably transcribe that voice reply. Please answer briefly in text.";
+}
+
 export function documentationSavedMessage(options: {
   locale: AppLocale;
   count: number;

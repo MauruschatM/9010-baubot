@@ -1201,12 +1201,34 @@ async function failBatch(
   });
 
   if (options.notifyMember) {
-    await ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
-      phoneNumberE164: options.phoneNumberE164,
-      locale: options.locale,
-      text: documentationFailedMessage(options.locale),
-    });
+    try {
+      await ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+        phoneNumberE164: options.phoneNumberE164,
+        locale: options.locale,
+        text: documentationFailedMessage(options.locale),
+      });
+    } catch (notificationError) {
+      console.error("WhatsApp documentation failure notification could not be delivered", {
+        batchId: String(options.batchId),
+        reason: errorMessageFromUnknown(notificationError),
+      });
+    }
   }
+}
+
+async function recordCompletedBatchDeliveryError(
+  ctx: {
+    runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
+  },
+  options: {
+    batchId: Id<"whatsappSendBatches">;
+    error: unknown;
+  },
+) {
+  await ctx.runMutation((internal as any).whatsappProcessingData.updateSendBatch, {
+    batchId: options.batchId,
+    error: `WhatsApp delivery failed: ${errorMessageFromUnknown(options.error)}`,
+  });
 }
 
 export const processSendBatch = internalAction({
@@ -1224,6 +1246,7 @@ export const processSendBatch = internalAction({
     }
 
     const locale = await resolveBatchLocale(ctx, data.batch);
+    let batchPersisted = false;
 
     try {
       await ctx.runMutation((internal as any).whatsappProcessingData.clearPendingResolutionByBatch, {
@@ -1253,12 +1276,21 @@ export const processSendBatch = internalAction({
           projectName: choice.project.name,
           locale,
         });
+        batchPersisted = true;
 
-        await ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
-          phoneNumberE164: data.batch.phoneE164,
-          locale,
-          text: result.message,
-        });
+        try {
+          await ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+            phoneNumberE164: data.batch.phoneE164,
+            locale,
+            text: result.message,
+          });
+        } catch (deliveryError) {
+          await recordCompletedBatchDeliveryError(ctx, {
+            batchId: args.batchId,
+            error: deliveryError,
+          });
+          throw deliveryError;
+        }
 
         return result;
       }
@@ -1331,6 +1363,10 @@ export const processSendBatch = internalAction({
         message: null,
       };
     } catch (error) {
+      if (batchPersisted) {
+        throw error;
+      }
+
       await failBatch(ctx, {
         batchId: args.batchId,
         phoneNumberE164: data.batch.phoneE164,

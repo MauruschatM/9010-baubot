@@ -62,6 +62,7 @@ import {
   onboardingGreetingMessages,
   onboardingPasswordAttemptsExceededMessage,
   onboardingSwitchHintMessage,
+  pendingVoiceReplyTypingFallbackMessage,
   processingFallbackMessage,
   readyQuestionMessage,
   switchPromptMessage,
@@ -224,6 +225,20 @@ type OnboardingSessionDoc = {
   updatedAt: number;
 };
 
+type PendingReplyInput = {
+  text: string;
+  source: "body" | "transcript" | "none";
+  hadMedia: boolean;
+  transcriptionAttempted: boolean;
+};
+
+type PendingHandlingResult = {
+  handled: boolean;
+  reply?: string | null;
+  batchId?: Id<"whatsappSendBatches">;
+  deliveryStage?: "pre_persistence" | "post_persistence";
+};
+
 type ChatAttachment = {
   name?: string;
   contentType: string;
@@ -345,6 +360,152 @@ function normalizeProjectNameCandidate(value: string) {
   }
 
   return normalized;
+}
+
+function isTranscribableMediaContentType(contentType: string) {
+  return contentType.startsWith("audio/") || contentType.startsWith("video/");
+}
+
+async function fetchInboundMediaBlob(mediaItem: TwilioInboundPayload["media"][number]) {
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  if (!accountSid || !authToken) {
+    return null;
+  }
+
+  const mediaResponse = await fetch(mediaItem.mediaUrl, {
+    headers: {
+      Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,
+    },
+  });
+
+  if (!mediaResponse.ok) {
+    return null;
+  }
+
+  return await mediaResponse.blob();
+}
+
+async function transcribePendingReplyMedia(options: {
+  locale: AppLocale;
+  media: TwilioInboundPayload["media"];
+}) {
+  const transcriptions: string[] = [];
+  let transcriptionAttempted = false;
+
+  for (const mediaItem of options.media) {
+    if (!isTranscribableMediaContentType(mediaItem.contentType)) {
+      continue;
+    }
+
+    transcriptionAttempted = true;
+    const mediaBlob = await fetchInboundMediaBlob(mediaItem);
+    if (!mediaBlob) {
+      continue;
+    }
+
+    const mediaBytes = new Uint8Array(await mediaBlob.arrayBuffer());
+    const transcription = await transcribeWhatsAppMedia({
+      fileBytes: mediaBytes,
+      contentType: mediaItem.contentType,
+      locale: options.locale,
+    });
+
+    const normalizedTranscription = clampMessageText(transcription ?? "");
+    if (normalizedTranscription) {
+      transcriptions.push(normalizedTranscription);
+    }
+  }
+
+  return {
+    text: transcriptions.join("\n").trim(),
+    transcriptionAttempted,
+  };
+}
+
+async function buildStoredInboundMediaEntries(options: {
+  locale: AppLocale;
+  media: TwilioInboundPayload["media"];
+  store: (blob: Blob) => Promise<Id<"_storage">>;
+}) {
+  const mediaEntries: StoredWhatsAppMedia[] = [];
+
+  for (const mediaItem of options.media) {
+    try {
+      const mediaBlob = await fetchInboundMediaBlob(mediaItem);
+      if (!mediaBlob) {
+        continue;
+      }
+
+      const mediaBytes = new Uint8Array(await mediaBlob.arrayBuffer());
+      const storageId = await options.store(mediaBlob);
+      const transcription = await transcribeWhatsAppMedia({
+        fileBytes: mediaBytes,
+        contentType: mediaItem.contentType,
+        locale: options.locale,
+      });
+
+      mediaEntries.push({
+        storageId,
+        contentType: mediaItem.contentType,
+        fileName: mediaItem.fileName,
+        mediaUrl: mediaItem.mediaUrl,
+        transcription: transcription ?? undefined,
+        transcriptionModel: transcription ? "groq:whisper-large-v3" : undefined,
+      });
+    } catch {
+      // Skip failed media item.
+    }
+  }
+
+  return mediaEntries;
+}
+
+export async function resolvePendingReplyInput(options: {
+  body: string;
+  locale: AppLocale;
+  media: TwilioInboundPayload["media"];
+  resolveTranscript?: (
+    media: TwilioInboundPayload["media"],
+  ) => Promise<string | null>;
+}): Promise<PendingReplyInput> {
+  const normalizedBody = clampMessageText(options.body);
+  if (normalizedBody) {
+    return {
+      text: normalizedBody,
+      source: "body",
+      hadMedia: options.media.length > 0,
+      transcriptionAttempted: false,
+    };
+  }
+
+  const hadMedia = options.media.length > 0;
+  const transcribableMedia = options.media.filter((mediaItem) =>
+    isTranscribableMediaContentType(mediaItem.contentType),
+  );
+  if (transcribableMedia.length === 0) {
+    return {
+      text: "",
+      source: "none",
+      hadMedia,
+      transcriptionAttempted: false,
+    };
+  }
+
+  const resolvedTranscript = options.resolveTranscript
+    ? await options.resolveTranscript(transcribableMedia)
+    : (await transcribePendingReplyMedia({
+        locale: options.locale,
+        media: transcribableMedia,
+      })).text;
+
+  const normalizedTranscript = clampMessageText(resolvedTranscript ?? "");
+  return {
+    text: normalizedTranscript,
+    source: normalizedTranscript ? "transcript" : "none",
+    hadMedia,
+    transcriptionAttempted: true,
+  };
 }
 
 function sleep(milliseconds: number) {
@@ -1236,6 +1397,25 @@ function buildBufferedPrompt(options: {
   return combinedPrompt.length > 0 ? combinedPrompt : "Please analyze the attached files.";
 }
 
+function buildWhatsAppOutboundConfigurationError() {
+  const missing: string[] = [];
+  if (!process.env.TWILIO_ACCOUNT_SID) {
+    missing.push("TWILIO_ACCOUNT_SID");
+  }
+  if (!process.env.TWILIO_AUTH_TOKEN) {
+    missing.push("TWILIO_AUTH_TOKEN");
+  }
+  if (!getConfiguredTwilioWhatsAppFromNumber()) {
+    missing.push("TWILIO_WHATSAPP_FROM_NUMBER");
+  }
+
+  return `WhatsApp outbound messaging is not fully configured (${missing.join(", ")}).`;
+}
+
+function buildWhatsAppDeliveryError(error: unknown) {
+  return `WhatsApp delivery failed: ${errorMessageFromUnknown(error)}`;
+}
+
 async function sendOutboundMessage(options: {
   text: string;
   phoneNumberE164: string;
@@ -1248,22 +1428,17 @@ async function sendOutboundMessage(options: {
   const fromNumber = getConfiguredTwilioWhatsAppFromNumber();
 
   if (!accountSid || !authToken || !fromNumber) {
-    console.warn("WhatsApp outbound messaging is not fully configured", {
-      hasAccountSid: !!accountSid,
-      hasAuthToken: !!authToken,
-      hasFromNumber: !!fromNumber,
-    });
-    return;
+    throw new Error(buildWhatsAppOutboundConfigurationError());
   }
 
   const body = options.text.trim();
   if (!body) {
-    return;
+    throw new Error("WhatsApp outbound message body is empty.");
   }
 
   const chunks = splitOutboundTextForWhatsApp(body);
   if (chunks.length === 0) {
-    return;
+    throw new Error("WhatsApp outbound message body is empty.");
   }
 
   for (const [chunkIndex, chunk] of chunks.entries()) {
@@ -1464,19 +1639,75 @@ async function autoAcceptInvitationsForEmail(options: {
   }
 }
 
-async function processPendingClarification(options: {
+function buildPendingVoiceReplyPrompt(locale: AppLocale, prompt: string) {
+  return [pendingVoiceReplyTypingFallbackMessage(locale), prompt].join("\n\n");
+}
+
+async function recordPendingReplyDeliveryFailure(options: {
+  runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
+  batchId: Id<"whatsappSendBatches">;
+  deliveryStage: "pre_persistence" | "post_persistence";
+  error: unknown;
+}) {
+  const mutationArgs: Record<string, unknown> = {
+    batchId: options.batchId,
+    error: buildWhatsAppDeliveryError(options.error),
+  };
+
+  if (options.deliveryStage === "pre_persistence") {
+    mutationArgs.status = "failed";
+  }
+
+  await options.runMutation((internal as any).whatsappProcessingData.updateSendBatch, mutationArgs);
+}
+
+async function sendPendingHandlingReply(options: {
+  ctx: {
+    runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
+    runAction: (actionRef: any, args: Record<string, unknown>) => Promise<unknown>;
+  };
+  locale: AppLocale;
+  connection: WhatsAppConnectionDoc;
+  result: PendingHandlingResult;
+}) {
+  if (!options.result.reply) {
+    return;
+  }
+
+  try {
+    await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+      phoneNumberE164: options.connection.phoneNumberE164,
+      locale: options.locale,
+      text: options.result.reply,
+      connectionId: options.connection._id,
+    });
+  } catch (error) {
+    if (options.result.batchId && options.result.deliveryStage) {
+      await recordPendingReplyDeliveryFailure({
+        runMutation: options.ctx.runMutation,
+        batchId: options.result.batchId,
+        deliveryStage: options.result.deliveryStage,
+        error,
+      });
+    }
+
+    throw error;
+  }
+}
+
+export async function processPendingClarification(options: {
   ctx: {
     runQuery: (queryRef: any, args: Record<string, unknown>) => Promise<unknown>;
     runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
     runAction: (actionRef: any, args: Record<string, unknown>) => Promise<unknown>;
   };
   locale: AppLocale;
-  messageText: string;
+  resolvePendingReplyInput: () => Promise<PendingReplyInput>;
   threadId: string;
   organizationId: string;
   userId: string;
   memberId: string;
-}) {
+}): Promise<PendingHandlingResult> {
   const session = (await options.ctx.runQuery(
     internal.aiState.getLatestPendingClarificationByThread,
     {
@@ -1517,9 +1748,10 @@ async function processPendingClarification(options: {
     };
   }
 
+  const pendingReplyInput = await options.resolvePendingReplyInput();
   const answers = buildClarificationAnswersFromMessage({
     questions: session.questions,
-    messageText: options.messageText,
+    messageText: pendingReplyInput.text,
   });
 
   if (!answers) {
@@ -1527,26 +1759,31 @@ async function processPendingClarification(options: {
     if (!firstQuestion) {
       return {
         handled: true,
-        reply: clarificationMissingAnswerMessage(options.locale),
+        reply:
+          pendingReplyInput.hadMedia && !pendingReplyInput.text
+            ? pendingVoiceReplyTypingFallbackMessage(options.locale)
+            : clarificationMissingAnswerMessage(options.locale),
       };
     }
 
+    const clarificationPrompt = clarificationQuestionMessage({
+      locale: options.locale,
+      title:
+        options.locale === "de"
+          ? "Bitte Rückfrage beantworten"
+          : "Please answer the clarification",
+      prompt: firstQuestion.prompt,
+      options: firstQuestion.options,
+      questionIndex: 0,
+      questionCount: session.questions.length,
+    });
+
     return {
       handled: true,
-      reply: [
-        clarificationMissingAnswerMessage(options.locale),
-        clarificationQuestionMessage({
-          locale: options.locale,
-          title:
-            options.locale === "de"
-              ? "Bitte Rückfrage beantworten"
-              : "Please answer the clarification",
-          prompt: firstQuestion.prompt,
-          options: firstQuestion.options,
-          questionIndex: 0,
-          questionCount: session.questions.length,
-        }),
-      ].join("\n\n"),
+      reply:
+        pendingReplyInput.hadMedia && !pendingReplyInput.text
+          ? buildPendingVoiceReplyPrompt(options.locale, clarificationPrompt)
+          : [clarificationMissingAnswerMessage(options.locale), clarificationPrompt].join("\n\n"),
     };
   }
 
@@ -1580,16 +1817,16 @@ async function processPendingClarification(options: {
   };
 }
 
-async function handlePendingProjectResolution(options: {
+export async function handlePendingProjectResolution(options: {
   ctx: {
     runQuery: (queryRef: any, args: Record<string, unknown>) => Promise<unknown>;
     runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
     runAction: (actionRef: any, args: Record<string, unknown>) => Promise<unknown>;
   };
   locale: AppLocale;
-  messageText: string;
+  resolvePendingReplyInput: () => Promise<PendingReplyInput>;
   connection: WhatsAppConnectionDoc;
-}) {
+}): Promise<PendingHandlingResult> {
   const pendingResolution = (await options.ctx.runQuery(
     (internal as any).whatsappProcessingData.getPendingResolutionByPhone,
     {
@@ -1604,10 +1841,28 @@ async function handlePendingProjectResolution(options: {
     };
   }
 
-  const normalizedMessage = normalizeCommandText(options.messageText);
+  const pendingReplyInput = await options.resolvePendingReplyInput();
+  const normalizedMessage = normalizeCommandText(pendingReplyInput.text);
 
   if (pendingResolution.state === "awaiting_choice") {
     const optionsList = pendingResolution.options ?? [];
+    const choicePrompt = documentationProjectChoiceMessage({
+      locale: options.locale,
+      projects: optionsList.map((option) => ({
+        name: option.projectName,
+      })),
+      suggestedProjectName: pendingResolution.aiSuggestedProjectName,
+    });
+
+    if (!normalizedMessage && pendingReplyInput.hadMedia) {
+      return {
+        handled: true,
+        reply: buildPendingVoiceReplyPrompt(options.locale, choicePrompt),
+        batchId: pendingResolution.batchId,
+        deliveryStage: "pre_persistence",
+      };
+    }
+
     const numericChoice = Number.parseInt(normalizedMessage, 10);
     const exactChoice = optionsList.find(
       (option) => normalizeCommandText(option.projectName) === normalizedMessage,
@@ -1636,6 +1891,8 @@ async function handlePendingProjectResolution(options: {
           locale: options.locale,
           suggestedProjectName: pendingResolution.aiSuggestedProjectName,
         }),
+        batchId: pendingResolution.batchId,
+        deliveryStage: "pre_persistence",
       };
     }
 
@@ -1648,13 +1905,9 @@ async function handlePendingProjectResolution(options: {
     if (!selectedOption) {
       return {
         handled: true,
-        reply: documentationProjectChoiceMessage({
-          locale: options.locale,
-          projects: optionsList.map((option) => ({
-            name: option.projectName,
-          })),
-          suggestedProjectName: pendingResolution.aiSuggestedProjectName,
-        }),
+        reply: choicePrompt,
+        batchId: pendingResolution.batchId,
+        deliveryStage: "pre_persistence",
       };
     }
 
@@ -1671,6 +1924,8 @@ async function handlePendingProjectResolution(options: {
       return {
         handled: true,
         reply: result.message,
+        batchId: pendingResolution.batchId,
+        deliveryStage: "post_persistence",
       };
     } catch {
       return {
@@ -1680,11 +1935,26 @@ async function handlePendingProjectResolution(options: {
     }
   }
 
-  const projectName = normalizeProjectNameCandidate(options.messageText);
+  const projectNamePrompt = documentationProjectNamePrompt({
+    locale: options.locale,
+    suggestedProjectName: pendingResolution.aiSuggestedProjectName,
+  });
+  if (!pendingReplyInput.text && pendingReplyInput.hadMedia) {
+    return {
+      handled: true,
+      reply: buildPendingVoiceReplyPrompt(options.locale, projectNamePrompt),
+      batchId: pendingResolution.batchId,
+      deliveryStage: "pre_persistence",
+    };
+  }
+
+  const projectName = normalizeProjectNameCandidate(pendingReplyInput.text);
   if (!projectName) {
     return {
       handled: true,
       reply: documentationProjectNameLengthMessage(options.locale),
+      batchId: pendingResolution.batchId,
+      deliveryStage: "pre_persistence",
     };
   }
 
@@ -1702,6 +1972,8 @@ async function handlePendingProjectResolution(options: {
     return {
       handled: true,
       reply: result.message,
+      batchId: pendingResolution.batchId,
+      deliveryStage: "post_persistence",
     };
   } catch {
     return {
@@ -1863,11 +2135,23 @@ async function processConnectedInbound(options: {
   });
 
   const commandText = normalizeCommandText(options.payload.body);
+  let pendingReplyInputPromise: Promise<PendingReplyInput> | null = null;
+  const getPendingReplyInput = () => {
+    if (!pendingReplyInputPromise) {
+      pendingReplyInputPromise = resolvePendingReplyInput({
+        body: options.payload.body,
+        locale: options.locale,
+        media: options.payload.media,
+      });
+    }
+
+    return pendingReplyInputPromise;
+  };
 
   const pendingClarificationResult = await processPendingClarification({
     ctx: options.ctx,
     locale: options.locale,
-    messageText: options.payload.body,
+    resolvePendingReplyInput: getPendingReplyInput,
     threadId,
     organizationId: options.connection.organizationId,
     userId: options.connection.userId,
@@ -1875,15 +2159,12 @@ async function processConnectedInbound(options: {
   });
 
   if (pendingClarificationResult.handled) {
-    if (pendingClarificationResult.reply) {
-      await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
-        phoneNumberE164: options.connection.phoneNumberE164,
-        locale: options.locale,
-        text: pendingClarificationResult.reply,
-        connectionId: options.connection._id,
-      });
-    }
-
+    await sendPendingHandlingReply({
+      ctx: options.ctx,
+      locale: options.locale,
+      connection: options.connection,
+      result: pendingClarificationResult,
+    });
     return;
   }
 
@@ -1964,7 +2245,10 @@ async function processConnectedInbound(options: {
   )) as WhatsAppTurnBufferDoc | null;
 
   if (existingTurnBuffer?.status === "awaiting_documentation_confirmation") {
-    if (isAffirmativeAnswer(commandText)) {
+    const pendingReplyInput = await getPendingReplyInput();
+    const effectiveCommandText = normalizeCommandText(pendingReplyInput.text);
+
+    if (isAffirmativeAnswer(effectiveCommandText)) {
       const batchResult = await startDocumentationBatch({
         ctx: options.ctx,
         locale: options.locale,
@@ -1987,7 +2271,7 @@ async function processConnectedInbound(options: {
       return;
     }
 
-    if (isNegativeCommand(commandText)) {
+    if (isNegativeCommand(effectiveCommandText)) {
       await options.ctx.runMutation(internal.whatsappData.updateTurnBufferStatus, {
         bufferId: existingTurnBuffer._id,
         status: "buffering",
@@ -2004,43 +2288,71 @@ async function processConnectedInbound(options: {
 
       return;
     }
+
+    if (pendingReplyInput.hadMedia && !pendingReplyInput.text) {
+      await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+        phoneNumberE164: options.connection.phoneNumberE164,
+        locale: options.locale,
+        text: buildPendingVoiceReplyPrompt(
+          options.locale,
+          documentationReminderMessage(options.locale),
+        ),
+        connectionId: options.connection._id,
+      });
+
+      return;
+    }
   }
 
-  if (existingTurnBuffer?.status === "awaiting_confirmation" && isNegativeCommand(commandText)) {
-    await options.ctx.runMutation(internal.whatsappData.updateTurnBufferStatus, {
-      bufferId: existingTurnBuffer._id,
-      status: "buffering",
-      readyPromptSentAt: undefined,
-      documentationReminderJobId: undefined,
-    });
+  let forceSendCommandText = commandText;
+  if (existingTurnBuffer?.status === "awaiting_confirmation") {
+    const pendingReplyInput = await getPendingReplyInput();
+    forceSendCommandText = normalizeCommandText(pendingReplyInput.text);
 
-    await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
-      phoneNumberE164: options.connection.phoneNumberE164,
-      locale: options.locale,
-      text: waitForMoreMessage(options.locale),
-      connectionId: options.connection._id,
-    });
+    if (isNegativeCommand(forceSendCommandText)) {
+      await options.ctx.runMutation(internal.whatsappData.updateTurnBufferStatus, {
+        bufferId: existingTurnBuffer._id,
+        status: "buffering",
+        readyPromptSentAt: undefined,
+        documentationReminderJobId: undefined,
+      });
 
-    return;
+      await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+        phoneNumberE164: options.connection.phoneNumberE164,
+        locale: options.locale,
+        text: waitForMoreMessage(options.locale),
+        connectionId: options.connection._id,
+      });
+
+      return;
+    }
+
+    if (pendingReplyInput.hadMedia && !pendingReplyInput.text) {
+      await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+        phoneNumberE164: options.connection.phoneNumberE164,
+        locale: options.locale,
+        text: buildPendingVoiceReplyPrompt(options.locale, readyQuestionMessage(options.locale)),
+        connectionId: options.connection._id,
+      });
+
+      return;
+    }
   }
 
   const pendingProjectResolutionResult = await handlePendingProjectResolution({
     ctx: options.ctx,
     locale: options.locale,
-    messageText: options.payload.body,
+    resolvePendingReplyInput: getPendingReplyInput,
     connection: options.connection,
   });
 
   if (pendingProjectResolutionResult.handled) {
-    if (pendingProjectResolutionResult.reply) {
-      await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
-        phoneNumberE164: options.connection.phoneNumberE164,
-        locale: options.locale,
-        text: pendingProjectResolutionResult.reply,
-        connectionId: options.connection._id,
-      });
-    }
-
+    await sendPendingHandlingReply({
+      ctx: options.ctx,
+      locale: options.locale,
+      connection: options.connection,
+      result: pendingProjectResolutionResult,
+    });
     return;
   }
 
@@ -2062,45 +2374,11 @@ async function processConnectedInbound(options: {
     return;
   }
 
-  const mediaEntries: StoredWhatsAppMedia[] = [];
-  for (const mediaItem of options.payload.media) {
-    try {
-      const accountSid = process.env.TWILIO_ACCOUNT_SID;
-      const authToken = process.env.TWILIO_AUTH_TOKEN;
-      if (!accountSid || !authToken) {
-        continue;
-      }
-
-      const mediaResponse = await fetch(mediaItem.mediaUrl, {
-        headers: {
-          Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,
-        },
-      });
-      if (!mediaResponse.ok) {
-        continue;
-      }
-
-      const mediaBlob = await mediaResponse.blob();
-      const mediaBytes = new Uint8Array(await mediaBlob.arrayBuffer());
-      const storageId = await options.ctx.storage.store(mediaBlob);
-      const transcription = await transcribeWhatsAppMedia({
-        fileBytes: mediaBytes,
-        contentType: mediaItem.contentType,
-        locale: options.locale,
-      });
-
-      mediaEntries.push({
-        storageId,
-        contentType: mediaItem.contentType,
-        fileName: mediaItem.fileName,
-        mediaUrl: mediaItem.mediaUrl,
-        transcription: transcription ?? undefined,
-        transcriptionModel: transcription ? "groq:whisper-large-v3" : undefined,
-      });
-    } catch {
-      // Skip failed media item.
-    }
-  }
+  const mediaEntries = await buildStoredInboundMediaEntries({
+    locale: options.locale,
+    media: options.payload.media,
+    store: options.ctx.storage.store,
+  });
 
   const insertedMessage = (await options.ctx.runMutation(
     internal.whatsappData.insertWhatsAppMessage,
@@ -2128,7 +2406,7 @@ async function processConnectedInbound(options: {
     messageId: insertedMessage.id,
   })) as WhatsAppTurnBufferDoc;
 
-  const shouldForceSend = isAffirmativeAnswer(commandText);
+  const shouldForceSend = isAffirmativeAnswer(forceSendCommandText);
 
   const bufferedMessages = (await options.ctx.runQuery(internal.whatsappData.getMessagesByIds, {
     messageIds: turnBuffer.bufferedMessageIds,
