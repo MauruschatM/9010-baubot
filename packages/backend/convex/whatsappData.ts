@@ -131,6 +131,50 @@ function toConnectionPublic(connection: WhatsAppConnectionDoc | null) {
   };
 }
 
+async function getMemberForOrganizationUser(ctx: {
+  runQuery: (
+    queryRef: any,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
+}, args: {
+  organizationId: string;
+  userId: string;
+}) {
+  return (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+    model: "member",
+    where: [
+      {
+        field: "organizationId",
+        operator: "eq",
+        value: args.organizationId,
+      },
+      {
+        field: "userId",
+        operator: "eq",
+        value: args.userId,
+      },
+    ],
+  })) as MemberDoc | null;
+}
+
+async function getMemberById(ctx: {
+  runQuery: (
+    queryRef: any,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
+}, memberId: string) {
+  return (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+    model: "member",
+    where: [
+      {
+        field: "_id",
+        operator: "eq",
+        value: memberId,
+      },
+    ],
+  })) as MemberDoc | null;
+}
+
 export const getConnectionSetupInfo = query({
   args: {},
   handler: async () => {
@@ -177,6 +221,35 @@ export const getMyConnection = query({
       ],
     })) as MemberDoc | null;
 
+    if (!member) {
+      return null;
+    }
+
+    const connection = await ctx.db
+      .query("whatsappConnections")
+      .withIndex("by_org_member_status", (q) =>
+        q
+          .eq("organizationId", args.organizationId)
+          .eq("memberId", member._id)
+          .eq("status", "active"),
+      )
+      .first();
+
+    return {
+      memberId: member._id,
+      role: member.role,
+      connection: toConnectionPublic(connection ?? null),
+    };
+  },
+});
+
+export const getMyConnectionForOrganizationUser = internalQuery({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const member = await getMemberForOrganizationUser(ctx, args);
     if (!member) {
       return null;
     }
@@ -303,6 +376,95 @@ export const setMemberConnection = mutation({
 
     const canManageTarget =
       targetMember.userId === authUser._id ||
+      currentMember.role === "owner" ||
+      currentMember.role === "admin";
+
+    if (!canManageTarget) {
+      throw new Error("You are not allowed to manage this WhatsApp connection");
+    }
+
+    const conflictingConnection = await ctx.db
+      .query("whatsappConnections")
+      .withIndex("by_phoneNumberE164", (q) => q.eq("phoneNumberE164", normalizedPhone.e164))
+      .filter((q) => q.eq(q.field("status"), "active"))
+      .first();
+
+    if (conflictingConnection && conflictingConnection.memberId !== args.memberId) {
+      throw new Error("This WhatsApp number is already connected to another member");
+    }
+
+    const now = Date.now();
+    const currentConnection = await ctx.db
+      .query("whatsappConnections")
+      .withIndex("by_org_member_status", (q) =>
+        q
+          .eq("organizationId", args.organizationId)
+          .eq("memberId", args.memberId)
+          .eq("status", "active"),
+      )
+      .first();
+
+    if (currentConnection) {
+      await ctx.db.patch(currentConnection._id, {
+        phoneNumberE164: normalizedPhone.e164,
+        phoneNumberDigits: normalizedPhone.digits,
+        updatedAt: now,
+      });
+
+      return toConnectionPublic({
+        ...currentConnection,
+        phoneNumberE164: normalizedPhone.e164,
+        phoneNumberDigits: normalizedPhone.digits,
+        updatedAt: now,
+      });
+    }
+
+    const connectionId = await ctx.db.insert("whatsappConnections", {
+      organizationId: args.organizationId,
+      memberId: args.memberId,
+      userId: targetMember.userId,
+      phoneNumberE164: normalizedPhone.e164,
+      phoneNumberDigits: normalizedPhone.digits,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const connection = await ctx.db.get(connectionId);
+    return toConnectionPublic(connection as WhatsAppConnectionDoc);
+  },
+});
+
+export const setMemberConnectionForOrganizationUser = internalMutation({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    memberId: v.string(),
+    phoneNumber: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const normalizedPhone = normalizePhoneNumber(args.phoneNumber);
+    if (!normalizedPhone) {
+      throw new Error("Invalid WhatsApp number");
+    }
+
+    const currentMember = await getMemberForOrganizationUser(ctx, {
+      organizationId: args.organizationId,
+      userId: args.userId,
+    });
+
+    if (!currentMember) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const targetMember = await getMemberById(ctx, args.memberId);
+
+    if (!targetMember || targetMember.organizationId !== args.organizationId) {
+      throw new Error("Target member not found");
+    }
+
+    const canManageTarget =
+      targetMember.userId === args.userId ||
       currentMember.role === "owner" ||
       currentMember.role === "admin";
 

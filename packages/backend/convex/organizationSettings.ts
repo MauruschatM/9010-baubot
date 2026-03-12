@@ -1,7 +1,14 @@
 import { v } from "convex/values";
 
 import { components } from "./_generated/api";
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx,
+} from "./_generated/server";
 import { authComponent } from "./auth";
 import { requireActiveOrganization } from "./authhelpers";
 import { vAppLocale } from "./lib/locales";
@@ -75,6 +82,30 @@ export const getForActiveOrganization = query({
   },
 });
 
+export const getForOrganizationUser = internalQuery({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+  },
+  returns: v.union(organizationSettingsResultValidator, v.null()),
+  handler: async (ctx, args) => {
+    const membership = await getMembership(ctx, args.organizationId, args.userId);
+    if (!membership) {
+      return null;
+    }
+
+    const settings = await getSettingsByOrganizationId(ctx, args.organizationId);
+
+    return {
+      organizationId: args.organizationId,
+      companyEmail: settings?.companyEmail,
+      companyEmailLocale: settings?.companyEmailLocale,
+      updatedByUserId: settings?.updatedByUserId,
+      updatedAt: settings?.updatedAt,
+    };
+  },
+});
+
 export const saveForActiveOrganization = mutation({
   args: {
     companyEmail: v.union(v.string(), v.null()),
@@ -134,6 +165,66 @@ export const saveForActiveOrganization = mutation({
       companyEmail,
       companyEmailLocale,
       updatedByUserId: authUser._id,
+      updatedAt,
+    };
+  },
+});
+
+export const saveForOrganizationUser = internalMutation({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    companyEmail: v.union(v.string(), v.null()),
+    companyEmailLocale: v.union(vAppLocale, v.null()),
+  },
+  returns: v.object({
+    organizationId: v.string(),
+    companyEmail: v.optional(v.string()),
+    companyEmailLocale: v.optional(vAppLocale),
+    updatedByUserId: v.string(),
+    updatedAt: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const membership = await getMembership(ctx, args.organizationId, args.userId);
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const trimmedEmail = args.companyEmail?.trim() ?? "";
+    const companyEmail = trimmedEmail.length > 0 ? trimmedEmail.toLowerCase() : undefined;
+    if (
+      companyEmail &&
+      !/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(companyEmail)
+    ) {
+      throw new Error("Enter a valid company email address");
+    }
+
+    const companyEmailLocale = args.companyEmailLocale ?? undefined;
+    const updatedAt = Date.now();
+    const existing = await getSettingsByOrganizationId(ctx, args.organizationId);
+
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        companyEmail,
+        companyEmailLocale,
+        updatedByUserId: args.userId,
+        updatedAt,
+      });
+    } else {
+      await ctx.db.insert("organizationSettings", {
+        organizationId: args.organizationId,
+        companyEmail,
+        companyEmailLocale,
+        updatedByUserId: args.userId,
+        updatedAt,
+      });
+    }
+
+    return {
+      organizationId: args.organizationId,
+      companyEmail,
+      companyEmailLocale,
+      updatedByUserId: args.userId,
       updatedAt,
     };
   },

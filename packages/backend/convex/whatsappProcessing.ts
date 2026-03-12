@@ -88,6 +88,7 @@ type RoutingWorkspaceData = {
 type ProjectRoutingHit = {
   projectId: Id<"projects">;
   projectName: string;
+  projectLocation?: string;
   customerId?: Id<"customers">;
   customerName?: string;
   similarity: number;
@@ -306,6 +307,7 @@ async function searchSimilarProjectsByEmbedding(
       return {
         projectId: entry.project._id,
         projectName: entry.project.name,
+        projectLocation: entry.project.location,
         customerId: entry.project.customerId,
         customerName: customer?.name,
         similarity: cosineSimilarity(queryEmbedding, projectEmbeddings[index] ?? []),
@@ -461,7 +463,7 @@ async function resolveRoutingDecision(options: {
       schema: routingDecisionSchema,
       prompt: [
         "Resolve project routing for a WhatsApp documentation batch.",
-        "Use only the combined message text, transcripts, and the provided candidate names as evidence.",
+        "Use only the combined message text, transcripts, and the provided candidate project/customer metadata as evidence.",
         "Choose 'project' only when one provided project is the strongest clearly supported match.",
         "Choose 'customer' only when one provided customer is clear but the project is still unclear.",
         "Choose 'ambiguous' when multiple provided projects or customers remain plausible, or the evidence conflicts.",
@@ -580,8 +582,12 @@ function buildRoutingContextText(options: {
     .filter((hit) => hit.similarity >= ROUTING_CONTEXT_MIN_SIMILARITY)
     .slice(0, ROUTING_CONTEXT_LIMIT)
     .map((hit) => {
-      const customerSuffix = hit.customerName ? `, customer ${hit.customerName}` : "";
-      return `- ${hit.projectName}${customerSuffix} (similarity ${hit.similarity.toFixed(2)})`;
+      const details = [
+        hit.projectLocation ? `location ${hit.projectLocation}` : null,
+        hit.customerName ? `customer ${hit.customerName}` : null,
+      ].filter((detail): detail is string => detail !== null);
+      const detailsText = details.length > 0 ? `${details.join(", ")}, ` : "";
+      return `- ${hit.projectName} (${detailsText}similarity ${hit.similarity.toFixed(2)})`;
     });
   const customerLines = options.customerHits
     .filter((hit) => hit.similarity >= ROUTING_CONTEXT_MIN_SIMILARITY)
@@ -1512,3 +1518,9 @@ export const lookupRoutingContext = internalAction({
     };
   },
 });
+
+export {
+  batchSearchText,
+  buildProjectSearchDocument,
+  buildRoutingContextText,
+};

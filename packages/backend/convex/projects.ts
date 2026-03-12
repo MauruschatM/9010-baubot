@@ -1,7 +1,15 @@
 import { ConvexError, v } from "convex/values";
 
+import { components } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
-import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx,
+} from "./_generated/server";
 import { requireActiveOrganization, requireAuthUserId } from "./authhelpers";
 import {
   customerResponseValidator,
@@ -79,6 +87,12 @@ const archivedProjectListItemValidator = v.object({
   ...projectResponseFields,
   deletedAt: v.number(),
 });
+
+type MemberDoc = {
+  _id: string;
+  organizationId: string;
+  userId: string;
+};
 
 function toProjectResponse(
   project: Doc<"projects">,
@@ -177,6 +191,34 @@ async function ensureCustomerBelongsToOrganization(
   return customer;
 }
 
+async function requireOrganizationMember(
+  ctx: QueryCtx | MutationCtx,
+  organizationId: string,
+  userId: string,
+) {
+  const member = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
+    model: "member",
+    where: [
+      {
+        field: "organizationId",
+        operator: "eq",
+        value: organizationId,
+      },
+      {
+        field: "userId",
+        operator: "eq",
+        value: userId,
+      },
+    ],
+  })) as MemberDoc | null;
+
+  if (!member) {
+    throw new ConvexError("Unauthorized");
+  }
+
+  return member;
+}
+
 async function resolveCustomerAssignment(
   ctx: QueryCtx | MutationCtx,
   customerId: Id<"customers"> | undefined,
@@ -260,6 +302,251 @@ function buildProjectListItems(
   });
 }
 
+async function listProjectsForOrganization(
+  ctx: QueryCtx,
+  args: {
+    organizationId: string;
+    userId: string;
+    statuses?: Array<Doc<"projects">["status"]>;
+  },
+) {
+  await requireOrganizationMember(ctx, args.organizationId, args.userId);
+  const [projects, reviewStates] = await Promise.all([
+    ctx.db
+      .query("projects")
+      .withIndex("by_organization_deletedAt_updatedAt", (q) =>
+        q.eq("organizationId", args.organizationId).eq("deletedAt", undefined),
+      )
+      .order("desc")
+      .collect(),
+    ctx.db
+      .query("projectReviewStates")
+      .withIndex("by_user_org_project", (q) =>
+        q.eq("userId", args.userId).eq("organizationId", args.organizationId),
+      )
+      .collect(),
+  ]);
+
+  const requestedStatuses = new Set(args.statuses ?? []);
+  const filteredProjects =
+    requestedStatuses.size > 0
+      ? projects.filter((project) => requestedStatuses.has(resolveProjectStatus(project.status)))
+      : projects;
+  const customerById = await buildCustomerMap(
+    ctx,
+    args.organizationId,
+    filteredProjects
+      .map((project) => project.customerId)
+      .filter((customerId): customerId is Id<"customers"> => customerId !== undefined),
+  );
+
+  return buildProjectListItems(
+    filteredProjects,
+    customerById,
+    buildLastSeenByProjectId(reviewStates),
+  );
+}
+
+async function listProjectsByCustomerForOrganization(
+  ctx: QueryCtx,
+  args: {
+    organizationId: string;
+    userId: string;
+    customerId: Id<"customers">;
+    statuses?: Array<Doc<"projects">["status"]>;
+  },
+) {
+  await requireOrganizationMember(ctx, args.organizationId, args.userId);
+  const customer = await ctx.db.get(args.customerId);
+  if (
+    !customer ||
+    customer.organizationId !== args.organizationId ||
+    customer.deletedAt !== undefined
+  ) {
+    return [];
+  }
+
+  const [projects, reviewStates] = await Promise.all([
+    ctx.db
+      .query("projects")
+      .withIndex("by_customerId_updatedAt", (q) => q.eq("customerId", args.customerId))
+      .order("desc")
+      .collect(),
+    ctx.db
+      .query("projectReviewStates")
+      .withIndex("by_user_org_project", (q) =>
+        q.eq("userId", args.userId).eq("organizationId", args.organizationId),
+      )
+      .collect(),
+  ]);
+
+  const requestedStatuses = new Set(args.statuses ?? []);
+  const filteredProjects = projects.filter((project) => {
+    if (project.organizationId !== args.organizationId || project.deletedAt !== undefined) {
+      return false;
+    }
+
+    if (requestedStatuses.size === 0) {
+      return true;
+    }
+
+    return requestedStatuses.has(resolveProjectStatus(project.status));
+  });
+
+  const customerById = new Map<string, ReturnType<typeof toCustomerResponse> | undefined>([
+    [String(customer._id), toCustomerResponse(customer)],
+  ]);
+
+  return buildProjectListItems(
+    filteredProjects,
+    customerById,
+    buildLastSeenByProjectId(reviewStates),
+  );
+}
+
+async function listArchivedProjectsForOrganization(
+  ctx: QueryCtx,
+  args: {
+    organizationId: string;
+    userId: string;
+  },
+) {
+  await requireOrganizationMember(ctx, args.organizationId, args.userId);
+  const projects = await ctx.db
+    .query("projects")
+    .withIndex("by_organization_deletedAt_updatedAt", (q) =>
+      q.eq("organizationId", args.organizationId).gt("deletedAt", undefined),
+    )
+    .order("desc")
+    .collect();
+  const customerById = await buildCustomerMap(
+    ctx,
+    args.organizationId,
+    projects
+      .map((project) => project.customerId)
+      .filter((customerId): customerId is Id<"customers"> => customerId !== undefined),
+    { includeArchived: true },
+  );
+
+  return projects.map((project) =>
+    toArchivedProjectResponse(
+      project,
+      project.customerId ? customerById.get(String(project.customerId)) : undefined,
+    ),
+  );
+}
+
+async function getProjectByIdForOrganization(
+  ctx: QueryCtx,
+  args: {
+    organizationId: string;
+    userId: string;
+    projectId: Id<"projects">;
+  },
+) {
+  await requireOrganizationMember(ctx, args.organizationId, args.userId);
+  const project = await ctx.db.get(args.projectId);
+
+  if (!project) {
+    return null;
+  }
+
+  if (project.organizationId !== args.organizationId || project.deletedAt !== undefined) {
+    return null;
+  }
+
+  const customer =
+    project.customerId !== undefined
+      ? await resolveCustomerAssignment(ctx, project.customerId, args.organizationId).catch(
+          () => undefined,
+        )
+      : undefined;
+
+  return toProjectResponse(project, customer ? toCustomerResponse(customer) : undefined);
+}
+
+async function listTimelineForProject(
+  ctx: QueryCtx,
+  args: {
+    organizationId: string;
+    projectId: Id<"projects">;
+    limit?: number;
+  },
+) {
+  const project = await ctx.db.get(args.projectId);
+
+  if (!project || project.deletedAt !== undefined) {
+    return [];
+  }
+
+  if (project.organizationId !== args.organizationId) {
+    throw new ConvexError("Unauthorized");
+  }
+
+  const limit = Math.min(Math.max(args.limit ?? 200, 1), MAX_TIMELINE_ITEMS);
+  const timelineRows = await ctx.db
+    .query("projectTimelineItems")
+    .withIndex("by_project_addedAt", (q) => q.eq("projectId", args.projectId))
+    .order("desc")
+    .take(limit);
+
+  return await Promise.all(
+    timelineRows.map(async (timelineRow) => {
+      const media = await Promise.all(
+        (timelineRow.mediaAssets ?? []).map(async (entry) => {
+          const mediaAsset = await ctx.db.get(entry.mediaAssetId);
+
+          if (!(mediaAsset && mediaAsset.organizationId === args.organizationId)) {
+            return {
+              mediaAssetId: entry.mediaAssetId,
+              mimeType: entry.mimeType,
+              kind: entry.kind,
+            };
+          }
+
+          return {
+            mediaAssetId: entry.mediaAssetId,
+            mimeType: entry.mimeType,
+            kind: entry.kind,
+            summary: mediaAsset.summary,
+            transcript: mediaAsset.transcript,
+            extractedText: mediaAsset.extractedText,
+            fieldLocales: mediaAsset.fieldLocales,
+            url: (await ctx.storage.getUrl(mediaAsset.storageId)) ?? undefined,
+          };
+        }),
+      );
+
+      return {
+        _id: timelineRow._id,
+        batchId: timelineRow.batchId,
+        sourceType: timelineRow.sourceType,
+        messageId: timelineRow.messageId,
+        addedAt: timelineRow.addedAt,
+        dayBucketUtc: timelineRow.dayBucketUtc,
+        addedByMemberId: timelineRow.addedByMemberId,
+        addedByUserId: timelineRow.addedByUserId,
+        addedByName: timelineRow.addedByName,
+        sourceText: timelineRow.sourceText,
+        text: timelineRow.text,
+        transcript: timelineRow.transcript,
+        extractedText: timelineRow.extractedText,
+        summary: timelineRow.summary,
+        batchTitle: timelineRow.batchTitle,
+        batchOverview: timelineRow.batchOverview,
+        hasNachtrag: timelineRow.hasNachtrag,
+        nachtragNeedsClarification: timelineRow.nachtragNeedsClarification,
+        nachtragItems: timelineRow.nachtragItems,
+        nachtragDetails: timelineRow.nachtragDetails,
+        nachtragLanguage: normalizeAppLocale(timelineRow.nachtragLanguage) ?? undefined,
+        keywords: timelineRow.keywords,
+        fieldLocales: timelineRow.fieldLocales,
+        media,
+      };
+    }),
+  );
+}
+
 async function computeLatestNachtragAtForProject(
   ctx: MutationCtx,
   projectId: Id<"projects">,
@@ -295,6 +582,123 @@ async function archiveProjectById(
   return null;
 }
 
+async function reassignBatchProjectForOrganization(
+  ctx: MutationCtx,
+  args: {
+    organizationId: string;
+    batchId: Id<"whatsappSendBatches">;
+    targetProjectId: Id<"projects">;
+  },
+) {
+  const batch = await ctx.db.get(args.batchId);
+
+  if (!batch) {
+    throw new ConvexError("Batch not found");
+  }
+
+  if (batch.organizationId !== args.organizationId) {
+    throw new ConvexError("Unauthorized");
+  }
+
+  const timelineRows = await ctx.db
+    .query("projectTimelineItems")
+    .withIndex("by_batchId", (q) => q.eq("batchId", args.batchId))
+    .collect();
+
+  if (timelineRows.length === 0) {
+    throw new ConvexError("Timeline batch not found");
+  }
+
+  const sourceProjectId = timelineRows[0]?.projectId;
+  const sourceProject = sourceProjectId
+    ? ensureProjectBelongsToOrganization(await ctx.db.get(sourceProjectId), args.organizationId)
+    : null;
+  const targetProject = ensureProjectBelongsToOrganization(
+    await ctx.db.get(args.targetProjectId),
+    args.organizationId,
+  );
+
+  if (targetProject.deletedAt !== undefined) {
+    throw new ConvexError("Project not found");
+  }
+
+  if (sourceProject?.deletedAt !== undefined) {
+    throw new ConvexError("Project not found");
+  }
+
+  if (resolveProjectStatus(targetProject.status) !== PROJECT_STATUS_ACTIVE) {
+    throw new ConvexError("Only active projects can receive timeline updates");
+  }
+
+  if (sourceProject && resolveProjectStatus(sourceProject.status) !== PROJECT_STATUS_ACTIVE) {
+    throw new ConvexError("Only active projects can be updated");
+  }
+
+  if (sourceProjectId === targetProject._id) {
+    return null;
+  }
+
+  for (const timelineRow of timelineRows) {
+    if (timelineRow.organizationId !== args.organizationId) {
+      throw new ConvexError("Unauthorized");
+    }
+  }
+
+  const mediaAssetIds = new Set<string>();
+  const mediaAssetIdList: Id<"whatsappMediaAssets">[] = [];
+
+  for (const timelineRow of timelineRows) {
+    await ctx.db.patch(timelineRow._id, {
+      projectId: targetProject._id,
+    });
+
+    for (const mediaAsset of timelineRow.mediaAssets ?? []) {
+      const mediaAssetId = mediaAsset.mediaAssetId;
+      const dedupeKey = String(mediaAssetId);
+
+      if (mediaAssetIds.has(dedupeKey)) {
+        continue;
+      }
+
+      mediaAssetIds.add(dedupeKey);
+      mediaAssetIdList.push(mediaAssetId);
+    }
+  }
+
+  for (const mediaAssetId of mediaAssetIdList) {
+    await ctx.db.patch(mediaAssetId, {
+      projectId: targetProject._id,
+    });
+  }
+
+  const now = Date.now();
+  await ctx.db.patch(args.batchId, {
+    projectId: targetProject._id,
+    updatedAt: now,
+  });
+  const [targetProjectNachtragAt, sourceProjectNachtragAt] = await Promise.all([
+    computeLatestNachtragAtForProject(ctx, targetProject._id),
+    sourceProjectId
+      ? computeLatestNachtragAtForProject(ctx, sourceProjectId)
+      : Promise.resolve(0),
+  ]);
+  await ctx.db.patch(targetProject._id, {
+    lastTimelineActivityAt: now,
+    lastNachtragAt: targetProjectNachtragAt,
+    updatedAt: now,
+  });
+
+  if (sourceProject && sourceProjectId) {
+    await ctx.db.patch(sourceProjectId, {
+      lastTimelineActivityAt: now,
+      lastNachtragAt: sourceProjectNachtragAt,
+      updatedAt: now,
+    });
+  }
+
+  return null;
+}
+
 export const list = query({
   args: {
     statuses: v.optional(v.array(projectStatusValidator)),
@@ -305,40 +709,11 @@ export const list = query({
       requireActiveOrganization(ctx),
       requireAuthUserId(ctx),
     ]);
-    const [projects, reviewStates] = await Promise.all([
-      ctx.db
-        .query("projects")
-        .withIndex("by_organization_deletedAt_updatedAt", (q) =>
-          q.eq("organizationId", organization.id).eq("deletedAt", undefined),
-        )
-        .order("desc")
-        .collect(),
-      ctx.db
-        .query("projectReviewStates")
-        .withIndex("by_user_org_project", (q) =>
-          q.eq("userId", userId).eq("organizationId", organization.id),
-        )
-        .collect(),
-    ]);
-
-    const requestedStatuses = new Set(args.statuses ?? []);
-    const filteredProjects =
-      requestedStatuses.size > 0
-        ? projects.filter((project) => requestedStatuses.has(resolveProjectStatus(project.status)))
-        : projects;
-    const customerById = await buildCustomerMap(
-      ctx,
-      organization.id,
-      filteredProjects
-        .map((project) => project.customerId)
-        .filter((customerId): customerId is Id<"customers"> => customerId !== undefined),
-    );
-
-    return buildProjectListItems(
-      filteredProjects,
-      customerById,
-      buildLastSeenByProjectId(reviewStates),
-    );
+    return await listProjectsForOrganization(ctx, {
+      organizationId: organization.id,
+      userId,
+      statuses: args.statuses,
+    });
   },
 });
 
@@ -353,47 +728,12 @@ export const listByCustomer = query({
       requireActiveOrganization(ctx),
       requireAuthUserId(ctx),
     ]);
-    const customer = await ctx.db.get(args.customerId);
-    if (!customer || customer.organizationId !== organization.id || customer.deletedAt !== undefined) {
-      return [];
-    }
-
-    const [projects, reviewStates] = await Promise.all([
-      ctx.db
-        .query("projects")
-        .withIndex("by_customerId_updatedAt", (q) => q.eq("customerId", args.customerId))
-        .order("desc")
-        .collect(),
-      ctx.db
-        .query("projectReviewStates")
-        .withIndex("by_user_org_project", (q) =>
-          q.eq("userId", userId).eq("organizationId", organization.id),
-        )
-        .collect(),
-    ]);
-
-    const requestedStatuses = new Set(args.statuses ?? []);
-    const filteredProjects = projects.filter((project) => {
-      if (project.organizationId !== organization.id || project.deletedAt !== undefined) {
-        return false;
-      }
-
-      if (requestedStatuses.size === 0) {
-        return true;
-      }
-
-      return requestedStatuses.has(resolveProjectStatus(project.status));
+    return await listProjectsByCustomerForOrganization(ctx, {
+      organizationId: organization.id,
+      userId,
+      customerId: args.customerId,
+      statuses: args.statuses,
     });
-
-    const customerById = new Map<string, ReturnType<typeof toCustomerResponse> | undefined>([
-      [String(customer._id), toCustomerResponse(customer)],
-    ]);
-
-    return buildProjectListItems(
-      filteredProjects,
-      customerById,
-      buildLastSeenByProjectId(reviewStates),
-    );
   },
 });
 
@@ -401,29 +741,14 @@ export const listArchived = query({
   args: {},
   returns: v.array(archivedProjectListItemValidator),
   handler: async (ctx) => {
-    const organization = await requireActiveOrganization(ctx);
-    const projects = await ctx.db
-      .query("projects")
-      .withIndex("by_organization_deletedAt_updatedAt", (q) =>
-        q.eq("organizationId", organization.id).gt("deletedAt", undefined),
-      )
-      .order("desc")
-      .collect();
-    const customerById = await buildCustomerMap(
-      ctx,
-      organization.id,
-      projects
-        .map((project) => project.customerId)
-        .filter((customerId): customerId is Id<"customers"> => customerId !== undefined),
-      { includeArchived: true },
-    );
-
-    return projects.map((project) =>
-      toArchivedProjectResponse(
-        project,
-        project.customerId ? customerById.get(String(project.customerId)) : undefined,
-      ),
-    );
+    const [organization, userId] = await Promise.all([
+      requireActiveOrganization(ctx),
+      requireAuthUserId(ctx),
+    ]);
+    return await listArchivedProjectsForOrganization(ctx, {
+      organizationId: organization.id,
+      userId,
+    });
   },
 });
 
@@ -433,25 +758,15 @@ export const getById = query({
   },
   returns: v.union(v.object(projectResponseFields), v.null()),
   handler: async (ctx, args) => {
-    const organization = await requireActiveOrganization(ctx);
-    const project = await ctx.db.get(args.projectId);
-
-    if (!project) {
-      return null;
-    }
-
-    if (project.organizationId !== organization.id || project.deletedAt !== undefined) {
-      return null;
-    }
-
-    const customer =
-      project.customerId !== undefined
-        ? await resolveCustomerAssignment(ctx, project.customerId, organization.id).catch(
-            () => undefined,
-          )
-        : undefined;
-
-    return toProjectResponse(project, customer ? toCustomerResponse(customer) : undefined);
+    const [organization, userId] = await Promise.all([
+      requireActiveOrganization(ctx),
+      requireAuthUserId(ctx),
+    ]);
+    return await getProjectByIdForOrganization(ctx, {
+      organizationId: organization.id,
+      userId,
+      projectId: args.projectId,
+    });
   },
 });
 
@@ -489,79 +804,16 @@ export const timeline = query({
     }),
   ),
   handler: async (ctx, args) => {
-    const organization = await requireActiveOrganization(ctx);
-    const project = await ctx.db.get(args.projectId);
-
-    if (!project || project.deletedAt !== undefined) {
-      return [];
-    }
-
-    if (project.organizationId !== organization.id) {
-      throw new ConvexError("Unauthorized");
-    }
-
-    const limit = Math.min(Math.max(args.limit ?? 200, 1), MAX_TIMELINE_ITEMS);
-    const timelineRows = await ctx.db
-      .query("projectTimelineItems")
-      .withIndex("by_project_addedAt", (q) => q.eq("projectId", args.projectId))
-      .order("desc")
-      .take(limit);
-
-    return await Promise.all(
-      timelineRows.map(async (timelineRow) => {
-        const media = await Promise.all(
-          (timelineRow.mediaAssets ?? []).map(async (entry) => {
-            const mediaAsset = await ctx.db.get(entry.mediaAssetId);
-
-            if (!(mediaAsset && mediaAsset.organizationId === organization.id)) {
-              return {
-                mediaAssetId: entry.mediaAssetId,
-                mimeType: entry.mimeType,
-                kind: entry.kind,
-              };
-            }
-
-            return {
-              mediaAssetId: entry.mediaAssetId,
-              mimeType: entry.mimeType,
-              kind: entry.kind,
-              summary: mediaAsset.summary,
-              transcript: mediaAsset.transcript,
-              extractedText: mediaAsset.extractedText,
-              fieldLocales: mediaAsset.fieldLocales,
-              url: (await ctx.storage.getUrl(mediaAsset.storageId)) ?? undefined,
-            };
-          }),
-        );
-
-        return {
-          _id: timelineRow._id,
-          batchId: timelineRow.batchId,
-          sourceType: timelineRow.sourceType,
-          messageId: timelineRow.messageId,
-          addedAt: timelineRow.addedAt,
-          dayBucketUtc: timelineRow.dayBucketUtc,
-          addedByMemberId: timelineRow.addedByMemberId,
-          addedByUserId: timelineRow.addedByUserId,
-          addedByName: timelineRow.addedByName,
-          sourceText: timelineRow.sourceText,
-          text: timelineRow.text,
-          transcript: timelineRow.transcript,
-          extractedText: timelineRow.extractedText,
-          summary: timelineRow.summary,
-          batchTitle: timelineRow.batchTitle,
-          batchOverview: timelineRow.batchOverview,
-          hasNachtrag: timelineRow.hasNachtrag,
-          nachtragNeedsClarification: timelineRow.nachtragNeedsClarification,
-          nachtragItems: timelineRow.nachtragItems,
-          nachtragDetails: timelineRow.nachtragDetails,
-          nachtragLanguage: normalizeAppLocale(timelineRow.nachtragLanguage) ?? undefined,
-          keywords: timelineRow.keywords,
-          fieldLocales: timelineRow.fieldLocales,
-          media,
-        };
-      }),
-    );
+    const [organization, userId] = await Promise.all([
+      requireActiveOrganization(ctx),
+      requireAuthUserId(ctx),
+    ]);
+    await requireOrganizationMember(ctx, organization.id, userId);
+    return await listTimelineForProject(ctx, {
+      organizationId: organization.id,
+      projectId: args.projectId,
+      limit: args.limit,
+    });
   },
 });
 
@@ -590,6 +842,220 @@ export const create = mutation({
       createdAt: now,
       updatedAt: now,
     });
+  },
+});
+
+export const listForOrganization = internalQuery({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    statuses: v.optional(v.array(projectStatusValidator)),
+  },
+  returns: v.array(projectListItemValidator),
+  handler: async (ctx, args) => {
+    return await listProjectsForOrganization(ctx, args);
+  },
+});
+
+export const listByCustomerForOrganization = internalQuery({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    customerId: v.id("customers"),
+    statuses: v.optional(v.array(projectStatusValidator)),
+  },
+  returns: v.array(projectListItemValidator),
+  handler: async (ctx, args) => {
+    return await listProjectsByCustomerForOrganization(ctx, args);
+  },
+});
+
+export const listArchivedForOrganization = internalQuery({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+  },
+  returns: v.array(archivedProjectListItemValidator),
+  handler: async (ctx, args) => {
+    return await listArchivedProjectsForOrganization(ctx, args);
+  },
+});
+
+export const getByIdForOrganization = internalQuery({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    projectId: v.id("projects"),
+  },
+  returns: v.union(v.object(projectResponseFields), v.null()),
+  handler: async (ctx, args) => {
+    return await getProjectByIdForOrganization(ctx, args);
+  },
+});
+
+export const timelineForOrganization = internalQuery({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    projectId: v.id("projects"),
+    limit: v.optional(v.number()),
+  },
+  returns: v.array(
+    v.object({
+      _id: v.id("projectTimelineItems"),
+      batchId: v.id("whatsappSendBatches"),
+      sourceType: v.union(v.literal("whatsapp_message"), v.literal("whatsapp_batch_summary")),
+      messageId: v.optional(v.id("whatsappMessages")),
+      addedAt: v.number(),
+      dayBucketUtc: v.string(),
+      addedByMemberId: v.string(),
+      addedByUserId: v.string(),
+      addedByName: v.optional(v.string()),
+      sourceText: v.optional(v.string()),
+      text: v.optional(v.string()),
+      transcript: v.optional(v.string()),
+      extractedText: v.optional(v.string()),
+      summary: v.optional(v.string()),
+      batchTitle: v.optional(v.string()),
+      batchOverview: v.optional(v.string()),
+      hasNachtrag: v.optional(v.boolean()),
+      nachtragNeedsClarification: v.optional(v.boolean()),
+      nachtragItems: v.optional(v.array(v.string())),
+      nachtragDetails: v.optional(v.string()),
+      nachtragLanguage: v.optional(vAppLocale),
+      keywords: v.optional(v.array(v.string())),
+      fieldLocales: v.optional(timelineFieldLocalesValidator),
+      media: v.array(timelineMediaValidator),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireOrganizationMember(ctx, args.organizationId, args.userId);
+    return await listTimelineForProject(ctx, {
+      organizationId: args.organizationId,
+      projectId: args.projectId,
+      limit: args.limit,
+    });
+  },
+});
+
+export const createForOrganization = internalMutation({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    name: v.string(),
+    location: v.optional(v.string()),
+    customerId: v.optional(v.id("customers")),
+  },
+  returns: v.id("projects"),
+  handler: async (ctx, args) => {
+    await requireOrganizationMember(ctx, args.organizationId, args.userId);
+    const customer = await resolveCustomerAssignment(ctx, args.customerId, args.organizationId);
+    const now = Date.now();
+
+    return await ctx.db.insert("projects", {
+      organizationId: args.organizationId,
+      createdBy: args.userId,
+      customerId: customer?._id,
+      name: normalizeName(args.name),
+      location: normalizeLocation(args.location),
+      status: PROJECT_STATUS_ACTIVE,
+      createdAt: now,
+      updatedAt: now,
+    });
+  },
+});
+
+export const updateForOrganization = internalMutation({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    projectId: v.id("projects"),
+    name: v.optional(v.string()),
+    location: v.optional(v.union(v.string(), v.null())),
+    customerId: v.optional(v.union(v.id("customers"), v.null())),
+    status: v.optional(projectStatusValidator),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireOrganizationMember(ctx, args.organizationId, args.userId);
+    const project = ensureProjectBelongsToOrganization(await ctx.db.get(args.projectId), args.organizationId);
+    if (project.deletedAt !== undefined) {
+      throw new ConvexError("Project not found");
+    }
+
+    const noFieldChanges =
+      args.name === undefined &&
+      args.location === undefined &&
+      args.customerId === undefined &&
+      args.status === undefined;
+    if (noFieldChanges) {
+      return null;
+    }
+
+    const patch: Partial<Doc<"projects">> = {
+      updatedAt: Date.now(),
+    };
+
+    if (args.name !== undefined) {
+      patch.name = normalizeName(args.name);
+    }
+
+    if (args.location !== undefined) {
+      patch.location = normalizeLocation(args.location ?? undefined);
+    }
+
+    if (args.customerId !== undefined) {
+      if (args.customerId === null) {
+        patch.customerId = undefined;
+      } else {
+        const customer = await resolveCustomerAssignment(ctx, args.customerId, args.organizationId);
+        patch.customerId = customer?._id;
+      }
+    }
+
+    if (args.status !== undefined) {
+      patch.status = args.status;
+    }
+
+    await ctx.db.patch(args.projectId, patch);
+    return null;
+  },
+});
+
+export const restoreForOrganization = internalMutation({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    projectId: v.id("projects"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireOrganizationMember(ctx, args.organizationId, args.userId);
+    const project = ensureProjectBelongsToOrganization(await ctx.db.get(args.projectId), args.organizationId);
+    if (project.deletedAt === undefined) {
+      return null;
+    }
+
+    const now = Date.now();
+    if (project.customerId) {
+      const customer = await ensureCustomerBelongsToOrganization(
+        ctx,
+        project.customerId,
+        args.organizationId,
+      );
+      if (customer.deletedAt !== undefined) {
+        await ctx.db.patch(customer._id, {
+          deletedAt: undefined,
+          updatedAt: now,
+        });
+      }
+    }
+
+    await ctx.db.patch(args.projectId, {
+      deletedAt: undefined,
+      updatedAt: now,
+    });
+    return null;
   },
 });
 
@@ -762,112 +1228,28 @@ export const reassignBatchProject = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const organization = await requireActiveOrganization(ctx);
-    const batch = await ctx.db.get(args.batchId);
-
-    if (!batch) {
-      throw new ConvexError("Batch not found");
-    }
-
-    if (batch.organizationId !== organization.id) {
-      throw new ConvexError("Unauthorized");
-    }
-
-    const timelineRows = await ctx.db
-      .query("projectTimelineItems")
-      .withIndex("by_batchId", (q) => q.eq("batchId", args.batchId))
-      .collect();
-
-    if (timelineRows.length === 0) {
-      throw new ConvexError("Timeline batch not found");
-    }
-
-    const sourceProjectId = timelineRows[0]?.projectId;
-    const sourceProject = sourceProjectId
-      ? ensureProjectBelongsToOrganization(await ctx.db.get(sourceProjectId), organization.id)
-      : null;
-    const targetProject = ensureProjectBelongsToOrganization(
-      await ctx.db.get(args.targetProjectId),
-      organization.id,
-    );
-
-    if (targetProject.deletedAt !== undefined) {
-      throw new ConvexError("Project not found");
-    }
-
-    if (sourceProject?.deletedAt !== undefined) {
-      throw new ConvexError("Project not found");
-    }
-
-    if (resolveProjectStatus(targetProject.status) !== PROJECT_STATUS_ACTIVE) {
-      throw new ConvexError("Only active projects can receive timeline updates");
-    }
-
-    if (sourceProject && resolveProjectStatus(sourceProject.status) !== PROJECT_STATUS_ACTIVE) {
-      throw new ConvexError("Only active projects can be updated");
-    }
-
-    if (sourceProjectId === targetProject._id) {
-      return null;
-    }
-
-    for (const timelineRow of timelineRows) {
-      if (timelineRow.organizationId !== organization.id) {
-        throw new ConvexError("Unauthorized");
-      }
-    }
-
-    const mediaAssetIds = new Set<string>();
-    const mediaAssetIdList: Id<"whatsappMediaAssets">[] = [];
-
-    for (const timelineRow of timelineRows) {
-      await ctx.db.patch(timelineRow._id, {
-        projectId: targetProject._id,
-      });
-
-      for (const mediaAsset of timelineRow.mediaAssets ?? []) {
-        const mediaAssetId = mediaAsset.mediaAssetId;
-        const dedupeKey = String(mediaAssetId);
-
-        if (mediaAssetIds.has(dedupeKey)) {
-          continue;
-        }
-
-        mediaAssetIds.add(dedupeKey);
-        mediaAssetIdList.push(mediaAssetId);
-      }
-    }
-
-    for (const mediaAssetId of mediaAssetIdList) {
-      await ctx.db.patch(mediaAssetId, {
-        projectId: targetProject._id,
-      });
-    }
-
-    const now = Date.now();
-    await ctx.db.patch(args.batchId, {
-      projectId: targetProject._id,
-      updatedAt: now,
+    return await reassignBatchProjectForOrganization(ctx, {
+      organizationId: organization.id,
+      batchId: args.batchId,
+      targetProjectId: args.targetProjectId,
     });
-    const [targetProjectNachtragAt, sourceProjectNachtragAt] = await Promise.all([
-      computeLatestNachtragAtForProject(ctx, targetProject._id),
-      sourceProjectId
-        ? computeLatestNachtragAtForProject(ctx, sourceProjectId)
-        : Promise.resolve(0),
-    ]);
-    await ctx.db.patch(targetProject._id, {
-      lastTimelineActivityAt: now,
-      lastNachtragAt: targetProjectNachtragAt,
-      updatedAt: now,
+  },
+});
+
+export const reassignBatchProjectForOrganizationUser = internalMutation({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    batchId: v.id("whatsappSendBatches"),
+    targetProjectId: v.id("projects"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireOrganizationMember(ctx, args.organizationId, args.userId);
+    return await reassignBatchProjectForOrganization(ctx, {
+      organizationId: args.organizationId,
+      batchId: args.batchId,
+      targetProjectId: args.targetProjectId,
     });
-
-    if (sourceProject && sourceProjectId) {
-      await ctx.db.patch(sourceProjectId, {
-        lastTimelineActivityAt: now,
-        lastNachtragAt: sourceProjectNachtragAt,
-        updatedAt: now,
-      });
-    }
-
-    return null;
   },
 });

@@ -1,8 +1,14 @@
 import { v } from "convex/values";
 
 import { components } from "./_generated/api";
-import { mutation, query } from "./_generated/server";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import {
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx,
+} from "./_generated/server";
 import { authComponent } from "./auth";
 
 type MemberDoc = {
@@ -58,6 +64,43 @@ export const getForOrganization = query({
       ctx,
       args.organizationId,
       authUser._id,
+    );
+    if (!membership) {
+      return null;
+    }
+
+    const profile = await ctx.db
+      .query("organizationAgentProfiles")
+      .withIndex("by_organizationId", (q) =>
+        q.eq("organizationId", args.organizationId),
+      )
+      .first();
+
+    if (!profile) {
+      return null;
+    }
+
+    return {
+      organizationId: profile.organizationId,
+      name: profile.name,
+      styleId: profile.styleId,
+      updatedByUserId: profile.updatedByUserId,
+      updatedAt: profile.updatedAt,
+    };
+  },
+});
+
+export const getForOrganizationUser = internalQuery({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+  },
+  returns: v.union(agentProfileValidator, v.null()),
+  handler: async (ctx, args) => {
+    const membership = await getMemberForOrganization(
+      ctx,
+      args.organizationId,
+      args.userId,
     );
     if (!membership) {
       return null;
@@ -145,6 +188,68 @@ export const saveForOrganization = mutation({
       name: trimmedName,
       styleId: args.styleId,
       updatedByUserId: authUser._id,
+      updatedAt,
+    };
+  },
+});
+
+export const saveForOrganizationUser = internalMutation({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    name: v.string(),
+    styleId: agentStyleValidator,
+  },
+  returns: agentProfileValidator,
+  handler: async (ctx, args) => {
+    const membership = await getMemberForOrganization(
+      ctx,
+      args.organizationId,
+      args.userId,
+    );
+    if (!membership) {
+      throw new Error("You do not have access to this organization");
+    }
+
+    const trimmedName = args.name.trim();
+    if (trimmedName.length < 2) {
+      throw new Error("AI agent name must be at least 2 characters");
+    }
+    if (trimmedName.length > MAX_AGENT_NAME_LENGTH) {
+      throw new Error(`AI agent name must be at most ${MAX_AGENT_NAME_LENGTH} characters`);
+    }
+
+    const existingProfile = await ctx.db
+      .query("organizationAgentProfiles")
+      .withIndex("by_organizationId", (q) =>
+        q.eq("organizationId", args.organizationId),
+      )
+      .first();
+
+    const updatedAt = Date.now();
+
+    if (existingProfile) {
+      await ctx.db.patch(existingProfile._id, {
+        name: trimmedName,
+        styleId: args.styleId,
+        updatedByUserId: args.userId,
+        updatedAt,
+      });
+    } else {
+      await ctx.db.insert("organizationAgentProfiles", {
+        organizationId: args.organizationId,
+        name: trimmedName,
+        styleId: args.styleId,
+        updatedByUserId: args.userId,
+        updatedAt,
+      });
+    }
+
+    return {
+      organizationId: args.organizationId,
+      name: trimmedName,
+      styleId: args.styleId,
+      updatedByUserId: args.userId,
       updatedAt,
     };
   },

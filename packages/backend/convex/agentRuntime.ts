@@ -725,6 +725,7 @@ async function sendProactiveWhatsAppMessageNow(options: {
 export async function buildWorkspaceAgentTools(
   options: BuildWorkspaceAgentToolsOptions,
 ) {
+  const useOrganizationScopedWhatsappTools = options.channel === "whatsapp";
   const permissionFlags = await getToolPermissionFlags({
     auth: options.auth,
     headers: options.headers,
@@ -929,8 +930,15 @@ export async function buildWorkspaceAgentTools(
       : undefined,
     getOrganizationSettings: async () => {
       const result = (await options.ctx.runQuery(
-        api.organizationSettings.getForActiveOrganization,
-        {},
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).organizationSettings.getForOrganizationUser
+          : api.organizationSettings.getForActiveOrganization,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+            }
+          : {},
       )) as {
         organizationId: string;
         companyEmail?: string;
@@ -949,11 +957,20 @@ export async function buildWorkspaceAgentTools(
           ? options.locale
           : (input.companyEmailLocale ?? options.locale);
       const result = (await options.ctx.runMutation(
-        api.organizationSettings.saveForActiveOrganization,
-        {
-          companyEmail: input.companyEmail ?? null,
-          companyEmailLocale: nextLocale,
-        },
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).organizationSettings.saveForOrganizationUser
+          : api.organizationSettings.saveForActiveOrganization,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              companyEmail: input.companyEmail ?? null,
+              companyEmailLocale: nextLocale,
+            }
+          : {
+              companyEmail: input.companyEmail ?? null,
+              companyEmailLocale: nextLocale,
+            },
       )) as {
         organizationId: string;
         companyEmail?: string;
@@ -968,10 +985,17 @@ export async function buildWorkspaceAgentTools(
     },
     getOrganizationAgentProfile: async () => {
       const result = (await options.ctx.runQuery(
-        api.organizationAgentProfiles.getForOrganization,
-        {
-          organizationId: options.organizationId,
-        },
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).organizationAgentProfiles.getForOrganizationUser
+          : api.organizationAgentProfiles.getForOrganization,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+            }
+          : {
+              organizationId: options.organizationId,
+            },
       )) as {
         organizationId: string;
         name: string;
@@ -990,12 +1014,21 @@ export async function buildWorkspaceAgentTools(
     },
     updateOrganizationAgentProfile: async (input) => {
       const result = (await options.ctx.runMutation(
-        api.organizationAgentProfiles.saveForOrganization,
-        {
-          organizationId: options.organizationId,
-          name: input.name,
-          styleId: input.styleId,
-        },
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).organizationAgentProfiles.saveForOrganizationUser
+          : api.organizationAgentProfiles.saveForOrganization,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              name: input.name,
+              styleId: input.styleId,
+            }
+          : {
+              organizationId: options.organizationId,
+              name: input.name,
+              styleId: input.styleId,
+            },
       )) as {
         organizationId: string;
         name: string;
@@ -1055,11 +1088,23 @@ export async function buildWorkspaceAgentTools(
         }
       : undefined,
     createPhoneOnlyMember: async (input) => {
-      const created = await options.ctx.runAction(api.members.createPhoneOnlyMember, {
-        organizationId: options.organizationId,
-        name: input.name,
-        phoneNumber: input.phoneNumber,
-      });
+      const created = await options.ctx.runAction(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).members.createPhoneOnlyMemberForOrganizationUser
+          : api.members.createPhoneOnlyMember,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              name: input.name,
+              phoneNumber: input.phoneNumber,
+            }
+          : {
+              organizationId: options.organizationId,
+              name: input.name,
+              phoneNumber: input.phoneNumber,
+            },
+      );
       const member = normalizeMember(created);
       if (!member) {
         throw new Error(
@@ -1072,12 +1117,21 @@ export async function buildWorkspaceAgentTools(
     },
     setMemberWhatsAppConnection: async (input) => {
       const connection = (await options.ctx.runMutation(
-        api.whatsappData.setMemberConnection,
-        {
-          organizationId: options.organizationId,
-          memberId: input.memberId,
-          phoneNumber: input.phoneNumber,
-        },
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).whatsappData.setMemberConnectionForOrganizationUser
+          : api.whatsappData.setMemberConnection,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              memberId: input.memberId,
+              phoneNumber: input.phoneNumber,
+            }
+          : {
+              organizationId: options.organizationId,
+              memberId: input.memberId,
+              phoneNumber: input.phoneNumber,
+            },
       )) as {
         memberId: string;
         userId: string;
@@ -1420,7 +1474,17 @@ export async function buildWorkspaceAgentTools(
 
   const customerTools: CreateCustomerToolsOptions = {
     listCustomers: async () => {
-      const customers = (await options.ctx.runQuery(api.customers.list, {})) as Array<{
+      const customers = (await options.ctx.runQuery(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).customers.listForOrganization
+          : api.customers.list,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+            }
+          : {},
+      )) as Array<{
         _id: Id<"customers">;
         name: string;
         contactName?: string;
@@ -1434,9 +1498,20 @@ export async function buildWorkspaceAgentTools(
       return customers.map(mapCustomerSummary);
     },
     getCustomer: async (input) => {
-      const customer = (await options.ctx.runQuery(api.customers.getById, {
-        customerId: input.customerId as Id<"customers">,
-      })) as {
+      const customer = (await options.ctx.runQuery(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).customers.getByIdForOrganization
+          : api.customers.getById,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              customerId: input.customerId as Id<"customers">,
+            }
+          : {
+              customerId: input.customerId as Id<"customers">,
+            },
+      )) as {
         _id: Id<"customers">;
         name: string;
         contactName?: string;
@@ -1450,12 +1525,26 @@ export async function buildWorkspaceAgentTools(
       return customer ? mapCustomerSummary(customer) : null;
     },
     createCustomer: async (input) => {
-      const customerId = (await options.ctx.runMutation(api.customers.create, {
-        name: input.name,
-        contactName: input.contactName,
-        email: input.email,
-        phone: input.phone,
-      })) as Id<"customers">;
+      const customerId = (await options.ctx.runMutation(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).customers.createForOrganization
+          : api.customers.create,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              name: input.name,
+              contactName: input.contactName,
+              email: input.email,
+              phone: input.phone,
+            }
+          : {
+              name: input.name,
+              contactName: input.contactName,
+              email: input.email,
+              phone: input.phone,
+            },
+      )) as Id<"customers">;
       const customer = await customerTools.getCustomer({
         customerId: String(customerId),
       });
@@ -1469,13 +1558,28 @@ export async function buildWorkspaceAgentTools(
       return customer;
     },
     updateCustomer: async (input) => {
-      await options.ctx.runMutation(api.customers.update, {
-        customerId: input.customerId as Id<"customers">,
-        name: input.name,
-        contactName: input.contactName,
-        email: input.email,
-        phone: input.phone,
-      });
+      await options.ctx.runMutation(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).customers.updateForOrganization
+          : api.customers.update,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              customerId: input.customerId as Id<"customers">,
+              name: input.name,
+              contactName: input.contactName,
+              email: input.email,
+              phone: input.phone,
+            }
+          : {
+              customerId: input.customerId as Id<"customers">,
+              name: input.name,
+              contactName: input.contactName,
+              email: input.email,
+              phone: input.phone,
+            },
+      );
       const customer = await customerTools.getCustomer({
         customerId: input.customerId,
       });
@@ -1490,8 +1594,15 @@ export async function buildWorkspaceAgentTools(
     },
     listArchivedCustomers: async () => {
       const customers = (await options.ctx.runQuery(
-        api.customers.listArchived,
-        {},
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).customers.listArchivedForOrganization
+          : api.customers.listArchived,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+            }
+          : {},
       )) as Array<{
         _id: Id<"customers">;
         name: string;
@@ -1504,9 +1615,20 @@ export async function buildWorkspaceAgentTools(
       return customers.map(mapArchivedCustomerSummary);
     },
     restoreCustomer: async (input) => {
-      await options.ctx.runMutation(api.customers.restore, {
-        customerId: input.customerId as Id<"customers">,
-      });
+      await options.ctx.runMutation(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).customers.restoreForOrganization
+          : api.customers.restore,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              customerId: input.customerId as Id<"customers">,
+            }
+          : {
+              customerId: input.customerId as Id<"customers">,
+            },
+      );
       const customer = await customerTools.getCustomer({
         customerId: input.customerId,
       });
@@ -1565,13 +1687,37 @@ export async function buildWorkspaceAgentTools(
   const projectTools: CreateProjectToolsOptions = {
     listProjects: async (input) => {
       const statuses = input?.statuses;
-      const queryArgs = statuses ? { statuses } : {};
       const projects = (input?.customerId
-        ? await options.ctx.runQuery(api.projects.listByCustomer, {
-            customerId: input.customerId as Id<"customers">,
-            ...(statuses ? { statuses } : {}),
-          })
-        : await options.ctx.runQuery(api.projects.list, queryArgs)) as Array<{
+        ? await options.ctx.runQuery(
+            useOrganizationScopedWhatsappTools
+              ? (internal as any).projects.listByCustomerForOrganization
+              : api.projects.listByCustomer,
+            useOrganizationScopedWhatsappTools
+              ? {
+                  organizationId: options.organizationId,
+                  userId: options.userId,
+                  customerId: input.customerId as Id<"customers">,
+                  ...(statuses ? { statuses } : {}),
+                }
+              : {
+                  customerId: input.customerId as Id<"customers">,
+                  ...(statuses ? { statuses } : {}),
+                },
+          )
+        : await options.ctx.runQuery(
+            useOrganizationScopedWhatsappTools
+              ? (internal as any).projects.listForOrganization
+              : api.projects.list,
+            useOrganizationScopedWhatsappTools
+              ? {
+                  organizationId: options.organizationId,
+                  userId: options.userId,
+                  ...(statuses ? { statuses } : {}),
+                }
+              : statuses
+                ? { statuses }
+                : {},
+          )) as Array<{
         _id: Id<"projects">;
         name: string;
         location?: string;
@@ -1590,9 +1736,20 @@ export async function buildWorkspaceAgentTools(
       return projects.map(mapProjectSummary);
     },
     getProject: async (input) => {
-      const project = (await options.ctx.runQuery(api.projects.getById, {
-        projectId: input.projectId as Id<"projects">,
-      })) as {
+      const project = (await options.ctx.runQuery(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).projects.getByIdForOrganization
+          : api.projects.getById,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              projectId: input.projectId as Id<"projects">,
+            }
+          : {
+              projectId: input.projectId as Id<"projects">,
+            },
+      )) as {
         _id: Id<"projects">;
         name: string;
         location?: string;
@@ -1610,11 +1767,24 @@ export async function buildWorkspaceAgentTools(
       return project ? mapProjectSummary(project) : null;
     },
     createProject: async (input) => {
-      const projectId = (await options.ctx.runMutation(api.projects.create, {
-        name: input.name,
-        location: input.location,
-        customerId: input.customerId as Id<"customers"> | undefined,
-      })) as Id<"projects">;
+      const projectId = (await options.ctx.runMutation(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).projects.createForOrganization
+          : api.projects.create,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              name: input.name,
+              location: input.location,
+              customerId: input.customerId as Id<"customers"> | undefined,
+            }
+          : {
+              name: input.name,
+              location: input.location,
+              customerId: input.customerId as Id<"customers"> | undefined,
+            },
+      )) as Id<"projects">;
       const project = await projectTools.getProject({
         projectId: String(projectId),
       });
@@ -1628,18 +1798,38 @@ export async function buildWorkspaceAgentTools(
       return project;
     },
     updateProject: async (input) => {
-      await options.ctx.runMutation(api.projects.update, {
-        projectId: input.projectId as Id<"projects">,
-        name: input.name,
-        location: input.location,
-        customerId:
-          input.customerId === undefined
-            ? undefined
-            : input.customerId === null
-              ? null
-              : (input.customerId as Id<"customers">),
-        status: input.status,
-      });
+      await options.ctx.runMutation(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).projects.updateForOrganization
+          : api.projects.update,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              projectId: input.projectId as Id<"projects">,
+              name: input.name,
+              location: input.location,
+              customerId:
+                input.customerId === undefined
+                  ? undefined
+                  : input.customerId === null
+                    ? null
+                    : (input.customerId as Id<"customers">),
+              status: input.status,
+            }
+          : {
+              projectId: input.projectId as Id<"projects">,
+              name: input.name,
+              location: input.location,
+              customerId:
+                input.customerId === undefined
+                  ? undefined
+                  : input.customerId === null
+                    ? null
+                    : (input.customerId as Id<"customers">),
+              status: input.status,
+            },
+      );
       const project = await projectTools.getProject({
         projectId: input.projectId,
       });
@@ -1653,7 +1843,17 @@ export async function buildWorkspaceAgentTools(
       return project;
     },
     listArchivedProjects: async () => {
-      const projects = (await options.ctx.runQuery(api.projects.listArchived, {})) as Array<{
+      const projects = (await options.ctx.runQuery(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).projects.listArchivedForOrganization
+          : api.projects.listArchived,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+            }
+          : {},
+      )) as Array<{
         _id: Id<"projects">;
         name: string;
         location?: string;
@@ -1666,9 +1866,20 @@ export async function buildWorkspaceAgentTools(
       return projects.map(mapArchivedProjectSummary);
     },
     restoreProject: async (input) => {
-      await options.ctx.runMutation(api.projects.restore, {
-        projectId: input.projectId as Id<"projects">,
-      });
+      await options.ctx.runMutation(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).projects.restoreForOrganization
+          : api.projects.restore,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              projectId: input.projectId as Id<"projects">,
+            }
+          : {
+              projectId: input.projectId as Id<"projects">,
+            },
+      );
       const project = await projectTools.getProject({
         projectId: input.projectId,
       });
@@ -1694,11 +1905,20 @@ export async function buildWorkspaceAgentTools(
       }
 
       const localized = (await options.ctx.runAction(
-        api.projectTranslations.timelineLocalized,
-        {
-          projectId: input.projectId as Id<"projects">,
-          limit: 500,
-        },
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).projectTranslations.timelineLocalizedForOrganizationUser
+          : api.projectTranslations.timelineLocalized,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              projectId: input.projectId as Id<"projects">,
+              limit: 500,
+            }
+          : {
+              projectId: input.projectId as Id<"projects">,
+              limit: 500,
+            },
       )) as { rows: TimelineSummaryRow[] };
 
       return buildTimelineBatchSummaries({
@@ -1718,10 +1938,22 @@ export async function buildWorkspaceAgentTools(
       )) as DocumentationOverviewSearchResult;
     },
     reassignProjectBatch: async (input) => {
-      await options.ctx.runMutation(api.projects.reassignBatchProject, {
-        batchId: input.batchId as Id<"whatsappSendBatches">,
-        targetProjectId: input.targetProjectId as Id<"projects">,
-      });
+      await options.ctx.runMutation(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).projects.reassignBatchProjectForOrganizationUser
+          : api.projects.reassignBatchProject,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+              batchId: input.batchId as Id<"whatsappSendBatches">,
+              targetProjectId: input.targetProjectId as Id<"projects">,
+            }
+          : {
+              batchId: input.batchId as Id<"whatsappSendBatches">,
+              targetProjectId: input.targetProjectId as Id<"projects">,
+            },
+      );
       return {
         batchId: input.batchId,
         targetProjectId: input.targetProjectId,
@@ -1990,9 +2222,19 @@ export async function buildWorkspaceAgentTools(
       };
     },
     getMyWhatsAppConnection: async (): Promise<MyWhatsAppConnectionSummary | null> => {
-      const result = (await options.ctx.runQuery(api.whatsappData.getMyConnection, {
-        organizationId: options.organizationId,
-      })) as {
+      const result = (await options.ctx.runQuery(
+        useOrganizationScopedWhatsappTools
+          ? (internal as any).whatsappData.getMyConnectionForOrganizationUser
+          : api.whatsappData.getMyConnection,
+        useOrganizationScopedWhatsappTools
+          ? {
+              organizationId: options.organizationId,
+              userId: options.userId,
+            }
+          : {
+              organizationId: options.organizationId,
+            },
+      )) as {
         memberId: string;
         role: string;
         connection?: {

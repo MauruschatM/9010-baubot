@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 
 import { components, internal } from "./_generated/api";
-import { action, query } from "./_generated/server";
+import { action, internalAction, query } from "./_generated/server";
 import { authComponent } from "./auth";
 import {
   buildPhoneOnlyMemberEmail,
@@ -192,6 +192,126 @@ async function deleteMemberIfPresent(ctx: {
   } as never);
 }
 
+async function createPhoneOnlyMemberWithUser(ctx: {
+  runQuery: (
+    queryRef: any,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
+  runMutation: (
+    mutationRef: any,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
+}, args: {
+  organizationId: string;
+  userId: string;
+  name: string;
+  phoneNumber: string;
+}) {
+  const currentMember = await getCurrentOrganizationMember(ctx, {
+    organizationId: args.organizationId,
+    userId: args.userId,
+  });
+
+  if (!currentMember) {
+    throw new Error("You do not have access to this organization");
+  }
+
+  if (currentMember.role !== "owner" && currentMember.role !== "admin") {
+    throw new Error("You are not allowed to add WhatsApp-only members");
+  }
+
+  const displayName = args.name.trim();
+  if (displayName.length < PHONE_ONLY_NAME_MIN_LENGTH) {
+    throw new Error("Name is too short");
+  }
+
+  const normalizedPhone = normalizePhoneNumber(args.phoneNumber);
+  if (!normalizedPhone) {
+    throw new Error("Invalid WhatsApp number");
+  }
+
+  const conflictingConnection = (await ctx.runQuery(
+    internal.whatsappData.getActiveConnectionByPhone,
+    {
+      phoneNumberE164: normalizedPhone.e164,
+    },
+  )) as { memberId: string } | null;
+
+  if (conflictingConnection) {
+    throw new Error("This WhatsApp number is already connected to another member");
+  }
+
+  let createdUserId: string | null = null;
+  let createdMemberId: string | null = null;
+
+  try {
+    const user = await createHiddenUser(ctx, {
+      displayName,
+    });
+    createdUserId = user._id;
+
+    const member = await createOrganizationMember(ctx, {
+      organizationId: args.organizationId,
+      userId: user._id,
+      role: "member",
+    });
+    createdMemberId = member._id;
+
+    await ctx.runMutation(internal.memberProfiles.upsertMemberProfile, {
+      organizationId: args.organizationId,
+      memberId: member._id,
+      userId: user._id,
+      memberType: MEMBER_TYPE_PHONE_ONLY,
+      displayName,
+      createdByUserId: args.userId,
+    });
+
+    await ctx.runMutation(internal.whatsappData.upsertConnectionForMember, {
+      organizationId: args.organizationId,
+      memberId: member._id,
+      userId: user._id,
+      phoneNumberE164: normalizedPhone.e164,
+      strictUniqueness: true,
+    });
+
+    await ensureServiceSessionForUser(ctx, {
+      userId: user._id,
+      organizationId: args.organizationId,
+      userAgent: "whatsapp-phone-only-member",
+    });
+
+    const members = (await ctx.runQuery(
+      internal.memberProfiles.getResolvedMembersForOrganization,
+      {
+        organizationId: args.organizationId,
+      },
+    )) as Array<{ id: string }>;
+
+    return members.find((memberRecord) => memberRecord.id === member._id) ?? null;
+  } catch (error) {
+    if (createdMemberId) {
+      await ctx.runMutation(internal.whatsappData.disconnectConnectionByMember, {
+        organizationId: args.organizationId,
+        memberId: createdMemberId,
+      }).catch(() => null);
+      await ctx.runMutation(internal.memberProfiles.deleteMemberProfileByMemberId, {
+        memberId: createdMemberId,
+      }).catch(() => null);
+      await deleteMemberIfPresent(ctx, createdMemberId).catch(() => null);
+    }
+
+    if (createdUserId) {
+      await deleteSessionsForUser(ctx, createdUserId).catch(() => null);
+      await ctx.runMutation(internal.memberProfiles.deleteLocalUserDataByUserId, {
+        userId: createdUserId,
+      }).catch(() => null);
+      await deleteUserIfPresent(ctx, createdUserId).catch(() => null);
+    }
+
+    throw error;
+  }
+}
+
 export const getLiveMembersPage = query({
   args: {
     organizationId: v.string(),
@@ -301,110 +421,24 @@ export const createPhoneOnlyMember = action({
     if (!authUser) {
       throw new Error("You must be signed in");
     }
-
-    const currentMember = await getCurrentOrganizationMember(ctx, {
+    return await createPhoneOnlyMemberWithUser(ctx, {
       organizationId: args.organizationId,
       userId: authUser._id,
+      name: args.name,
+      phoneNumber: args.phoneNumber,
     });
+  },
+});
 
-    if (!currentMember) {
-      throw new Error("You do not have access to this organization");
-    }
-
-    if (currentMember.role !== "owner" && currentMember.role !== "admin") {
-      throw new Error("You are not allowed to add WhatsApp-only members");
-    }
-
-    const displayName = args.name.trim();
-    if (displayName.length < PHONE_ONLY_NAME_MIN_LENGTH) {
-      throw new Error("Name is too short");
-    }
-
-    const normalizedPhone = normalizePhoneNumber(args.phoneNumber);
-    if (!normalizedPhone) {
-      throw new Error("Invalid WhatsApp number");
-    }
-
-    const conflictingConnection = (await ctx.runQuery(
-      internal.whatsappData.getActiveConnectionByPhone,
-      {
-        phoneNumberE164: normalizedPhone.e164,
-      },
-    )) as { memberId: string } | null;
-
-    if (conflictingConnection) {
-      throw new Error("This WhatsApp number is already connected to another member");
-    }
-
-    let createdUserId: string | null = null;
-    let createdMemberId: string | null = null;
-
-    try {
-      const user = await createHiddenUser(ctx, {
-        displayName,
-      });
-      createdUserId = user._id;
-
-      const member = await createOrganizationMember(ctx, {
-        organizationId: args.organizationId,
-        userId: user._id,
-        role: "member",
-      });
-      createdMemberId = member._id;
-
-      await ctx.runMutation(internal.memberProfiles.upsertMemberProfile, {
-        organizationId: args.organizationId,
-        memberId: member._id,
-        userId: user._id,
-        memberType: MEMBER_TYPE_PHONE_ONLY,
-        displayName,
-        createdByUserId: authUser._id,
-      });
-
-      await ctx.runMutation(internal.whatsappData.upsertConnectionForMember, {
-        organizationId: args.organizationId,
-        memberId: member._id,
-        userId: user._id,
-        phoneNumberE164: normalizedPhone.e164,
-        strictUniqueness: true,
-      });
-
-      await ensureServiceSessionForUser(ctx, {
-        userId: user._id,
-        organizationId: args.organizationId,
-        userAgent: "whatsapp-phone-only-member",
-      });
-
-      const members = (await ctx.runQuery(
-        internal.memberProfiles.getResolvedMembersForOrganization,
-        {
-          organizationId: args.organizationId,
-        },
-      )) as Array<{ id: string }>;
-
-      return members.find((memberRecord) => memberRecord.id === member._id) ?? null;
-    } catch (error) {
-      if (createdMemberId) {
-        await ctx.runMutation(internal.whatsappData.disconnectConnectionByMember, {
-          organizationId: args.organizationId,
-          memberId: createdMemberId,
-        }).catch(() => null);
-        await ctx.runMutation(internal.memberProfiles.deleteMemberProfileByMemberId, {
-          memberId: createdMemberId,
-        }).catch(() => null);
-        await deleteMemberIfPresent(ctx, createdMemberId).catch(() => null);
-      }
-
-      if (createdUserId) {
-        await deleteSessionsForUser(ctx, createdUserId).catch(() => null);
-        await ctx.runMutation(internal.memberProfiles.deleteLocalUserDataByUserId, {
-          userId: createdUserId,
-        }).catch(() => null);
-        await deleteUserIfPresent(ctx, createdUserId).catch(() => null);
-      }
-
-      throw error;
-    }
+export const createPhoneOnlyMemberForOrganizationUser = internalAction({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    name: v.string(),
+    phoneNumber: v.string(),
+  },
+  handler: async (ctx, args) => {
+    return await createPhoneOnlyMemberWithUser(ctx, args);
   },
 });
 
