@@ -374,17 +374,21 @@ async function fetchInboundMediaBlob(mediaItem: TwilioInboundPayload["media"][nu
     return null;
   }
 
-  const mediaResponse = await fetch(mediaItem.mediaUrl, {
-    headers: {
-      Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,
-    },
-  });
+  try {
+    const mediaResponse = await fetch(mediaItem.mediaUrl, {
+      headers: {
+        Authorization: `Basic ${btoa(`${accountSid}:${authToken}`)}`,
+      },
+    });
 
-  if (!mediaResponse.ok) {
+    if (!mediaResponse.ok) {
+      return null;
+    }
+
+    return await mediaResponse.blob();
+  } catch {
     return null;
   }
-
-  return await mediaResponse.blob();
 }
 
 async function transcribePendingReplyMedia(options: {
@@ -400,21 +404,25 @@ async function transcribePendingReplyMedia(options: {
     }
 
     transcriptionAttempted = true;
-    const mediaBlob = await fetchInboundMediaBlob(mediaItem);
-    if (!mediaBlob) {
-      continue;
-    }
+    try {
+      const mediaBlob = await fetchInboundMediaBlob(mediaItem);
+      if (!mediaBlob) {
+        continue;
+      }
 
-    const mediaBytes = new Uint8Array(await mediaBlob.arrayBuffer());
-    const transcription = await transcribeWhatsAppMedia({
-      fileBytes: mediaBytes,
-      contentType: mediaItem.contentType,
-      locale: options.locale,
-    });
+      const mediaBytes = new Uint8Array(await mediaBlob.arrayBuffer());
+      const transcription = await transcribeWhatsAppMedia({
+        fileBytes: mediaBytes,
+        contentType: mediaItem.contentType,
+        locale: options.locale,
+      });
 
-    const normalizedTranscription = clampMessageText(transcription ?? "");
-    if (normalizedTranscription) {
-      transcriptions.push(normalizedTranscription);
+      const normalizedTranscription = clampMessageText(transcription ?? "");
+      if (normalizedTranscription) {
+        transcriptions.push(normalizedTranscription);
+      }
+    } catch {
+      // Keep trying other media items so a single failed fetch/transcription does not abort reply handling.
     }
   }
 
@@ -552,12 +560,20 @@ export async function resolvePendingReplyInput(options: {
     };
   }
 
-  const resolvedTranscript = options.resolveTranscript
-    ? await options.resolveTranscript(transcribableMedia)
-    : (await transcribePendingReplyMedia({
-        locale: options.locale,
-        media: transcribableMedia,
-      })).text;
+  let resolvedTranscript: string | null = null;
+  try {
+    resolvedTranscript = options.resolveTranscript
+      ? await options.resolveTranscript(transcribableMedia)
+      : (await transcribePendingReplyMedia({
+          locale: options.locale,
+          media: transcribableMedia,
+        })).text;
+  } catch (error) {
+    console.warn("Failed to resolve WhatsApp pending reply transcript", {
+      mediaCount: transcribableMedia.length,
+      message: errorMessageFromUnknown(error),
+    });
+  }
 
   const normalizedTranscript = clampMessageText(resolvedTranscript ?? "");
   return {
@@ -1999,7 +2015,12 @@ export async function handlePendingProjectResolution(options: {
         batchId: pendingResolution.batchId,
         deliveryStage: "post_persistence",
       };
-    } catch {
+    } catch (error) {
+      console.error("WhatsApp pending project choice resolution failed", {
+        batchId: String(pendingResolution.batchId),
+        phoneNumberE164: options.connection.phoneNumberE164,
+        message: errorMessageFromUnknown(error),
+      });
       return {
         handled: true,
         reply: processingFallbackMessage(options.locale),
@@ -2047,7 +2068,12 @@ export async function handlePendingProjectResolution(options: {
       batchId: pendingResolution.batchId,
       deliveryStage: "post_persistence",
     };
-  } catch {
+  } catch (error) {
+    console.error("WhatsApp pending project naming failed", {
+      batchId: String(pendingResolution.batchId),
+      phoneNumberE164: options.connection.phoneNumberE164,
+      message: errorMessageFromUnknown(error),
+    });
     return {
       handled: true,
       reply: processingFallbackMessage(options.locale),

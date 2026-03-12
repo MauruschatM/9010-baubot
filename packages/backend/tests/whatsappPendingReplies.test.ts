@@ -81,6 +81,29 @@ describe("whatsapp pending reply handling", () => {
     });
   });
 
+  test("keeps media-only replies unresolved when transcription throws", async () => {
+    const result = await resolvePendingReplyInput({
+      body: "",
+      locale: "de",
+      media: [
+        {
+          mediaUrl: "https://example.com/audio.ogg",
+          contentType: "audio/ogg",
+        },
+      ],
+      resolveTranscript: async () => {
+        throw new Error("Twilio media fetch failed");
+      },
+    });
+
+    expect(result).toEqual({
+      text: "",
+      source: "none",
+      hadMedia: true,
+      transcriptionAttempted: true,
+    });
+  });
+
   test("does not defer a voice-only turn when a transcript exists", () => {
     expect(
       shouldDeferMediaOnlyTurn({
