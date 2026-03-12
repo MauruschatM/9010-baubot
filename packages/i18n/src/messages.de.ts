@@ -123,10 +123,50 @@ export const messagesDe = {
     },
   },
   landing: {
-    eyebrow: "MVP Template",
-    title: "Baue deinen Arbeitsbereich schneller.",
+    eyebrow: "KI-Assistenz für Baudokumentation",
+    badge: "WhatsApp rein. Projektdoku raus.",
+    title:
+      "Baubot hält Baustellen-Chats, Fotos und Sprachnachrichten in einem sauberen Ablauf zusammen.",
     description:
-      "Authentifizierung, Onboarding, Organisationen und die App-Shell sind bereits eingerichtet. Starte mit E-Mail und Passwort.",
+      "Erfasse Updates direkt aus WhatsApp, ordne sie Projekten und Kunden zu und halte Nachträge für das ganze Team nachvollziehbar, ohne Copy-Paste.",
+    stats: {
+      intakeValue: "24/7",
+      intakeLabel: "bereit für neue Updates",
+      structureValue: "1 Verlauf",
+      structureLabel: "für Chat, Medien und Nachträge",
+      handoffValue: "sofort",
+      handoffLabel: "im aktiven Projekt verfügbar",
+    },
+    preview: {
+      badge: "Baubot Workflow",
+      title: "Von der Nachricht zur Projekthistorie ohne manuelles Nachpflegen.",
+      description:
+        "Eingänge werden gesammelt, strukturiert und der richtigen Baustelle zugeordnet, bevor sie in Nebenchats verschwinden.",
+      steps: {
+        inboxTitle: "WhatsApp Eingang",
+        inboxDescription:
+          "Fotos, Sprachmemos und Status-Updates landen in einem verlässlichen Stream.",
+        projectTitle: "Projektzuordnung",
+        projectDescription:
+          "Baubot verknüpft Kunde, Ort und Zeitstempel automatisch.",
+        summaryTitle: "Sauberer Nachtrag",
+        summaryDescription:
+          "Das Team sieht sofort, was passiert ist und was offen bleibt.",
+      },
+      footer:
+        "Weniger Suchen. Weniger Weiterleiten. Mehr verlässliche Projektdokumentation.",
+    },
+    features: {
+      captureTitle: "Direkt aus dem Chat erfassen",
+      captureDescription:
+        "Texte, Bilder und Audios bleiben am selben Vorgang, statt in privaten Threads zu verschwinden.",
+      organizeTitle: "Automatisch strukturieren",
+      organizeDescription:
+        "Baubot ordnet Inhalte Projekten, Kunden und Zeitpunkten zu, damit später nichts rekonstruiert werden muss.",
+      shareTitle: "Im Team weiterarbeiten",
+      shareDescription:
+        "Alle arbeiten mit demselben Stand über Nachträge, Archive und Übergaben hinweg, ohne Medienbruch.",
+    },
   },
   auth: {
     login: {

@@ -1504,29 +1504,42 @@ function buildWhatsAppDeliveryError(error: unknown) {
   return `WhatsApp delivery failed: ${errorMessageFromUnknown(error)}`;
 }
 
+type OutboundMessageDeliveryResult =
+  | { ok: true }
+  | { ok: false; error: string };
+
 async function sendOutboundMessage(options: {
   text: string;
   phoneNumberE164: string;
   locale: AppLocale;
   connection: WhatsAppConnectionDoc | null;
   runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
-}) {
+}): Promise<OutboundMessageDeliveryResult> {
   const accountSid = process.env.TWILIO_ACCOUNT_SID;
   const authToken = process.env.TWILIO_AUTH_TOKEN;
   const fromNumber = getConfiguredTwilioWhatsAppFromNumber();
 
   if (!accountSid || !authToken || !fromNumber) {
-    throw new Error(buildWhatsAppOutboundConfigurationError());
+    return {
+      ok: false,
+      error: buildWhatsAppOutboundConfigurationError(),
+    };
   }
 
   const body = options.text.trim();
   if (!body) {
-    throw new Error("WhatsApp outbound message body is empty.");
+    return {
+      ok: false,
+      error: "WhatsApp outbound message body is empty.",
+    };
   }
 
   const chunks = splitOutboundTextForWhatsApp(body);
   if (chunks.length === 0) {
-    throw new Error("WhatsApp outbound message body is empty.");
+    return {
+      ok: false,
+      error: "WhatsApp outbound message body is empty.",
+    };
   }
 
   for (const [chunkIndex, chunk] of chunks.entries()) {
@@ -1534,13 +1547,21 @@ async function sendOutboundMessage(options: {
       await sleep(WHATSAPP_OUTBOUND_CHUNK_DELAY_MS);
     }
 
-    const twilioResponse = await sendTwilioWhatsAppMessage({
-      accountSid,
-      authToken,
-      fromNumber,
-      toNumber: options.phoneNumberE164,
-      body: chunk,
-    });
+    let twilioResponse: Awaited<ReturnType<typeof sendTwilioWhatsAppMessage>>;
+    try {
+      twilioResponse = await sendTwilioWhatsAppMessage({
+        accountSid,
+        authToken,
+        fromNumber,
+        toNumber: options.phoneNumberE164,
+        body: chunk,
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        error: errorMessageFromUnknown(error),
+      };
+    }
 
     await options.runMutation(internal.whatsappData.insertWhatsAppMessage, {
       providerMessageSid: twilioResponse.sid,
@@ -1561,6 +1582,8 @@ async function sendOutboundMessage(options: {
       turnStatus: "ignored",
     });
   }
+
+  return { ok: true };
 }
 
 async function resolveUserOrganizations(ctx: {
@@ -1762,24 +1785,23 @@ async function sendPendingHandlingReply(options: {
     return;
   }
 
-  try {
-    await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+  const deliveryResult = (await options.ctx.runAction(
+    (internal as any).whatsapp.sendSystemMessage,
+    {
       phoneNumberE164: options.connection.phoneNumberE164,
       locale: options.locale,
       text: options.result.reply,
       connectionId: options.connection._id,
-    });
-  } catch (error) {
-    if (options.result.batchId && options.result.deliveryStage) {
-      await recordPendingReplyDeliveryFailure({
-        runMutation: options.ctx.runMutation,
-        batchId: options.result.batchId,
-        deliveryStage: options.result.deliveryStage,
-        error,
-      });
-    }
+    },
+  )) as OutboundMessageDeliveryResult;
 
-    throw error;
+  if (!deliveryResult.ok && options.result.batchId && options.result.deliveryStage) {
+    await recordPendingReplyDeliveryFailure({
+      runMutation: options.ctx.runMutation,
+      batchId: options.result.batchId,
+      deliveryStage: options.result.deliveryStage,
+      error: deliveryResult.error,
+    });
   }
 }
 
@@ -3785,13 +3807,23 @@ export const sendSystemMessage = internalAction({
         })) as WhatsAppConnectionDoc | null)
       : null;
 
-    await sendOutboundMessage({
+    const result = await sendOutboundMessage({
       text: args.text,
       phoneNumberE164: args.phoneNumberE164,
       locale: args.locale,
       connection,
       runMutation: ctx.runMutation,
     });
+
+    if (!result.ok) {
+      console.error("WhatsApp outbound message failed", {
+        phoneNumberE164: args.phoneNumberE164,
+        connectionId: args.connectionId ?? null,
+        error: result.error,
+      });
+    }
+
+    return result;
   },
 });
 

@@ -21,7 +21,7 @@ import {
 } from "./lib/resend";
 
 const siteUrl = process.env.SITE_URL!;
-const appName = process.env.BETTER_AUTH_APP_NAME ?? "MVP Template";
+const appName = process.env.BETTER_AUTH_APP_NAME ?? "Baubot";
 
 export const authComponent = createClient<DataModel>(components.betterAuth);
 

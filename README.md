@@ -1,6 +1,6 @@
-# mvp-template
+# Baubot
 
-This project was created with [Better-T-Stack](https://github.com/AmanVarshney01/create-better-t-stack), a modern TypeScript stack that combines React, TanStack Start, Convex, and more.
+Baubot is built on [Better-T-Stack](https://github.com/AmanVarshney01/create-better-t-stack), combining React, TanStack Start, Convex, and Better Auth for a WhatsApp-first project documentation workflow.
 
 ## Features
 
@@ -38,13 +38,13 @@ Then, run the development server:
 bun run dev
 ```
 
-Open [http://localhost:3001](http://localhost:3001) in your browser to see the web application.
-Your app will connect to the Convex cloud backend automatically.
+Open [http://localhost:3001](http://localhost:3001) in your browser to see Baubot.
+The app will connect to the Convex cloud backend automatically.
 
 ## Project Structure
 
 ```
-mvp-template/
+baubot-mvp/
 ├── apps/
 │   ├── web/         # Frontend application (React + TanStack Start)
 ├── packages/

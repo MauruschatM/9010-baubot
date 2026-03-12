@@ -1194,6 +1194,13 @@ async function failBatch(
     notifyMember: boolean;
   },
 ) {
+  console.error("WhatsApp batch processing failed", {
+    batchId: String(options.batchId),
+    phoneNumberE164: options.phoneNumberE164,
+    notifyMember: options.notifyMember,
+    message: errorMessageFromUnknown(options.error),
+  });
+
   await ctx.runMutation((internal as any).whatsappProcessingData.updateSendBatch, {
     batchId: options.batchId,
     status: "failed",
@@ -1225,6 +1232,11 @@ async function recordCompletedBatchDeliveryError(
     error: unknown;
   },
 ) {
+  console.error("WhatsApp batch delivery failed after persistence", {
+    batchId: String(options.batchId),
+    message: errorMessageFromUnknown(options.error),
+  });
+
   await ctx.runMutation((internal as any).whatsappProcessingData.updateSendBatch, {
     batchId: options.batchId,
     error: `WhatsApp delivery failed: ${errorMessageFromUnknown(options.error)}`,
@@ -1239,6 +1251,10 @@ export const processSendBatch = internalAction({
     message: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args): Promise<{ message: string | null }> => {
+    console.info("WhatsApp processSendBatch started", {
+      batchId: String(args.batchId),
+    });
+
     const data = await loadBatchData(ctx, args.batchId);
 
     if (!data) {
@@ -1260,6 +1276,11 @@ export const processSendBatch = internalAction({
       });
 
       const choice = await resolveProjectChoice(data);
+
+      console.info("WhatsApp processSendBatch resolved project choice", {
+        batchId: String(args.batchId),
+        choice: choice.kind,
+      });
 
       if (choice.kind === "selected") {
         await ctx.runMutation((internal as any).whatsappProcessingData.updateSendBatch, {
@@ -1294,6 +1315,11 @@ export const processSendBatch = internalAction({
 
         return result;
       }
+
+      console.info("WhatsApp processSendBatch awaiting member input", {
+        batchId: String(args.batchId),
+        choice: choice.kind,
+      });
 
       if (choice.kind === "need_name") {
         await ctx.runMutation((internal as any).whatsappProcessingData.updateSendBatch, {

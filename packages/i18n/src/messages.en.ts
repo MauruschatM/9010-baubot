@@ -123,10 +123,49 @@ export const messagesEn = {
     },
   },
   landing: {
-    eyebrow: "MVP Template",
-    title: "Build your workspace faster.",
+    eyebrow: "AI assistant for site documentation",
+    badge: "WhatsApp in. Project record out.",
+    title: "Baubot keeps site chats, photos, and voice notes in one clean flow.",
     description:
-      "Authentication, onboarding, organizations, and the app shell are already wired. Start with email and password.",
+      "Capture updates directly from WhatsApp, connect them to projects and customers, and keep notes visible for the whole team without copy-paste.",
+    stats: {
+      intakeValue: "24/7",
+      intakeLabel: "ready for incoming updates",
+      structureValue: "1 thread",
+      structureLabel: "for chat, media, and notes",
+      handoffValue: "instant",
+      handoffLabel: "handoff into the active project",
+    },
+    preview: {
+      badge: "Baubot workflow",
+      title: "From message to project history without manual cleanup.",
+      description:
+        "Incoming messages are collected, structured, and attached to the right jobsite before they get lost in side chats.",
+      steps: {
+        inboxTitle: "WhatsApp intake",
+        inboxDescription:
+          "Photos, voice notes, and status updates enter one reliable stream.",
+        projectTitle: "Project assignment",
+        projectDescription:
+          "Baubot connects customer, location, and timestamp automatically.",
+        summaryTitle: "Structured note",
+        summaryDescription:
+          "The team sees what happened and what still needs attention.",
+      },
+      footer:
+        "Less searching. Less forwarding. More reliable project documentation.",
+    },
+    features: {
+      captureTitle: "Capture directly from chat",
+      captureDescription:
+        "Texts, images, and audio stay connected to the same case instead of disappearing across private threads.",
+      organizeTitle: "Structure automatically",
+      organizeDescription:
+        "Baubot maps updates to projects, customers, and timelines so nobody has to reconstruct the context later.",
+      shareTitle: "Keep the team aligned",
+      shareDescription:
+        "Everyone works from the same state across notes, archives, and handovers without media breaks.",
+    },
   },
   auth: {
     login: {
