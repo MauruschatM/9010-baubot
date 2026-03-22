@@ -45,7 +45,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { authClient } from "@/lib/auth-client";
+import { useCurrentOrganizationState } from "@/lib/current-organization";
 import { downloadExportZip } from "@/lib/export-zip";
 import { useI18n } from "@/lib/i18n-provider";
 
@@ -85,8 +85,8 @@ const minimalRowClassName = "border-b border-border px-4 py-3 last:border-b-0";
 function CustomerDetailRoute() {
   const { locale, t } = useI18n();
   const navigate = useNavigate({ from: "/app/customers/$customerId" });
-  const { data: activeOrganization, isPending: isOrganizationPending } =
-    authClient.useActiveOrganization();
+  const { activeOrganization, isPending: isOrganizationPending } =
+    useCurrentOrganizationState();
   const { customerId } = Route.useParams();
   const typedCustomerId = customerId as Id<"customers">;
   const customer = useQuery(api.customers.getById, {

@@ -48,7 +48,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { authClient } from "@/lib/auth-client";
+import { useCurrentOrganizationState } from "@/lib/current-organization";
 import { downloadExportZip } from "@/lib/export-zip";
 import { useI18n } from "@/lib/i18n-provider";
 import { cn } from "@/lib/utils";
@@ -83,8 +83,8 @@ type ProjectListItem = {
 function ProjectsRoute() {
   const { locale, t } = useI18n();
   const navigate = useNavigate({ from: "/app/projects/" });
-  const { data: activeOrganization, isPending: isOrganizationPending } =
-    authClient.useActiveOrganization();
+  const { activeOrganization, isPending: isOrganizationPending } =
+    useCurrentOrganizationState();
   const [headerRoot, setHeaderRoot] = useState<HTMLElement | null>(null);
   const [statusFilter, setStatusFilter] = useState<ProjectStatus>("active");
   const [searchQuery, setSearchQuery] = useState("");

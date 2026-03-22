@@ -19,7 +19,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { authClient } from "@/lib/auth-client";
+import { useCurrentOrganizationState } from "@/lib/current-organization";
 import { useI18n } from "@/lib/i18n-provider";
 
 export const Route = createFileRoute("/app/archive")({
@@ -48,7 +48,7 @@ type ArchivedProject = {
 
 function ArchiveRoute() {
   const { locale, t } = useI18n();
-  const { data: activeOrganization, isPending } = authClient.useActiveOrganization();
+  const { activeOrganization, isPending } = useCurrentOrganizationState();
   const archivedCustomersQuery = useQuery(
     api.customers.listArchived,
     activeOrganization?.id ? {} : "skip",

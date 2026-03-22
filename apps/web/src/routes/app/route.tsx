@@ -115,6 +115,7 @@ import {
   getLocalizedAuthErrorMessage,
 } from "@/lib/auth-error-i18n";
 import { useClientRouteGate } from "@/lib/client-route-gates";
+import { useCurrentOrganizationState } from "@/lib/current-organization";
 import { useI18n, writeLocaleCookie } from "@/lib/i18n-provider";
 import {
   EUROPE_LANGUAGE_LOCALES,
@@ -441,9 +442,11 @@ function AppRouteContent() {
   const locationSearch = useRouterState({
     select: (state) => state.location.search,
   });
-  const { data: activeOrganization, isPending: isOrganizationPending } =
-    authClient.useActiveOrganization();
-  const { data: activeMember } = authClient.useActiveMember();
+  const {
+    activeMember,
+    activeOrganization,
+    isPending: isOrganizationPending,
+  } = useCurrentOrganizationState();
   const organizationsResult = authClient.useListOrganizations();
   const organizations = (organizationsResult.data ?? []) as Array<{
     id: string;

@@ -49,8 +49,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
-import { authClient } from "@/lib/auth-client";
 import { getLocalizedAuthErrorMessage } from "@/lib/auth-error-i18n";
+import { useCurrentOrganizationState } from "@/lib/current-organization";
 import { useI18n } from "@/lib/i18n-provider";
 
 export const Route = createFileRoute("/app/members")({
@@ -137,7 +137,7 @@ function errorMessageFromUnknown(error: unknown) {
 
 function MembersRoute() {
   const { locale, t } = useI18n();
-  const { data: activeOrganization, isPending } = authClient.useActiveOrganization();
+  const { activeOrganization, isPending } = useCurrentOrganizationState();
   const liveMembersPage = useQuery(
     api.members.getLiveMembersPage,
     activeOrganization?.id

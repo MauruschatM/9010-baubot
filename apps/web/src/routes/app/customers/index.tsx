@@ -49,7 +49,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { authClient } from "@/lib/auth-client";
+import { useCurrentOrganizationState } from "@/lib/current-organization";
 import { downloadExportZip } from "@/lib/export-zip";
 import { useI18n } from "@/lib/i18n-provider";
 import { cn } from "@/lib/utils";
@@ -103,7 +103,7 @@ function CustomerStatusIndicator({
 function CustomersRoute() {
   const { locale, t } = useI18n();
   const navigate = useNavigate({ from: "/app/customers/" });
-  const { data: activeOrganization, isPending } = authClient.useActiveOrganization();
+  const { activeOrganization, isPending } = useCurrentOrganizationState();
   const customersQuery = useQuery(api.customers.list, activeOrganization?.id ? {} : "skip");
   const prepareZipManifest = useAction(api.exports.prepareZipManifest);
   const createCustomer = useMutation(api.customers.create);

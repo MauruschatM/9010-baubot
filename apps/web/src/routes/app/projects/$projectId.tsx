@@ -57,7 +57,7 @@ import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select"
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { authClient } from "@/lib/auth-client";
+import { useCurrentOrganizationState } from "@/lib/current-organization";
 import { downloadExportZip } from "@/lib/export-zip";
 import { useI18n } from "@/lib/i18n-provider";
 
@@ -702,7 +702,7 @@ function ProjectDetailRoute() {
   const navigate = useNavigate({ from: "/app/projects/$projectId" });
   const params = Route.useParams();
   const projectId = params.projectId as Id<"projects">;
-  const { data: activeOrganization } = authClient.useActiveOrganization();
+  const { activeOrganization } = useCurrentOrganizationState();
   const project = useQuery(api.projects.getById, { projectId }) as ProjectRecord | null | undefined;
   const originalTimelineRows = useQuery(api.projects.timeline, { projectId, limit: 500 });
   const projects = useQuery(
