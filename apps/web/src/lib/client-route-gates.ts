@@ -1,7 +1,7 @@
 import { api } from "@mvp-template/backend/convex/_generated/api";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { authClient } from "@/lib/auth-client";
 
@@ -13,9 +13,11 @@ type UseClientRouteGateOptions = {
 
 type ClientRouteGateState = {
   isAuthenticated: boolean;
+  hasActiveOrganization: boolean;
   hasName: boolean;
   hasOrganization: boolean;
   organizationCount: number;
+  userId: string | null;
 };
 
 const DEFAULT_APP_ROUTE = "/app/projects";
@@ -107,8 +109,22 @@ export function useClientRouteGate(
   const { data: sessionData, isPending: isSessionPending } = authClient.useSession();
   const gateState = useQuery(api.auth.getRouteGateState);
   const isAuthenticated = Boolean(sessionData);
+  const sessionUserId = sessionData?.user.id ?? null;
+  const hasResolvedSignedOutSessionRef = useRef(false);
+  const isWaitingForConvexSession =
+    isAuthenticated &&
+    (!gateState?.isAuthenticated || gateState.userId !== sessionUserId);
+
+  useEffect(() => {
+    if (isSessionPending) {
+      return;
+    }
+
+    hasResolvedSignedOutSessionRef.current = !isAuthenticated;
+  }, [isAuthenticated, isSessionPending]);
+
   const normalizedGateState = useMemo(() => {
-    if (!gateState || !isAuthenticated) {
+    if (isWaitingForConvexSession || !(gateState && isAuthenticated)) {
       return null;
     }
 
@@ -116,10 +132,14 @@ export function useClientRouteGate(
       ...gateState,
       isAuthenticated: true,
     } satisfies ClientRouteGateState;
-  }, [gateState, isAuthenticated]);
+  }, [gateState, isAuthenticated, isWaitingForConvexSession]);
+
+  const isWaitingForActiveOrganization = Boolean(
+    normalizedGateState?.hasOrganization && !normalizedGateState.hasActiveOrganization,
+  );
 
   const redirectTo = useMemo(() => {
-    if (isSessionPending) {
+    if (isSessionPending || isWaitingForConvexSession || isWaitingForActiveOrganization) {
       return null;
     }
 
@@ -143,6 +163,8 @@ export function useClientRouteGate(
   }, [
     isAuthenticated,
     isSessionPending,
+    isWaitingForActiveOrganization,
+    isWaitingForConvexSession,
     mode,
     normalizedGateState,
     options?.authenticatedRedirectTo,
@@ -160,9 +182,14 @@ export function useClientRouteGate(
     void navigate({ to: redirectTo, replace: true });
   }, [isSessionPending, navigate, pathname, redirectTo]);
 
+  const canKeepLoginRouteMounted =
+    mode === "login" &&
+    isSessionPending &&
+    hasResolvedSignedOutSessionRef.current;
+
   if (isSessionPending) {
     return {
-      canRender: false,
+      canRender: canKeepLoginRouteMounted,
     };
   }
 
@@ -179,6 +206,12 @@ export function useClientRouteGate(
   }
 
   if (!normalizedGateState) {
+    return {
+      canRender: false,
+    };
+  }
+
+  if (isWaitingForActiveOrganization) {
     return {
       canRender: false,
     };

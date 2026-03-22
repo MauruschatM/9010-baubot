@@ -551,6 +551,30 @@ function AppRouteContent() {
   }, []);
 
   useEffect(() => {
+    if (
+      activeOrganization ||
+      isOrganizationPending ||
+      organizationsResult.data === undefined ||
+      organizations.length !== 1
+    ) {
+      return;
+    }
+
+    authClient.organization
+      .setActive({
+        organizationId: organizations[0].id,
+      })
+      .catch(() => {
+        // Ignore sync failures and let subsequent user actions retry.
+      });
+  }, [
+    activeOrganization,
+    isOrganizationPending,
+    organizations,
+    organizationsResult.data,
+  ]);
+
+  useEffect(() => {
     if (!activeOrganization) {
       return;
     }

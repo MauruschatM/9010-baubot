@@ -6,6 +6,7 @@ import { gateway } from "@ai-sdk/gateway";
 import { v } from "convex/values";
 
 import { vAppLocale } from "./lib/locales";
+import { cosineSimilarity, embedTextsWithVoyage } from "./lib/voyage";
 import { z } from "zod";
 
 import { components, internal } from "./_generated/api";
@@ -195,14 +196,16 @@ type WhatsAppPendingResolutionDoc = {
   batchId: Id<"whatsappSendBatches">;
   state: "awaiting_choice" | "awaiting_project_name";
   customerId?: Id<"customers">;
-  options?: Array<{
-    projectId: Id<"projects">;
-    location: string;
-    customerName?: string;
-  }>;
+  options?: PendingProjectChoiceOption[];
   aiSuggestedProjectName?: string;
   createdAt: number;
   updatedAt: number;
+};
+
+type PendingProjectChoiceOption = {
+  projectId: Id<"projects">;
+  location: string;
+  customerName?: string;
 };
 
 type OnboardingSessionDoc = {
@@ -245,6 +248,11 @@ type PendingHandlingResult = {
   deliveryStage?: "pre_persistence" | "post_persistence";
 };
 
+type PendingProjectChoiceHit = {
+  option: PendingProjectChoiceOption;
+  similarity: number;
+};
+
 type ChatAttachment = {
   name?: string;
   contentType: string;
@@ -258,6 +266,9 @@ type ResolvedChatAttachment = {
   fileUrl: string | null;
   base64Data: string;
 };
+
+const PENDING_CHOICE_MATCH_THRESHOLD = 0.87;
+const PENDING_CHOICE_MATCH_GAP = 0.05;
 
 type PersistedMessage = {
   messageId: string;
@@ -1754,6 +1765,90 @@ function buildPendingVoiceReplyPrompt(locale: AppLocale, prompt: string) {
   return [pendingVoiceReplyTypingFallbackMessage(locale), prompt].join("\n\n");
 }
 
+function normalizeWhitespace(value: string | null | undefined) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function findDominantPendingChoiceHit(hits: PendingProjectChoiceHit[]) {
+  const [topHit, nextHit] = hits;
+  if (!topHit) {
+    return null;
+  }
+
+  if (
+    topHit.similarity < PENDING_CHOICE_MATCH_THRESHOLD ||
+    topHit.similarity - (nextHit?.similarity ?? 0) < PENDING_CHOICE_MATCH_GAP
+  ) {
+    return null;
+  }
+
+  return topHit;
+}
+
+async function searchPendingProjectChoiceOptionsByEmbedding(
+  optionsList: PendingProjectChoiceOption[],
+  searchText: string,
+): Promise<PendingProjectChoiceHit[]> {
+  const normalizedSearchText = normalizeWhitespace(searchText);
+  if (optionsList.length === 0 || !normalizedSearchText) {
+    return [];
+  }
+
+  const optionDocuments = optionsList
+    .map((option) => ({
+      option,
+      document: normalizeWhitespace(
+        [
+          formatProjectChoiceOption(option),
+          option.location,
+          option.customerName,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+      ),
+    }))
+    .filter(
+      (
+        entry,
+      ): entry is { option: PendingProjectChoiceOption; document: string } =>
+        typeof entry.document === "string",
+    );
+
+  if (optionDocuments.length === 0) {
+    return [];
+  }
+
+  const [queryEmbeddings, optionEmbeddings] = await Promise.all([
+    embedTextsWithVoyage([normalizedSearchText], {
+      inputType: "query",
+    }),
+    embedTextsWithVoyage(
+      optionDocuments.map((entry) => entry.document),
+      {
+        inputType: "document",
+      },
+    ),
+  ]);
+
+  if (!(queryEmbeddings?.[0] && optionEmbeddings)) {
+    return [];
+  }
+
+  const queryEmbedding = queryEmbeddings[0];
+
+  return optionDocuments
+    .map((entry, index) => ({
+      option: entry.option,
+      similarity: cosineSimilarity(queryEmbedding, optionEmbeddings[index] ?? []),
+    }))
+    .sort((left, right) => right.similarity - left.similarity);
+}
+
 async function recordPendingReplyDeliveryFailure(options: {
   runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
   batchId: Id<"whatsappSendBatches">;
@@ -2012,11 +2107,36 @@ export async function handlePendingProjectResolution(options: {
       };
     }
 
-    const selectedOption =
+    const exactOrNumericSelection =
       exactChoice ??
       (numericChoice >= 1 && numericChoice <= optionsList.length
         ? optionsList[numericChoice - 1]
         : null);
+
+    let selectedOption = exactOrNumericSelection;
+    let selectedOptionMatchReason: string | undefined;
+
+    if (!selectedOption && pendingReplyInput.text) {
+      try {
+        const semanticChoiceHit = findDominantPendingChoiceHit(
+          await searchPendingProjectChoiceOptionsByEmbedding(
+            optionsList,
+            pendingReplyInput.text,
+          ),
+        );
+
+        if (semanticChoiceHit) {
+          selectedOption = semanticChoiceHit.option;
+          selectedOptionMatchReason = "semantic_pending_choice_match";
+        }
+      } catch (error) {
+        console.error("WhatsApp pending project choice similarity search failed", {
+          batchId: String(pendingResolution.batchId),
+          phoneNumberE164: options.connection.phoneNumberE164,
+          message: errorMessageFromUnknown(error),
+        });
+      }
+    }
 
     if (!selectedOption) {
       return {
@@ -2034,6 +2154,7 @@ export async function handlePendingProjectResolution(options: {
           batchId: pendingResolution.batchId,
           projectId: selectedOption.projectId,
           locale: options.locale,
+          matchReason: selectedOptionMatchReason,
         },
       )) as { message: string };
 

@@ -150,6 +150,22 @@ type ProjectChoiceResult =
       routingContext: string | null;
     };
 
+type ProjectLocationInputChoiceResult =
+  | {
+      kind: "selected";
+      project: Doc<"projects">;
+      reason: string;
+    }
+  | {
+      kind: "choose";
+      options: Doc<"projects">[];
+      reason: string;
+    }
+  | {
+      kind: "create";
+      reason: string;
+    };
+
 type PendingProjectChoiceOption = {
   projectId: Id<"projects">;
   location: string;
@@ -161,6 +177,7 @@ const MAX_BATCH_TITLE_LENGTH = 80;
 const MAX_SUMMARY_LENGTH = 320;
 const AUTO_ATTACH_MIN_CONFIDENCE = 0.85;
 const VERY_SIMILAR_MATCH_THRESHOLD = 0.87;
+const DOMINANT_SIMILARITY_GAP = 0.05;
 const ROUTING_CONTEXT_LIMIT = 3;
 const ROUTING_CONTEXT_MIN_SIMILARITY = 0.78;
 const PROJECT_CHOICE_MIN_SIMILARITY = ROUTING_CONTEXT_MIN_SIMILARITY;
@@ -342,15 +359,22 @@ async function searchSimilarProjectsByEmbedding(
     return [];
   }
 
-  const embeddings = await embedTextsWithVoyage([
-    normalizedSearchText,
-    ...projectDocuments.map((entry) => entry.document),
+  const [queryEmbeddings, projectEmbeddings] = await Promise.all([
+    embedTextsWithVoyage([normalizedSearchText], {
+      inputType: "query",
+    }),
+    embedTextsWithVoyage(
+      projectDocuments.map((entry) => entry.document),
+      {
+        inputType: "document",
+      },
+    ),
   ]);
-  if (!embeddings) {
+  if (!(queryEmbeddings?.[0] && projectEmbeddings)) {
     return [];
   }
 
-  const [queryEmbedding, ...projectEmbeddings] = embeddings;
+  const queryEmbedding = queryEmbeddings[0];
 
   return projectDocuments
     .map((entry, index) => {
@@ -395,15 +419,22 @@ async function searchSimilarCustomersByEmbedding(
     return [];
   }
 
-  const embeddings = await embedTextsWithVoyage([
-    normalizedSearchText,
-    ...customerDocuments.map((entry) => entry.document),
+  const [queryEmbeddings, customerEmbeddings] = await Promise.all([
+    embedTextsWithVoyage([normalizedSearchText], {
+      inputType: "query",
+    }),
+    embedTextsWithVoyage(
+      customerDocuments.map((entry) => entry.document),
+      {
+        inputType: "document",
+      },
+    ),
   ]);
-  if (!embeddings) {
+  if (!(queryEmbeddings?.[0] && customerEmbeddings)) {
     return [];
   }
 
-  const [queryEmbedding, ...customerEmbeddings] = embeddings;
+  const queryEmbedding = queryEmbeddings[0];
 
   return customerDocuments
     .map((entry, index) => ({
@@ -457,7 +488,7 @@ function buildRoutingDecisionFallback(options: {
   if (
     topProjectHit &&
     topProjectHit.similarity >= VERY_SIMILAR_MATCH_THRESHOLD &&
-    topProjectHit.similarity - (nextProjectHit?.similarity ?? 0) >= 0.05
+    topProjectHit.similarity - (nextProjectHit?.similarity ?? 0) >= DOMINANT_SIMILARITY_GAP
   ) {
     return {
       decision: "project",
@@ -470,7 +501,7 @@ function buildRoutingDecisionFallback(options: {
   if (
     topCustomerHit &&
     topCustomerHit.similarity >= VERY_SIMILAR_MATCH_THRESHOLD &&
-    topCustomerHit.similarity - (nextCustomerHit?.similarity ?? 0) >= 0.05
+    topCustomerHit.similarity - (nextCustomerHit?.similarity ?? 0) >= DOMINANT_SIMILARITY_GAP
   ) {
     return {
       decision: "customer",
@@ -585,6 +616,95 @@ function matchCustomerByName(customers: Doc<"customers">[], customerName: string
   );
 }
 
+function findDominantSimilarityHit<T extends { similarity: number }>(
+  hits: T[],
+  minimumSimilarity = VERY_SIMILAR_MATCH_THRESHOLD,
+) {
+  const [topHit, nextHit] = hits;
+  if (!topHit) {
+    return null;
+  }
+
+  if (
+    topHit.similarity < minimumSimilarity ||
+    topHit.similarity - (nextHit?.similarity ?? 0) < DOMINANT_SIMILARITY_GAP
+  ) {
+    return null;
+  }
+
+  return topHit;
+}
+
+function pickProjectHitsForCustomer(
+  projectHits: ProjectRoutingHit[],
+  customerId: Id<"customers"> | undefined,
+) {
+  if (customerId === undefined) {
+    return projectHits;
+  }
+
+  const sameCustomerHits = projectHits.filter((hit) => hit.customerId === customerId);
+  return sameCustomerHits.length > 0 ? sameCustomerHits : projectHits;
+}
+
+function findProjectFromHits(options: {
+  projects: Doc<"projects">[];
+  projectHits: ProjectRoutingHit[];
+  customerId?: Id<"customers">;
+  minimumSimilarity?: number;
+  requireDominant?: boolean;
+}) {
+  const projectById = new Map(options.projects.map((project) => [String(project._id), project]));
+  const scopedHits = pickProjectHitsForCustomer(options.projectHits, options.customerId);
+  const candidateHits = options.requireDominant
+    ? [findDominantSimilarityHit(scopedHits, options.minimumSimilarity)].filter(
+        (hit): hit is ProjectRoutingHit => hit !== null,
+      )
+    : scopedHits.filter(
+        (hit) => hit.similarity >= (options.minimumSimilarity ?? PROJECT_CHOICE_MIN_SIMILARITY),
+      );
+
+  for (const hit of candidateHits) {
+    const project = projectById.get(String(hit.projectId));
+    if (project) {
+      return {
+        project,
+        similarity: hit.similarity,
+      };
+    }
+  }
+
+  return null;
+}
+
+function findCustomerFromHits(options: {
+  customers: Doc<"customers">[];
+  customerHits: CustomerRoutingHit[];
+  minimumSimilarity?: number;
+  requireDominant?: boolean;
+}) {
+  const customerById = buildCustomerById(options.customers);
+  const candidateHits = options.requireDominant
+    ? [findDominantSimilarityHit(options.customerHits, options.minimumSimilarity)].filter(
+        (hit): hit is CustomerRoutingHit => hit !== null,
+      )
+    : options.customerHits.filter(
+        (hit) => hit.similarity >= (options.minimumSimilarity ?? PROJECT_CHOICE_MIN_SIMILARITY),
+      );
+
+  for (const hit of candidateHits) {
+    const customer = customerById.get(String(hit.customerId));
+    if (customer) {
+      return {
+        customer,
+        similarity: hit.similarity,
+      };
+    }
+  }
+
+  return null;
+}
+
 function selectProjectOptionsFromHits(
   projects: Doc<"projects">[],
   projectHits: ProjectRoutingHit[],
@@ -627,7 +747,7 @@ function selectProjectsForCustomer(options: {
 
   const ranked = selectProjectOptionsFromHits(
     scopedProjects,
-    options.projectHits.filter((hit) => hit.customerId === options.customerId),
+    pickProjectHitsForCustomer(options.projectHits, options.customerId),
   );
 
   if (ranked.length === 0) {
@@ -696,6 +816,7 @@ function resolveProjectChoiceFromSignals(options: {
   customers: Doc<"customers">[];
   exactProjectMatches: Doc<"projects">[];
   projectHits: ProjectRoutingHit[];
+  customerHits: CustomerRoutingHit[];
   routingDecision: RoutingDecision;
   suggestedProjectLocation: string;
   routingContext: string | null;
@@ -710,16 +831,28 @@ function resolveProjectChoiceFromSignals(options: {
     };
   }
 
-  const matchedProject = matchProjectByLocation(
+  const exactProject = matchProjectByLocation(
     options.projects,
     options.routingDecision.projectLocation,
   );
+  const semanticProjectMatch =
+    exactProject || options.routingDecision.decision !== "project"
+      ? null
+      : findProjectFromHits({
+          projects: options.projects,
+          projectHits: options.projectHits,
+          requireDominant: true,
+        });
+
+  const matchedProject = exactProject ?? semanticProjectMatch?.project ?? null;
   if (options.routingDecision.decision === "project" && matchedProject) {
+    const matchReason = semanticProjectMatch ? "semantic_project_match" : options.routingDecision.reason;
+
     if (options.routingDecision.confidence >= AUTO_ATTACH_MIN_CONFIDENCE) {
       return {
         kind: "selected",
         project: matchedProject,
-        reason: options.routingDecision.reason,
+        reason: matchReason,
         confidence: options.routingDecision.confidence,
         routingContext: options.routingContext,
       };
@@ -728,17 +861,30 @@ function resolveProjectChoiceFromSignals(options: {
     return {
       kind: "choose",
       options: [matchedProject],
-      reason: options.routingDecision.reason,
+      reason: matchReason,
       suggestedProjectLocation: options.suggestedProjectLocation,
       routingContext: options.routingContext,
     };
   }
 
-  const matchedCustomer = matchCustomerByName(
+  const exactCustomer = matchCustomerByName(
     options.customers,
     options.routingDecision.customerName,
   );
+  const semanticCustomerMatch =
+    exactCustomer || options.routingDecision.decision !== "customer"
+      ? null
+      : findCustomerFromHits({
+          customers: options.customers,
+          customerHits: options.customerHits,
+          requireDominant: true,
+        });
+  const matchedCustomer = exactCustomer ?? semanticCustomerMatch?.customer ?? null;
+
   if (options.routingDecision.decision === "customer" && matchedCustomer) {
+    const matchReason = semanticCustomerMatch
+      ? "semantic_customer_match"
+      : options.routingDecision.reason;
     const customerProjects = selectProjectsForCustomer({
       projects: options.projects,
       customerId: matchedCustomer._id,
@@ -750,7 +896,7 @@ function resolveProjectChoiceFromSignals(options: {
         return {
           kind: "selected",
           project: customerProjects[0]!,
-          reason: options.routingDecision.reason,
+          reason: matchReason,
           confidence: options.routingDecision.confidence,
           routingContext: options.routingContext,
         };
@@ -759,7 +905,7 @@ function resolveProjectChoiceFromSignals(options: {
       return {
         kind: "choose",
         options: customerProjects,
-        reason: options.routingDecision.reason,
+        reason: matchReason,
         suggestedProjectLocation: options.suggestedProjectLocation,
         customerId: matchedCustomer._id,
         routingContext: options.routingContext,
@@ -770,7 +916,7 @@ function resolveProjectChoiceFromSignals(options: {
       return {
         kind: "choose",
         options: customerProjects,
-        reason: options.routingDecision.reason,
+        reason: matchReason,
         suggestedProjectLocation: options.suggestedProjectLocation,
         customerId: matchedCustomer._id,
         routingContext: options.routingContext,
@@ -781,7 +927,7 @@ function resolveProjectChoiceFromSignals(options: {
       kind: "need_name",
       suggestedProjectLocation: options.suggestedProjectLocation,
       customerId: matchedCustomer._id,
-      reason: options.routingDecision.reason,
+      reason: matchReason,
       routingContext: options.routingContext,
     };
   }
@@ -1289,10 +1435,81 @@ async function resolveProjectChoice(data: BatchProcessingData): Promise<ProjectC
     customers: data.customers,
     exactProjectMatches,
     projectHits,
+    customerHits,
     routingDecision,
     suggestedProjectLocation,
     routingContext,
   });
+}
+
+async function resolveProjectLocationInputChoice(options: {
+  projects: Doc<"projects">[];
+  customers: Doc<"customers">[];
+  projectLocation: string;
+  customerId?: Id<"customers">;
+}): Promise<ProjectLocationInputChoiceResult> {
+  const locationMatches = pickLocationMatches({
+    projects: options.projects,
+    projectLocation: options.projectLocation,
+    customerId: options.customerId,
+  });
+
+  if (locationMatches.length > 1) {
+    return {
+      kind: "choose",
+      options: locationMatches.slice(0, MAX_PROJECT_OPTIONS),
+      reason: "multiple_existing_location_matches",
+    };
+  }
+
+  const existingProject = locationMatches[0] ?? null;
+  if (existingProject) {
+    return {
+      kind: "selected",
+      project: existingProject,
+      reason: "selected_by_location",
+    };
+  }
+
+  if (options.projects.length === 0) {
+    return {
+      kind: "create",
+      reason: "created_from_whatsapp",
+    };
+  }
+
+  let projectHits: ProjectRoutingHit[] = [];
+
+  try {
+    projectHits = await searchSimilarProjectsByEmbedding(
+      options.projects,
+      options.customers,
+      options.projectLocation,
+    );
+  } catch (error) {
+    console.error("WhatsApp manual project location similarity search failed", error);
+  }
+
+  const semanticOptions = selectProjectOptionsFromHits(
+    options.projects,
+    pickProjectHitsForCustomer(
+      projectHits.filter((hit) => hit.similarity >= PROJECT_CHOICE_MIN_SIMILARITY),
+      options.customerId,
+    ),
+  );
+
+  if (semanticOptions.length > 0) {
+    return {
+      kind: "choose",
+      options: semanticOptions,
+      reason: "similar_existing_location_matches",
+    };
+  }
+
+  return {
+    kind: "create",
+    reason: "created_from_whatsapp",
+  };
 }
 
 async function finalizePreparedBatch(
@@ -1655,6 +1872,7 @@ export const finalizeBatchToProject = internalAction({
     batchId: v.id("whatsappSendBatches"),
     projectId: v.id("projects"),
     locale: v.union(v.literal("en"), v.literal("de")),
+    matchReason: v.optional(v.string()),
   },
   returns: v.object({
     message: v.string(),
@@ -1681,7 +1899,7 @@ export const finalizeBatchToProject = internalAction({
         error: "",
         projectId: selectedProject._id,
         projectMatchConfidence: 1,
-        projectMatchReason: "selected_by_member",
+        projectMatchReason: args.matchReason ?? "selected_by_member",
         candidateProjectIds: [selectedProject._id],
       });
 
@@ -1736,15 +1954,16 @@ export const createProjectAndFinalizeBatch = internalAction({
       throw new ConvexError("Project location is invalid.");
     }
 
-    const locationMatches = pickLocationMatches({
+    const locationChoice = await resolveProjectLocationInputChoice({
       projects: data.projects,
+      customers: data.customers,
       projectLocation: normalizedProjectLocation,
       customerId: args.customerId,
     });
 
-    if (locationMatches.length > 1) {
+    if (locationChoice.kind === "choose") {
       const choiceOptions = buildPendingProjectChoiceOptions(
-        locationMatches,
+        locationChoice.options,
         data.customers,
       );
 
@@ -1752,7 +1971,7 @@ export const createProjectAndFinalizeBatch = internalAction({
         batchId: args.batchId,
         status: "awaiting_project_choice",
         error: "",
-        projectMatchReason: "multiple_existing_location_matches",
+        projectMatchReason: locationChoice.reason,
         candidateProjectIds: choiceOptions.map((option) => option.projectId),
       });
       await ctx.runMutation((internal as any).whatsappProcessingData.upsertPendingResolution, {
@@ -1776,7 +1995,7 @@ export const createProjectAndFinalizeBatch = internalAction({
       };
     }
 
-    const existingProject = locationMatches[0] ?? null;
+    const existingProject = locationChoice.kind === "selected" ? locationChoice.project : null;
 
     try {
       await ctx.runMutation((internal as any).whatsappProcessingData.clearPendingResolutionByBatch, {
@@ -1787,7 +2006,7 @@ export const createProjectAndFinalizeBatch = internalAction({
         status: "processing",
         error: "",
         projectId: existingProject?._id,
-        projectMatchReason: existingProject ? "selected_by_location" : "created_from_whatsapp",
+        projectMatchReason: locationChoice.reason,
         candidateProjectIds: existingProject ? [existingProject._id] : [],
       });
 
@@ -1879,5 +2098,6 @@ export {
   buildProjectSearchDocument,
   buildRoutingContextText,
   findProjectsByLocation,
+  resolveProjectLocationInputChoice,
   resolveProjectChoiceFromSignals,
 };
