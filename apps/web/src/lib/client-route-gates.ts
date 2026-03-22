@@ -12,11 +12,23 @@ type UseClientRouteGateOptions = {
 };
 
 type ClientRouteGateState = {
+  activeOrganization: {
+    id: string;
+    logo: string | null;
+    name: string;
+    slug: string;
+  } | null;
   isAuthenticated: boolean;
   hasActiveOrganization: boolean;
   hasName: boolean;
   hasOrganization: boolean;
   organizationCount: number;
+  organizations: Array<{
+    id: string;
+    logo: string | null;
+    name: string;
+    slug: string;
+  }>;
   userId: string | null;
 };
 
@@ -97,6 +109,26 @@ function getRedirectTarget(
   return null;
 }
 
+function getRedirectTargetAfterActiveOrganizationRecovery(
+  mode: RouteGateMode,
+  gateState: ClientRouteGateState,
+  authenticatedRedirectTo?: string | null,
+) {
+  if (authenticatedRedirectTo) {
+    return authenticatedRedirectTo;
+  }
+
+  if (mode === "login") {
+    return DEFAULT_APP_ROUTE;
+  }
+
+  if (mode === "organization" && gateState.hasName) {
+    return DEFAULT_APP_ROUTE;
+  }
+
+  return null;
+}
+
 export function useClientRouteGate(
   mode: RouteGateMode,
   options?: UseClientRouteGateOptions,
@@ -137,6 +169,53 @@ export function useClientRouteGate(
   const isWaitingForActiveOrganization = Boolean(
     normalizedGateState?.hasOrganization && !normalizedGateState.hasActiveOrganization,
   );
+
+  const restoringOrganizationIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!(normalizedGateState?.hasOrganization && !normalizedGateState.hasActiveOrganization)) {
+      restoringOrganizationIdRef.current = null;
+      return;
+    }
+
+    if (normalizedGateState.organizations.length !== 1) {
+      restoringOrganizationIdRef.current = null;
+      return;
+    }
+
+    const targetOrganizationId = normalizedGateState.organizations[0]?.id ?? null;
+    if (!targetOrganizationId) {
+      return;
+    }
+
+    if (restoringOrganizationIdRef.current === targetOrganizationId) {
+      return;
+    }
+
+    restoringOrganizationIdRef.current = targetOrganizationId;
+    authClient.organization
+      .setActive({
+        organizationId: targetOrganizationId,
+      })
+      .then(({ error }) => {
+        if (error) {
+          restoringOrganizationIdRef.current = null;
+          return;
+        }
+
+        const redirectTarget = getRedirectTargetAfterActiveOrganizationRecovery(
+          mode,
+          normalizedGateState,
+          options?.authenticatedRedirectTo,
+        );
+        if (redirectTarget && pathname !== redirectTarget) {
+          void navigate({ to: redirectTarget, replace: true });
+        }
+      })
+      .catch(() => {
+        restoringOrganizationIdRef.current = null;
+      });
+  }, [mode, navigate, normalizedGateState, options?.authenticatedRedirectTo, pathname]);
 
   const redirectTo = useMemo(() => {
     if (isSessionPending || isWaitingForConvexSession || isWaitingForActiveOrganization) {
@@ -190,34 +269,40 @@ export function useClientRouteGate(
   if (isSessionPending) {
     return {
       canRender: canKeepLoginRouteMounted,
+      isPending: !canKeepLoginRouteMounted,
     };
   }
 
   if (!isAuthenticated && mode === "login") {
     return {
       canRender: true,
+      isPending: false,
     };
   }
 
   if (!isAuthenticated) {
     return {
       canRender: false,
+      isPending: false,
     };
   }
 
   if (!normalizedGateState) {
     return {
       canRender: false,
+      isPending: true,
     };
   }
 
   if (isWaitingForActiveOrganization) {
     return {
-      canRender: false,
+      canRender: mode !== "app",
+      isPending: false,
     };
   }
 
   return {
     canRender: redirectTo === null,
+    isPending: false,
   };
 }
