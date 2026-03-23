@@ -336,6 +336,7 @@ export const createSendBatchFromBuffer = internalMutation({
     batchId: v.optional(v.id("whatsappSendBatches")),
     messageCount: v.number(),
     status: v.union(v.literal("queued"), v.literal("empty"), v.literal("busy")),
+    activeStatus: v.optional(sendBatchStatusValidator),
   }),
   handler: async (ctx, args) => {
     const activeStatuses = [
@@ -362,6 +363,7 @@ export const createSendBatchFromBuffer = internalMutation({
           batchId: activeBatch._id,
           messageCount: activeBatch.messageCount,
           status: "busy" as const,
+          activeStatus: activeBatch.status,
         };
       }
     }
@@ -379,6 +381,7 @@ export const createSendBatchFromBuffer = internalMutation({
       return {
         messageCount: 0,
         status: "empty" as const,
+        activeStatus: undefined,
       };
     }
 
@@ -412,6 +415,7 @@ export const createSendBatchFromBuffer = internalMutation({
       return {
         messageCount: 0,
         status: "empty" as const,
+        activeStatus: undefined,
       };
     }
 
@@ -465,7 +469,39 @@ export const createSendBatchFromBuffer = internalMutation({
       batchId,
       messageCount: messageIds.length,
       status: "queued" as const,
+      activeStatus: undefined,
     };
+  },
+});
+
+export const getLatestActiveSendBatchByPhone = internalQuery({
+  args: {
+    organizationId: v.string(),
+    phoneE164: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const activeStatuses = [
+      "queued",
+      "processing",
+      "awaiting_project_choice",
+      "awaiting_project_name",
+    ] as const;
+
+    const activeBatches = await Promise.all(
+      activeStatuses.map((status) =>
+        ctx.db
+          .query("whatsappSendBatches")
+          .withIndex("by_org_phone_status_createdAt", (q) =>
+            q.eq("organizationId", args.organizationId).eq("phoneE164", args.phoneE164).eq("status", status),
+          )
+          .order("desc")
+          .first(),
+      ),
+    );
+
+    return activeBatches
+      .filter((batch): batch is Doc<"whatsappSendBatches"> => !!batch)
+      .sort((left, right) => right.createdAt - left.createdAt)[0] ?? null;
   },
 });
 

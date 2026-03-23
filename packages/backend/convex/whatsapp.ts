@@ -52,6 +52,7 @@ import {
   documentationBusyMessage,
   documentationCapturedMessage,
   documentationEmptyMessage,
+  documentationInProgressMessage,
   documentationProjectChoiceMessage,
   documentationProjectLocationLengthMessage,
   documentationProjectLocationPrompt,
@@ -2315,12 +2316,22 @@ async function startDocumentationBatch(options: {
     batchId?: Id<"whatsappSendBatches">;
     messageCount: number;
     status: "queued" | "empty" | "busy";
+    activeStatus?:
+      | "queued"
+      | "processing"
+      | "awaiting_project_choice"
+      | "awaiting_project_name"
+      | "completed"
+      | "failed";
   };
 
   if (batchResult.status === "busy") {
     return {
       status: "busy" as const,
-      message: documentationBusyMessage(options.locale),
+      message:
+        batchResult.activeStatus === "queued" || batchResult.activeStatus === "processing"
+          ? documentationInProgressMessage(options.locale)
+          : documentationBusyMessage(options.locale),
       count: batchResult.messageCount,
     };
   }
@@ -2692,6 +2703,43 @@ async function processConnectedInbound(options: {
       result: pendingProjectResolutionResult,
     });
     return;
+  }
+
+  const activeSendBatch = (await options.ctx.runQuery(
+    (internal as any).whatsappProcessingData.getLatestActiveSendBatchByPhone,
+    {
+      organizationId: options.connection.organizationId,
+      phoneE164: options.connection.phoneNumberE164,
+    },
+  )) as {
+    _id: Id<"whatsappSendBatches">;
+    status:
+      | "queued"
+      | "processing"
+      | "awaiting_project_choice"
+      | "awaiting_project_name"
+      | "completed"
+      | "failed";
+  } | null;
+
+  if (
+    activeSendBatch &&
+    (activeSendBatch.status === "queued" || activeSendBatch.status === "processing")
+  ) {
+    const pendingReplyInput = await getPendingReplyInput();
+    const effectiveCommandText = normalizeCommandText(
+      pendingReplyInput.text || options.payload.body,
+    );
+
+    if (explicitSendCommand || isAffirmativeAnswer(effectiveCommandText)) {
+      await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+        phoneNumberE164: options.connection.phoneNumberE164,
+        locale: options.locale,
+        text: documentationInProgressMessage(options.locale),
+        connectionId: options.connection._id,
+      });
+      return;
+    }
   }
 
   if (explicitSendCommand) {

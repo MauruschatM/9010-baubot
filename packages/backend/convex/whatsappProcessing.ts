@@ -198,6 +198,9 @@ const ROUTING_HINT_QUERY_LIMIT = 4;
 const ROUTING_SEARCH_QUERY_LIMIT = 9;
 const VISUAL_MEDIA_SUMMARY_MAX_LENGTH = 180;
 const VISUAL_MEDIA_KEYWORD_LIMIT = 8;
+const ROUTING_MODEL_TIMEOUT_MS = 8_000;
+const MEDIA_ANALYSIS_TIMEOUT_MS = 12_000;
+const BATCH_NARRATIVE_TIMEOUT_MS = 12_000;
 const batchNarrativeSchema = z.object({
   batchTitle: z.string(),
   summary: z.string(),
@@ -657,6 +660,7 @@ async function extractRoutingHints(options: {
           process.env.AI_GATEWAY_ROUTING_MODEL ??
           WHATSAPP_AGENT_MODEL,
       ),
+      timeout: { totalMs: ROUTING_MODEL_TIMEOUT_MS },
       schema: routingHintsSchema,
       prompt: [
         "Extract routing search hints for an existing project lookup from a WhatsApp documentation batch.",
@@ -800,6 +804,7 @@ async function resolveRoutingDecision(options: {
   try {
     const result = await generateObject({
       model: gateway(process.env.AI_GATEWAY_ROUTING_MODEL ?? WHATSAPP_AGENT_MODEL),
+      timeout: { totalMs: ROUTING_MODEL_TIMEOUT_MS },
       schema: routingDecisionSchema,
       prompt: [
         "Resolve project routing for a WhatsApp documentation batch.",
@@ -1388,6 +1393,7 @@ async function generateBatchNarrative(options: {
           process.env.AI_GATEWAY_MODEL ??
           WHATSAPP_AGENT_MODEL,
       ),
+      timeout: { totalMs: BATCH_NARRATIVE_TIMEOUT_MS },
       schema: batchNarrativeSchema,
       prompt: [
         "Summarize this WhatsApp documentation batch for a project timeline card.",
@@ -1478,6 +1484,7 @@ async function describeVisualMedia(options: {
           process.env.AI_GATEWAY_ROUTING_MODEL ??
           WHATSAPP_AGENT_MODEL,
       ),
+      timeout: { totalMs: MEDIA_ANALYSIS_TIMEOUT_MS },
       schema: visualMediaAnalysisSchema,
       messages: [
         {
@@ -1814,7 +1821,6 @@ async function ensureEnrichedMediaAssets(
 
 async function resolveProjectChoice(options: {
   data: BatchProcessingData;
-  mediaAssetsByKey: Map<string, TimelineMediaAsset>;
   locale: AppLocale;
 }): Promise<ProjectChoiceResult> {
   const { data } = options;
@@ -1829,12 +1835,8 @@ async function resolveProjectChoice(options: {
     };
   }
 
-  const searchText = batchSearchText(data.messages, {
-    mediaAssetsByKey: options.mediaAssetsByKey,
-  });
-  const evidenceText = buildBatchEvidenceText(data.messages, {
-    mediaAssetsByKey: options.mediaAssetsByKey,
-  });
+  const searchText = batchSearchText(data.messages);
+  const evidenceText = buildBatchEvidenceText(data.messages);
   const routingHints = await extractRoutingHints({
     locale: options.locale,
     evidenceText,
@@ -2204,12 +2206,9 @@ export const processSendBatch = internalAction({
         startedAt: Date.now(),
       });
 
-      const mediaAssetsByKey = await ensureEnrichedMediaAssets(ctx, data, {
-        locale,
-      });
+      await ensureMediaAssets(ctx, data);
       const choice = await resolveProjectChoice({
         data,
-        mediaAssetsByKey,
         locale,
       });
 
@@ -2232,7 +2231,6 @@ export const processSendBatch = internalAction({
           projectId: choice.project._id,
           projectLocation: readProjectLocation(choice.project) ?? "Unknown project",
           locale,
-          mediaAssetsByKey,
         });
         batchPersisted = true;
 

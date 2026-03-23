@@ -208,6 +208,12 @@ export function documentationBusyMessage(locale: AppLocale) {
     : "Please finish the current project selection for your last documentation batch first.";
 }
 
+export function documentationInProgressMessage(locale: AppLocale) {
+  return toBinaryLocale(locale) === "de"
+    ? "Ich dokumentiere deine letzten WhatsApp-Nachrichten bereits."
+    : "I'm already documenting your latest WhatsApp messages.";
+}
+
 export function documentationProjectChoiceMessage(options: {
   locale: AppLocale;
   projects: Array<{ location: string; customerName?: string | null }>;
