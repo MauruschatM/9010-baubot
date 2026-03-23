@@ -1,14 +1,15 @@
 "use node";
 
 import type { AppLocale } from "@mvp-template/i18n";
-import { gateway } from "@ai-sdk/gateway";
 import { generateObject } from "ai";
 import { z } from "zod";
 
+import { getOpenRouterFastModel, hasOpenRouterFastConfig, openrouter } from "./lib/openrouter";
 import { appLocaleValues, normalizeAppLocale } from "./lib/locales";
 
 const LOCALE_DETECTION_MAX_ITEMS = 24;
 const LOCALE_DETECTION_MAX_TEXT_CHARS = 600;
+const LOCALE_DETECTION_TIMEOUT_MS = 4000;
 
 const localeDetectionSchema = z.object({
   detections: z.array(
@@ -61,16 +62,17 @@ export async function detectStoredLocalesForTextItems(options: {
     .filter((item) => item.text.length > 0);
 
   const detectedLocales: Record<string, AppLocale> = {};
-  const modelId = process.env.AI_GATEWAY_TRANSLATION_MODEL ?? process.env.AI_GATEWAY_MODEL;
+  const modelId = getOpenRouterFastModel();
 
-  if (normalizedItems.length === 0 || !process.env.AI_GATEWAY_API_KEY || !modelId) {
+  if (normalizedItems.length === 0 || !modelId || !hasOpenRouterFastConfig()) {
     return detectedLocales;
   }
 
   for (const chunk of chunkDetectionItems(normalizedItems)) {
     try {
       const response = await generateObject({
-        model: gateway(modelId),
+        model: openrouter(modelId),
+        timeout: { totalMs: LOCALE_DETECTION_TIMEOUT_MS },
         schema: localeDetectionSchema,
         prompt: [
           "Detect the original language of each text item.",

@@ -10,10 +10,10 @@
     "dev:setup": "convex dev --configure --until-success"
   },
   "dependencies": {
-    "@ai-sdk/gateway": "latest",
     "@ai-sdk/groq": "^3.0.29",
     "@convex-dev/better-auth": "catalog:",
     "@mastra/core": "latest",
+    "@openrouter/ai-sdk-provider": "latest",
     "@mvp-template/i18n": "workspace:*",
     "@react-email/components": "^0.5.7",
     "@react-email/render": "^1.4.0",

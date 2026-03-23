@@ -1,12 +1,12 @@
 "use node";
 
 import { generateObject } from "ai";
-import { gateway } from "@ai-sdk/gateway";
 import type { GenericActionCtx } from "convex/server";
 import { z } from "zod";
 
 import type { DataModel } from "./_generated/dataModel";
 import type { AppLocale } from "@mvp-template/i18n";
+import { getOpenRouterFastModel, hasOpenRouterFastConfig, openrouter } from "./lib/openrouter";
 
 type TranslationItem = {
   id: string;
@@ -29,7 +29,36 @@ const translationsSchema = z.object({
   ),
 });
 
-export async function translateTextsWithGemini(
+const TRANSLATION_MAX_ITEMS = 20;
+const TRANSLATION_MAX_TEXT_CHARS = 800;
+const TRANSLATION_TIMEOUT_MS = 8000;
+
+function errorMessageFromUnknown(error: unknown) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message;
+  }
+
+  return String(error);
+}
+
+function normalizeTranslationItem(item: TranslationItem): TranslationItem {
+  return {
+    id: item.id,
+    text: item.text.trim().slice(0, TRANSLATION_MAX_TEXT_CHARS),
+  };
+}
+
+function chunkTranslationItems(items: TranslationItem[]) {
+  const chunks: TranslationItem[][] = [];
+
+  for (let index = 0; index < items.length; index += TRANSLATION_MAX_ITEMS) {
+    chunks.push(items.slice(index, index + TRANSLATION_MAX_ITEMS));
+  }
+
+  return chunks;
+}
+
+export async function translateTextsWithAi(
   _ctx: GenericActionCtx<DataModel>,
   args: TranslateTextOptions,
 ): Promise<Record<string, string>> {
@@ -39,36 +68,44 @@ export async function translateTextsWithGemini(
     resultMap[item.id] = item.text;
   }
 
-  if (args.items.length === 0 || !process.env.AI_GATEWAY_API_KEY) {
+  const modelId = getOpenRouterFastModel();
+
+  if (args.items.length === 0 || !modelId || !hasOpenRouterFastConfig()) {
     return resultMap;
   }
 
   try {
-    const modelId = process.env.AI_GATEWAY_TRANSLATION_MODEL ?? process.env.AI_GATEWAY_MODEL;
-    if (!modelId) {
-      return resultMap;
+    const normalizedItems = args.items
+      .map(normalizeTranslationItem)
+      .filter((item) => item.text.length > 0);
+
+    for (const chunk of chunkTranslationItems(normalizedItems)) {
+      const response = await generateObject({
+        model: openrouter(modelId),
+        timeout: { totalMs: TRANSLATION_TIMEOUT_MS },
+        schema: translationsSchema,
+        prompt: [
+          "Translate the provided texts.",
+          `Target locale: ${args.targetLocale}`,
+          "Preserve meaning and formatting.",
+          "Return JSON only with the schema { translations: [{ id, text }] }.",
+          JSON.stringify({ items: chunk }),
+        ].join("\n"),
+      });
+
+      for (const translation of response.object.translations) {
+        resultMap[translation.id] = translation.text;
+      }
     }
 
-    const response = await generateObject({
-      model: gateway(modelId),
-      schema: translationsSchema,
-      prompt: [
-        "Translate the provided texts.",
-        `Target locale: ${args.targetLocale}`,
-        "Preserve meaning and formatting.",
-        "Return JSON only with the schema { translations: [{ id, text }] }.",
-        JSON.stringify({ items: args.items }),
-      ].join("\n"),
+    return resultMap;
+  } catch (error) {
+    console.warn("Timeline translation failed", {
+      itemCount: args.items.length,
+      message: errorMessageFromUnknown(error),
     });
-
-    for (const translation of response.object.translations) {
-      resultMap[translation.id] = translation.text;
-    }
-  } catch {
     return resultMap;
   }
-
-  return resultMap;
 }
 
 export async function hashText(value: string): Promise<string> {

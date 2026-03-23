@@ -2,7 +2,6 @@
 
 import { createTranslator, type AppLocale } from "@mvp-template/i18n";
 import { generateObject } from "ai";
-import { gateway } from "@ai-sdk/gateway";
 import { v } from "convex/values";
 
 import { vAppLocale } from "./lib/locales";
@@ -18,10 +17,12 @@ import {
   formatContextPacketForInstructions,
 } from "../mastra/agentContext/compiler";
 import { createAuth } from "./auth";
+import { createWorkspaceAgent } from "../mastra/agent";
 import {
-  createWorkspaceAgent,
-  DEFAULT_AI_GATEWAY_MODEL,
-} from "../mastra/agent";
+  openrouter,
+  requireOpenRouterFastModel,
+  requireOpenRouterSmartModel,
+} from "./lib/openrouter";
 import {
   getMastraResourceId,
   getMastraWhatsAppThreadId,
@@ -33,7 +34,6 @@ import {
   toDisplayText,
 } from "./mastraComponent/serialization";
 import {
-  WHATSAPP_AGENT_MODEL,
   WHATSAPP_CHANNEL,
   WHATSAPP_OUTBOUND_CHUNK_DELAY_MS,
   WHATSAPP_OUTBOUND_CHUNK_HARD_LIMIT_CHARS,
@@ -42,7 +42,6 @@ import {
   WHATSAPP_ONBOARDING_TTL_MS,
   WHATSAPP_READY_PROMPT_COOLDOWN_MS,
   WHATSAPP_THREAD_READINESS_BUFFER_MS,
-  WHATSAPP_TURN_DETECTION_MODEL,
   WHATSAPP_TYPING_FALLBACK_DELAY_MS,
 } from "./whatsapp/constants";
 import {
@@ -80,6 +79,7 @@ import {
 import {
   extractDocumentationTextFromSendCommand,
   extractEmailCandidate,
+  hasExplicitProactiveSendIntent,
   inferLocaleFromPhoneNumber,
   isAffirmativeAnswer,
   isNegativeCommand,
@@ -609,6 +609,40 @@ export function shouldDeferMediaOnlyTurn(options: {
   );
 }
 
+export function bufferHasDocumentableMedia(
+  messages: Array<Pick<WhatsAppMessageDoc, "media">>,
+) {
+  return messages.some((message) => message.media.length > 0);
+}
+
+export function shouldKeepBufferedDocumentationTurn(options: {
+  explicitSendCommand: boolean;
+  shouldForceSend: boolean;
+  messages: Array<Pick<WhatsAppMessageDoc, "text" | "media">>;
+}) {
+  if (options.explicitSendCommand || options.shouldForceSend) {
+    return false;
+  }
+
+  if (!bufferHasDocumentableMedia(options.messages)) {
+    return false;
+  }
+
+  const combinedIntentText = options.messages
+    .flatMap((message) => [
+      message.text,
+      ...message.media.map((media) => media.transcription ?? ""),
+    ])
+    .join("\n")
+    .trim();
+
+  if (!combinedIntentText) {
+    return true;
+  }
+
+  return !hasExplicitProactiveSendIntent(combinedIntentText);
+}
+
 export function shouldDeliverBufferedTurnResponse(
   messages: Array<Pick<WhatsAppMessageDoc, "turnStatus" | "documentationStatus">>,
 ) {
@@ -619,6 +653,25 @@ export function shouldDeliverBufferedTurnResponse(
         message.turnStatus === "buffered" && message.documentationStatus !== "batched",
     )
   );
+}
+
+export function doesBufferedTurnStillMatchMessageSet(options: {
+  currentBuffer: Pick<WhatsAppTurnBufferDoc, "_id" | "bufferedMessageIds"> | null;
+  expectedBufferId: Id<"whatsappTurnBuffers">;
+  expectedMessageIds: Id<"whatsappMessages">[];
+}) {
+  if (!options.currentBuffer || options.currentBuffer._id !== options.expectedBufferId) {
+    return false;
+  }
+
+  const currentMessageIds = options.currentBuffer.bufferedMessageIds.map(String).sort();
+  const expectedMessageIds = options.expectedMessageIds.map(String).sort();
+
+  if (currentMessageIds.length !== expectedMessageIds.length) {
+    return false;
+  }
+
+  return currentMessageIds.every((messageId, index) => messageId === expectedMessageIds[index]);
 }
 
 async function sourceMessagesStillAvailableForAgentResponse(options: {
@@ -639,6 +692,34 @@ async function sourceMessagesStillAvailableForAgentResponse(options: {
     messages.length === options.sourceMessageIds.length &&
     shouldDeliverBufferedTurnResponse(messages)
   );
+}
+
+async function bufferedTurnStillCurrentForReadyPrompt(options: {
+  ctx: {
+    runQuery: (queryRef: any, args: Record<string, unknown>) => Promise<unknown>;
+  };
+  connectionId: Id<"whatsappConnections">;
+  bufferId: Id<"whatsappTurnBuffers">;
+  sourceMessageIds: Id<"whatsappMessages">[];
+}) {
+  const canDeliverForMessages = await sourceMessagesStillAvailableForAgentResponse({
+    ctx: options.ctx,
+    sourceMessageIds: options.sourceMessageIds,
+  });
+
+  if (!canDeliverForMessages) {
+    return false;
+  }
+
+  const currentBuffer = (await options.ctx.runQuery(internal.whatsappData.getTurnBufferByConnection, {
+    connectionId: options.connectionId,
+  })) as WhatsAppTurnBufferDoc | null;
+
+  return doesBufferedTurnStillMatchMessageSet({
+    currentBuffer,
+    expectedBufferId: options.bufferId,
+    expectedMessageIds: options.sourceMessageIds,
+  });
 }
 
 async function cancelPendingClarificationForThread(options: {
@@ -2840,6 +2921,22 @@ async function processConnectedInbound(options: {
     return;
   }
 
+  if (
+    shouldKeepBufferedDocumentationTurn({
+      explicitSendCommand,
+      shouldForceSend,
+      messages: normalizedBufferedMessages,
+    })
+  ) {
+    await scheduleDocumentationReminder({
+      ctx: options.ctx,
+      bufferId: turnBuffer._id,
+      connection: options.connection,
+      locale: options.locale,
+    });
+    return;
+  }
+
   const decision: TurnDetectionDecision = shouldForceSend
     ? {
         shouldSendNow: true,
@@ -2863,11 +2960,34 @@ async function processConnectedInbound(options: {
 
   if (!decision.shouldSendNow) {
     if (shouldPromptForReady) {
+      const sourceMessageIds = normalizedBufferedMessages.map((message) => message._id);
+      const canPromptForReady = await bufferedTurnStillCurrentForReadyPrompt({
+        ctx: options.ctx,
+        connectionId: options.connection._id,
+        bufferId: turnBuffer._id,
+        sourceMessageIds,
+      });
+
+      if (!canPromptForReady) {
+        return;
+      }
+
       await options.ctx.runMutation(internal.whatsappData.updateTurnBufferStatus, {
         bufferId: turnBuffer._id,
         status: "awaiting_confirmation",
         readyPromptSentAt: Date.now(),
       });
+
+      const canStillPromptForReady = await bufferedTurnStillCurrentForReadyPrompt({
+        ctx: options.ctx,
+        connectionId: options.connection._id,
+        bufferId: turnBuffer._id,
+        sourceMessageIds,
+      });
+
+      if (!canStillPromptForReady) {
+        return;
+      }
 
       await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
         phoneNumberE164: options.connection.phoneNumberE164,
@@ -3059,12 +3179,11 @@ export const sendDocumentationReminder = internalAction({
     const normalizedBufferedMessages = bufferedMessages
       .slice()
       .sort((messageA, messageB) => messageA.createdAt - messageB.createdAt);
-    const latestBufferedMessage =
-      normalizedBufferedMessages[normalizedBufferedMessages.length - 1] ?? null;
+    const hasBufferedMedia = bufferHasDocumentableMedia(normalizedBufferedMessages);
 
     if (
-      !latestBufferedMessage ||
-      latestBufferedMessage.media.length === 0 ||
+      normalizedBufferedMessages.length === 0 ||
+      !hasBufferedMedia ||
       Date.now() - turnBuffer.lastBufferedAt < WHATSAPP_THREAD_READINESS_BUFFER_MS
     ) {
       return null;
@@ -3580,11 +3699,7 @@ export const runAgentForBufferedTurn: any = internalAction({
     pendingActionId: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args): Promise<RunAgentForBufferedTurnResult> => {
-    if (!process.env.AI_GATEWAY_API_KEY) {
-      throw new Error("AI gateway is not configured");
-    }
-
-    const modelId = process.env.AI_GATEWAY_MODEL ?? WHATSAPP_AGENT_MODEL ?? DEFAULT_AI_GATEWAY_MODEL;
+    const modelId = requireOpenRouterSmartModel();
     const locale = toLocale(args.locale);
 
     const member = (await ctx.runQuery(components.betterAuth.adapter.findOne, {
@@ -4142,14 +4257,14 @@ export const suggestClarificationUi = internalAction({
     ),
   },
   handler: async (_ctx, args) => {
-    const turnModel = process.env.AI_GATEWAY_TURN_MODEL ?? WHATSAPP_TURN_DETECTION_MODEL;
+    const turnModel = requireOpenRouterFastModel();
     const schema = z.object({
       shortInstruction: z.string(),
       exampleAnswer: z.string(),
     });
 
     const response = await generateObject({
-      model: gateway(turnModel),
+      model: openrouter(turnModel),
       schema,
       prompt:
         args.locale === "de"

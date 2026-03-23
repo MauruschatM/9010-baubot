@@ -1388,7 +1388,7 @@ function ProjectDetailRoute() {
         </div>
       </section>
 
-      {isLoadingLocalizedRows && localizedRows === null ? (
+      {isLoadingLocalizedRows && localizedRows === null && originalTimelineRows === undefined ? (
         <ProjectTimelineLoadingSkeleton />
       ) : timelineBatches.length === 0 ? (
         <div className="rounded-lg border border-dashed px-4 py-5 text-sm text-muted-foreground">

@@ -9,8 +9,7 @@ import type { Id } from "./_generated/dataModel";
 import { action, internalAction } from "./_generated/server";
 import { requireActiveOrganization } from "./authhelpers";
 import { authComponent } from "./auth";
-import { detectStoredLocalesForTextItems } from "./contentLocale";
-import { hashText, translateTextsWithGemini } from "./i18nCore";
+import { hashText, translateTextsWithAi } from "./i18nCore";
 import { normalizeAppLocale, vAppLocale } from "./lib/locales";
 
 type TimelineLocalizedMedia = {
@@ -210,6 +209,29 @@ export function shouldTranslateStoredValue(
   return sourceLocale !== null && sourceLocale !== targetLocale;
 }
 
+export function resolveStoredTranslationDecision(options: {
+  currentValue: string;
+  sourceLocale: AppLocale | null;
+  targetLocale: AppLocale;
+  sourceHash: string;
+  cached?: {
+    sourceHash: string;
+    text: string;
+  } | null;
+}) {
+  if (options.cached?.sourceHash === options.sourceHash) {
+    return {
+      localizedValue: options.cached.text,
+      shouldQueueTranslation: false,
+    };
+  }
+
+  return {
+    localizedValue: options.currentValue,
+    shouldQueueTranslation: shouldTranslateStoredValue(options.sourceLocale, options.targetLocale),
+  };
+}
+
 function assignTimelineField(
   row: {
     text?: string;
@@ -278,67 +300,6 @@ function assignMediaField(
   row.extractedText = value;
 }
 
-function collectLocaleDetectionItems(rows: TimelineLocalizedRow[]) {
-  const detectionItems: Array<{ id: string; text: string }> = [];
-
-  for (const row of rows) {
-    for (const field of TIMELINE_FIELDS) {
-      const currentValue = row[field];
-
-      if (typeof currentValue !== "string" || currentValue.trim().length === 0) {
-        continue;
-      }
-
-      if (resolveStoredLocale(row.fieldLocales?.[field])) {
-        continue;
-      }
-
-      detectionItems.push({
-        id: timelineTranslationKey(row._id, field),
-        text: currentValue,
-      });
-    }
-
-    const nachtragItems = Array.isArray(row.nachtragItems) ? row.nachtragItems : [];
-
-    for (const [itemIndex, item] of nachtragItems.entries()) {
-      if (typeof item !== "string" || item.trim().length === 0) {
-        continue;
-      }
-
-      if (resolveStoredLocale(row.fieldLocales?.nachtragItems?.[itemIndex])) {
-        continue;
-      }
-
-      detectionItems.push({
-        id: timelineTranslationKey(row._id, `nachtragItems.${itemIndex}`),
-        text: item,
-      });
-    }
-
-    for (const media of row.media) {
-      for (const field of MEDIA_FIELDS) {
-        const currentValue = media[field];
-
-        if (typeof currentValue !== "string" || currentValue.trim().length === 0) {
-          continue;
-        }
-
-        if (resolveStoredLocale(media.fieldLocales?.[field])) {
-          continue;
-        }
-
-        detectionItems.push({
-          id: mediaTranslationKey(media.mediaAssetId, field),
-          text: currentValue,
-        });
-      }
-    }
-  }
-
-  return detectionItems;
-}
-
 async function localizeTimelineRows(options: {
   ctx: any;
   organizationId: string;
@@ -358,7 +319,7 @@ async function localizeTimelineRows(options: {
       ),
     ),
   ).map((value) => value as Id<"whatsappMediaAssets">);
-  const [timelineCache, mediaCache, detectedLocales] = await Promise.all([
+  const [timelineCache, mediaCache] = await Promise.all([
     options.ctx.runQuery(getTimelineTranslationsForItemsRef, {
       timelineItemIds,
       locale: options.locale,
@@ -366,9 +327,6 @@ async function localizeTimelineRows(options: {
     options.ctx.runQuery(getMediaTranslationsForAssetsRef, {
       mediaAssetIds,
       locale: options.locale,
-    }),
-    detectStoredLocalesForTextItems({
-      items: collectLocaleDetectionItems(options.rows),
     }),
   ]);
   const timelineCacheByKey = new Map(
@@ -399,35 +357,24 @@ async function localizeTimelineRows(options: {
         }
 
         const translationKey = timelineTranslationKey(localizedRow._id, field);
-        const sourceLocale =
-          resolveStoredLocale(localizedRow.fieldLocales?.[field]) ??
-          detectedLocales[translationKey] ??
-          null;
-
-        if (!shouldTranslateStoredValue(sourceLocale, options.locale)) {
-          continue;
-        }
-
         const sourceHash = await hashText(currentValue);
         const cacheKey = `${localizedRow._id}:${field}`;
         const cached = timelineCacheByKey.get(cacheKey);
+        const sourceLocale = resolveStoredLocale(localizedRow.fieldLocales?.[field]);
+        const translationDecision = resolveStoredTranslationDecision({
+          currentValue,
+          sourceLocale,
+          targetLocale: options.locale,
+          sourceHash,
+          cached,
+        });
 
-        if (cached?.sourceHash === sourceHash) {
-          const cachedLooksUntranslated = cached.text.trim() === currentValue.trim();
+        if (translationDecision.localizedValue !== currentValue) {
+          assignTimelineField(localizedRow, field, translationDecision.localizedValue);
+          continue;
+        }
 
-          if (cachedLooksUntranslated) {
-            translationQueue.push({
-              id: translationKey,
-              text: currentValue,
-              kind: "timeline",
-              entityId: localizedRow._id,
-              field,
-              sourceHash,
-            });
-            continue;
-          }
-
-          assignTimelineField(localizedRow, field, cached.text);
+        if (!translationDecision.shouldQueueTranslation) {
           continue;
         }
 
@@ -453,35 +400,24 @@ async function localizeTimelineRows(options: {
 
         const field = `nachtragItems.${itemIndex}`;
         const translationKey = timelineTranslationKey(localizedRow._id, field);
-        const sourceLocale =
-          resolveStoredLocale(localizedRow.fieldLocales?.nachtragItems?.[itemIndex]) ??
-          detectedLocales[translationKey] ??
-          null;
-
-        if (!shouldTranslateStoredValue(sourceLocale, options.locale)) {
-          continue;
-        }
-
         const sourceHash = await hashText(item);
         const cacheKey = `${localizedRow._id}:${field}`;
         const cached = timelineCacheByKey.get(cacheKey);
+        const sourceLocale = resolveStoredLocale(localizedRow.fieldLocales?.nachtragItems?.[itemIndex]);
+        const translationDecision = resolveStoredTranslationDecision({
+          currentValue: item,
+          sourceLocale,
+          targetLocale: options.locale,
+          sourceHash,
+          cached,
+        });
 
-        if (cached?.sourceHash === sourceHash) {
-          const cachedLooksUntranslated = cached.text.trim() === item.trim();
+        if (translationDecision.localizedValue !== item) {
+          localizedNachtragItems[itemIndex] = translationDecision.localizedValue;
+          continue;
+        }
 
-          if (cachedLooksUntranslated) {
-            translationQueue.push({
-              id: translationKey,
-              text: item,
-              kind: "timeline",
-              entityId: localizedRow._id,
-              field,
-              sourceHash,
-            });
-            continue;
-          }
-
-          localizedNachtragItems[itemIndex] = cached.text;
+        if (!translationDecision.shouldQueueTranslation) {
           continue;
         }
 
@@ -508,35 +444,24 @@ async function localizeTimelineRows(options: {
           }
 
           const translationKey = mediaTranslationKey(media.mediaAssetId, field);
-          const sourceLocale =
-            resolveStoredLocale(media.fieldLocales?.[field]) ??
-            detectedLocales[translationKey] ??
-            null;
-
-          if (!shouldTranslateStoredValue(sourceLocale, options.locale)) {
-            continue;
-          }
-
           const sourceHash = await hashText(currentValue);
           const cacheKey = `${media.mediaAssetId}:${field}`;
           const cached = mediaCacheByKey.get(cacheKey);
+          const sourceLocale = resolveStoredLocale(media.fieldLocales?.[field]);
+          const translationDecision = resolveStoredTranslationDecision({
+            currentValue,
+            sourceLocale,
+            targetLocale: options.locale,
+            sourceHash,
+            cached,
+          });
 
-          if (cached?.sourceHash === sourceHash) {
-            const cachedLooksUntranslated = cached.text.trim() === currentValue.trim();
+          if (translationDecision.localizedValue !== currentValue) {
+            assignMediaField(media, field, translationDecision.localizedValue);
+            continue;
+          }
 
-            if (cachedLooksUntranslated) {
-              translationQueue.push({
-                id: translationKey,
-                text: currentValue,
-                kind: "media",
-                entityId: media.mediaAssetId,
-                field,
-                sourceHash,
-              });
-              continue;
-            }
-
-            assignMediaField(media, field, cached.text);
+          if (!translationDecision.shouldQueueTranslation) {
             continue;
           }
 
@@ -559,7 +484,7 @@ async function localizeTimelineRows(options: {
     return localizedRows;
   }
 
-  const translations = await translateTextsWithGemini(options.ctx, {
+  const translations = await translateTextsWithAi(options.ctx, {
     organizationId: options.organizationId,
     targetLocale: options.locale,
     items: translationQueue.map((entry) => ({ id: entry.id, text: entry.text })),

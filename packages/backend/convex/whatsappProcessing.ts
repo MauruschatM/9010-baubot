@@ -1,6 +1,5 @@
 'use node';
 
-import { gateway } from "@ai-sdk/gateway";
 import type { AppLocale } from "@mvp-template/i18n";
 import { generateObject } from "ai";
 import { ConvexError, v } from "convex/values";
@@ -9,8 +8,12 @@ import { z } from "zod";
 import { components, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internalAction } from "./_generated/server";
-import { detectStoredLocalesForTextItems } from "./contentLocale";
 import { normalizeAppLocale } from "./lib/locales";
+import {
+  hasOpenRouterFastConfig,
+  openrouter,
+  requireOpenRouterFastModel,
+} from "./lib/openrouter";
 import {
   isPhoneOnlyMemberEmail,
 } from "./memberProfiles";
@@ -20,7 +23,6 @@ import {
   documentationProjectLocationPrompt,
   documentationSavedMessage,
 } from "./whatsapp/messages";
-import { WHATSAPP_AGENT_MODEL } from "./whatsapp/constants";
 import { inferLocaleFromPhoneNumber } from "./whatsapp/normalize";
 import { cosineSimilarity, embedTextsWithVoyage } from "./lib/voyage";
 import {
@@ -644,7 +646,7 @@ async function extractRoutingHints(options: {
     reason: "no_routing_hints",
   };
 
-  if (!process.env.AI_GATEWAY_API_KEY) {
+  if (!hasOpenRouterFastConfig()) {
     return fallback;
   }
 
@@ -654,12 +656,9 @@ async function extractRoutingHints(options: {
   }
 
   try {
+    const modelId = requireOpenRouterFastModel();
     const result = await generateObject({
-      model: gateway(
-        process.env.AI_GATEWAY_ROUTING_HINTS_MODEL ??
-          process.env.AI_GATEWAY_ROUTING_MODEL ??
-          WHATSAPP_AGENT_MODEL,
-      ),
+      model: openrouter(modelId),
       timeout: { totalMs: ROUTING_MODEL_TIMEOUT_MS },
       schema: routingHintsSchema,
       prompt: [
@@ -797,13 +796,14 @@ async function resolveRoutingDecision(options: {
 }): Promise<RoutingDecision> {
   const fallback = buildRoutingDecisionFallback(options);
 
-  if (!process.env.AI_GATEWAY_API_KEY) {
+  if (!hasOpenRouterFastConfig()) {
     return fallback;
   }
 
   try {
+    const modelId = requireOpenRouterFastModel();
     const result = await generateObject({
-      model: gateway(process.env.AI_GATEWAY_ROUTING_MODEL ?? WHATSAPP_AGENT_MODEL),
+      model: openrouter(modelId),
       timeout: { totalMs: ROUTING_MODEL_TIMEOUT_MS },
       schema: routingDecisionSchema,
       prompt: [
@@ -1382,17 +1382,14 @@ async function generateBatchNarrative(options: {
 }): Promise<BatchNarrative> {
   const fallback = buildBatchNarrativeFallback(options);
 
-  if (!process.env.AI_GATEWAY_API_KEY) {
+  if (!hasOpenRouterFastConfig()) {
     return fallback;
   }
 
   try {
+    const modelId = requireOpenRouterFastModel();
     const result = await generateObject({
-      model: gateway(
-        process.env.AI_GATEWAY_BATCH_SUMMARY_MODEL ??
-          process.env.AI_GATEWAY_MODEL ??
-          WHATSAPP_AGENT_MODEL,
-      ),
+      model: openrouter(modelId),
       timeout: { totalMs: BATCH_NARRATIVE_TIMEOUT_MS },
       schema: batchNarrativeSchema,
       prompt: [
@@ -1473,17 +1470,14 @@ async function describeVisualMedia(options: {
   extractedText?: string;
   keywords?: string[];
 } | null> {
-  if (!process.env.AI_GATEWAY_API_KEY) {
+  if (!hasOpenRouterFastConfig()) {
     return null;
   }
 
   try {
+    const modelId = requireOpenRouterFastModel();
     const result = await generateObject({
-      model: gateway(
-        process.env.AI_GATEWAY_MEDIA_ANALYSIS_MODEL ??
-          process.env.AI_GATEWAY_ROUTING_MODEL ??
-          WHATSAPP_AGENT_MODEL,
-      ),
+      model: openrouter(modelId),
       timeout: { totalMs: MEDIA_ANALYSIS_TIMEOUT_MS },
       schema: visualMediaAnalysisSchema,
       messages: [
@@ -1590,6 +1584,25 @@ export function derivePreparedTimelineFieldLocales(options: {
   }
 
   return Object.keys(fieldLocales).length > 0 ? fieldLocales : undefined;
+}
+
+export function resolvePreparedTimelineSourceTextLocale(options: {
+  sourceText?: string;
+  sourceTextLocale?: AppLocale;
+  transcriptLocale?: AppLocale;
+  extractedTextLocale?: AppLocale;
+  batchLocale: AppLocale;
+}) {
+  if (!options.sourceText) {
+    return undefined;
+  }
+
+  return (
+    options.sourceTextLocale ??
+    options.transcriptLocale ??
+    options.extractedTextLocale ??
+    options.batchLocale
+  );
 }
 
 async function resolveBatchLocale(ctx: {
@@ -1737,7 +1750,7 @@ async function ensureEnrichedMediaAssets(
 ) {
   const assetsByKey = await ensureMediaAssets(ctx, data);
 
-  if (!process.env.AI_GATEWAY_API_KEY) {
+  if (!hasOpenRouterFastConfig()) {
     return assetsByKey;
   }
 
@@ -1836,6 +1849,30 @@ async function resolveProjectChoice(options: {
   }
 
   const searchText = batchSearchText(data.messages);
+  const exactProjectMatches = data.projects.filter((project) =>
+    hasExactNameMention(searchText, readProjectLocation(project)),
+  );
+
+  if (exactProjectMatches.length === 1) {
+    return {
+      kind: "selected",
+      project: exactProjectMatches[0]!,
+      reason: "exact_project_match",
+      confidence: 1,
+      routingContext: null,
+    };
+  }
+
+  if (exactProjectMatches.length > 1) {
+    return {
+      kind: "choose",
+      options: exactProjectMatches.slice(0, MAX_PROJECT_OPTIONS),
+      reason: "multiple_exact_project_matches",
+      suggestedProjectLocation,
+      routingContext: null,
+    };
+  }
+
   const evidenceText = buildBatchEvidenceText(data.messages);
   const routingHints = await extractRoutingHints({
     locale: options.locale,
@@ -1846,11 +1883,6 @@ async function resolveProjectChoice(options: {
     searchText,
     routingHints,
   });
-  const exactProjectMatches = data.projects.filter((project) =>
-    routingSearchQueries.some((query) =>
-      hasExactNameMention(normalizeNameMatch(query), readProjectLocation(project)),
-    ),
-  );
   const exactCustomerMatches = data.customers.filter(
     (customer) =>
       routingSearchQueries.some(
@@ -1991,14 +2023,6 @@ async function finalizePreparedBatch(
     (await ensureEnrichedMediaAssets(ctx, options.data, {
       locale: options.locale,
     }));
-  const detectedSourceTextLocales = await detectStoredLocalesForTextItems({
-    items: options.data.messages
-      .map((message) => ({
-        id: String(message._id),
-        text: normalizeWhitespace(message.text) ?? "",
-      }))
-      .filter((item) => item.text.length > 0),
-  });
   const preparedTimelineItems: PreparedTimelineItem[] = options.data.messages.map((message) => {
     const messageMediaAssets = message.media.map((_media, index) => {
       const entry = mediaAssetsByKey.get(`${String(message._id)}:${index}`);
@@ -2037,7 +2061,12 @@ async function finalizePreparedBatch(
       (messageMediaAssets.length > 0
         ? `${messageMediaAssets.length} media attachment${messageMediaAssets.length === 1 ? "" : "s"}`
         : undefined);
-    const sourceTextLocale = detectedSourceTextLocales[String(message._id)];
+    const sourceTextLocale = resolvePreparedTimelineSourceTextLocale({
+      sourceText,
+      transcriptLocale,
+      extractedTextLocale,
+      batchLocale: options.locale,
+    });
 
     return {
       messageId: message._id,

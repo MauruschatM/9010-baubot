@@ -9,8 +9,6 @@ export const WHATSAPP_OUTBOUND_CHUNK_HARD_LIMIT_CHARS = 1200;
 export const WHATSAPP_OUTBOUND_CHUNK_DELAY_MS = 450;
 export const WHATSAPP_OUTBOUND_MAX_CHUNKS = 12;
 
-export const WHATSAPP_TURN_DETECTION_MODEL = "google/gemini-3-flash";
-export const WHATSAPP_AGENT_MODEL = "google/gemini-3.1-pro";
 export const WHATSAPP_TRANSCRIPTION_MODEL = "whisper-large-v3";
 
 export const WHATSAPP_SUPPORTED_SEND_COMMANDS = [

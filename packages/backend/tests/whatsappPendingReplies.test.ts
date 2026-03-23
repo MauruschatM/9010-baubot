@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
+  bufferHasDocumentableMedia,
+  doesBufferedTurnStillMatchMessageSet,
   handlePendingProjectResolution,
   processPendingClarification,
   resolvePendingReplyInput,
+  shouldKeepBufferedDocumentationTurn,
   shouldDeliverBufferedTurnResponse,
   shouldDeferMediaOnlyTurn,
 } from "../convex/whatsapp";
@@ -188,6 +191,73 @@ describe("whatsapp pending reply handling", () => {
     ).toBe(true);
   });
 
+  test("treats mixed image-plus-text buffers as documentable media turns", () => {
+    expect(
+      bufferHasDocumentableMedia([
+        {
+          media: [],
+        },
+        {
+          media: [
+            {
+              contentType: "image/jpeg",
+            },
+          ],
+        },
+      ] as any),
+    ).toBe(true);
+
+    expect(
+      bufferHasDocumentableMedia([
+        {
+          media: [],
+        },
+      ] as any),
+    ).toBe(false);
+  });
+
+  test("keeps image-plus-note turns buffered until an explicit send command arrives", () => {
+    expect(
+      shouldKeepBufferedDocumentationTurn({
+        explicitSendCommand: false,
+        shouldForceSend: false,
+        messages: [
+          {
+            text: "",
+            media: [
+              {
+                contentType: "image/jpeg",
+              },
+            ],
+          },
+          {
+            text: "Diese Teile gehoeren zum Olivaer Platz, wir haben da einige Schrankarbeiten getaetigt.",
+            media: [],
+          },
+        ],
+      } as any),
+    ).toBe(true);
+  });
+
+  test("allows explicit proactive send intents with media to continue to turn detection", () => {
+    expect(
+      shouldKeepBufferedDocumentationTurn({
+        explicitSendCommand: false,
+        shouldForceSend: false,
+        messages: [
+          {
+            text: "Bitte schick das Bild an den Kunden per WhatsApp.",
+            media: [
+              {
+                contentType: "image/jpeg",
+              },
+            ],
+          },
+        ],
+      } as any),
+    ).toBe(false);
+  });
+
   test("suppresses buffered turn delivery once messages were claimed by a send batch", () => {
     expect(
       shouldDeliverBufferedTurnResponse([
@@ -206,6 +276,38 @@ describe("whatsapp pending reply handling", () => {
         },
       ] as any),
     ).toBe(true);
+  });
+
+  test("requires the current buffer to still match the original message set", () => {
+    expect(
+      doesBufferedTurnStillMatchMessageSet({
+        currentBuffer: {
+          _id: "buffer-1" as any,
+          bufferedMessageIds: ["message-1", "message-2"] as any,
+        },
+        expectedBufferId: "buffer-1" as any,
+        expectedMessageIds: ["message-2", "message-1"] as any,
+      }),
+    ).toBe(true);
+
+    expect(
+      doesBufferedTurnStillMatchMessageSet({
+        currentBuffer: {
+          _id: "buffer-1" as any,
+          bufferedMessageIds: ["message-1", "message-2", "message-3"] as any,
+        },
+        expectedBufferId: "buffer-1" as any,
+        expectedMessageIds: ["message-1", "message-2"] as any,
+      }),
+    ).toBe(false);
+
+    expect(
+      doesBufferedTurnStillMatchMessageSet({
+        currentBuffer: null,
+        expectedBufferId: "buffer-1" as any,
+        expectedMessageIds: ["message-1", "message-2"] as any,
+      }),
+    ).toBe(false);
   });
 
   test("finalizes an awaiting project-location batch from a transcribed voice reply", async () => {

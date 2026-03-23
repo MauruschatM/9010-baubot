@@ -448,9 +448,14 @@ export function createOrganizationTools(options: CreateOrganizationToolsOptions)
         invitation: organizationInvitationSchema,
       }),
       execute: async (input) => {
+        const invitationInput = {
+          email: input.email,
+          role: input.role ?? "member",
+        };
+
         return {
           status: "invited" as const,
-          invitation: await inviteOrganizationMember(input),
+          invitation: await inviteOrganizationMember(invitationInput),
         };
       },
     });
@@ -952,7 +957,7 @@ function createConfirmationTool<InputSchema extends z.ZodTypeAny>(options: {
   inputSchema: InputSchema;
   actionType: PendingActionType;
   requestConfirmation: (
-    input: z.infer<InputSchema>,
+    input: z.output<InputSchema>,
   ) => Promise<PendingActionRequest>;
 }) {
   return createTool({
@@ -961,7 +966,7 @@ function createConfirmationTool<InputSchema extends z.ZodTypeAny>(options: {
     inputSchema: options.inputSchema,
     outputSchema: confirmationRequiredSchema,
     execute: async (input) => {
-      const pending = await options.requestConfirmation(input);
+      const pending = await options.requestConfirmation(input as z.output<InputSchema>);
       return createPendingActionToolResult({
         actionType: options.actionType,
         pendingActionId: pending.pendingActionId,
@@ -1137,10 +1142,17 @@ export function createOrganizationAdminTools(
         status: z.literal("invited"),
         invitation: organizationInvitationSchema,
       }),
-      execute: async (input) => ({
-        status: "invited" as const,
-        invitation: await options.inviteOrganizationMember!(input),
-      }),
+      execute: async (input) => {
+        const invitationInput = {
+          email: input.email,
+          role: input.role ?? "member",
+        };
+
+        return {
+          status: "invited" as const,
+          invitation: await options.inviteOrganizationMember!(invitationInput),
+        };
+      },
     });
   }
 

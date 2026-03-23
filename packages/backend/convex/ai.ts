@@ -39,10 +39,8 @@ import {
   toGenerationContent,
   toDisplayText,
 } from "./mastraComponent/serialization";
-import {
-  createWorkspaceAgent,
-  DEFAULT_AI_GATEWAY_MODEL,
-} from "../mastra/agent";
+import { requireOpenRouterSmartModel } from "./lib/openrouter";
+import { createWorkspaceAgent } from "../mastra/agent";
 
 type MemberDoc = {
   _id: string;
@@ -1221,12 +1219,8 @@ export const chat: any = action({
     pendingActionId: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, args): Promise<ChatActionResult> => {
-    if (!process.env.AI_GATEWAY_API_KEY) {
-      throw new Error("AI gateway is not configured");
-    }
-
+    const modelId = requireOpenRouterSmartModel();
     const locale = toLocale(args.locale);
-    const modelId = process.env.AI_GATEWAY_MODEL ?? DEFAULT_AI_GATEWAY_MODEL;
 
     const authUser = await authComponent.safeGetAuthUser(ctx);
     if (!authUser) {

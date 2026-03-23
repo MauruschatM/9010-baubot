@@ -1,11 +1,13 @@
 import type { AppLocale } from "@mvp-template/i18n";
 import { generateObject } from "ai";
-import { gateway } from "@ai-sdk/gateway";
 import { z } from "zod";
 
-import { WHATSAPP_TURN_DETECTION_MODEL } from "./constants";
-
 import type { TurnDetectionDecision } from "./types";
+import {
+  hasOpenRouterFastConfig,
+  openrouter,
+  requireOpenRouterFastModel,
+} from "../lib/openrouter";
 
 const turnDetectionSchema = z.object({
   shouldSendNow: z.boolean(),
@@ -85,16 +87,16 @@ export async function detectTurnReadiness(options: {
   transcriptionText: string | null;
   messageCountInBuffer: number;
 }) {
-  const turnModel = process.env.AI_GATEWAY_TURN_MODEL ?? WHATSAPP_TURN_DETECTION_MODEL;
   const fallback = runTurnDetectionFallback(options);
   const locale = toBinaryLocale(options.locale);
-  if (!process.env.AI_GATEWAY_API_KEY) {
+  if (!hasOpenRouterFastConfig()) {
     return fallback;
   }
 
   try {
+    const turnModel = requireOpenRouterFastModel();
     const decision = await generateObject({
-      model: gateway(turnModel),
+      model: openrouter(turnModel),
       schema: turnDetectionSchema,
       prompt:
         locale === "de"

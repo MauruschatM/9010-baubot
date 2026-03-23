@@ -1,8 +1,8 @@
 'use node';
 
-import { gateway } from "@ai-sdk/gateway";
 import { Agent } from "@mastra/core/agent";
 
+import { openrouter } from "../convex/lib/openrouter";
 import {
   createCustomerTools,
   createOrganizationAdminTools,
@@ -16,8 +16,6 @@ import {
   type CreateUserAccountToolsOptions,
   type WorkspaceSnapshot,
 } from "./tools";
-
-export const DEFAULT_AI_GATEWAY_MODEL = "google/gemini-3.1-pro-preview";
 
 type CreateWorkspaceAgentOptions = {
   channel: "web" | "whatsapp";
@@ -333,7 +331,7 @@ export function createWorkspaceAgent(options: CreateWorkspaceAgentOptions) {
         ? "Spezialist für Organisation, Mitglieder, Einladungen, WhatsApp-Verbindungen und Organisationseinstellungen."
         : "Specialist for organization data, members, invitations, WhatsApp connections, and organization settings.",
     instructions: createOrganizationAdminInstructions(options),
-    model: gateway(options.modelId),
+    model: openrouter(options.modelId),
     tools: {
       getWorkspaceMembers: workspaceSnapshotTool,
       ...createOrganizationAdminTools(options.organizationAdminTools),
@@ -348,7 +346,7 @@ export function createWorkspaceAgent(options: CreateWorkspaceAgentOptions) {
         ? "Spezialist für Kundenstammdaten und Kundenarchiv."
         : "Specialist for customer records and customer archive.",
     instructions: createCustomerInstructions(options),
-    model: gateway(options.modelId),
+    model: openrouter(options.modelId),
     tools: createCustomerTools(options.customerTools),
   });
 
@@ -360,7 +358,7 @@ export function createWorkspaceAgent(options: CreateWorkspaceAgentOptions) {
         ? "Spezialist für Projekte, Timeline-Batches, Export und Kunden-E-Mails."
         : "Specialist for projects, timeline batches, exports, and customer emails.",
     instructions: createProjectInstructions(options),
-    model: gateway(options.modelId),
+    model: openrouter(options.modelId),
     tools: createProjectTools(options.projectTools),
   });
 
@@ -372,7 +370,7 @@ export function createWorkspaceAgent(options: CreateWorkspaceAgentOptions) {
         ? "Spezialist für persönliche Einstellungen und die eigene WhatsApp-Setup-Info."
         : "Specialist for personal settings and the current user's WhatsApp setup info.",
     instructions: createUserAccountInstructions(options),
-    model: gateway(options.modelId),
+    model: openrouter(options.modelId),
     tools: createUserAccountTools(options.userAccountTools),
   });
 
@@ -380,7 +378,7 @@ export function createWorkspaceAgent(options: CreateWorkspaceAgentOptions) {
     id: "workspace-agent",
     name: "Workspace Agent",
     instructions: createMainInstructions(options),
-    model: gateway(options.modelId),
+    model: openrouter(options.modelId),
     tools: {
       requestClarification: createOrchestratorClarificationTool(options.locale),
     },
