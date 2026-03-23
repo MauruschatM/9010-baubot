@@ -167,6 +167,7 @@ type WhatsAppMessageDoc = {
   text: string;
   media: StoredWhatsAppMedia[];
   turnStatus: "buffered" | "sent_to_agent" | "ignored";
+  documentationStatus?: "pending" | "batched" | "ignored";
   createdAt: number;
   sentToAgentAt?: number;
 };
@@ -605,6 +606,65 @@ export function shouldDeferMediaOnlyTurn(options: {
     !options.hasAnyText &&
     !(options.transcriptionText?.trim() ?? "")
   );
+}
+
+export function shouldDeliverBufferedTurnResponse(
+  messages: Array<Pick<WhatsAppMessageDoc, "turnStatus" | "documentationStatus">>,
+) {
+  return (
+    messages.length === 0 ||
+    messages.every(
+      (message) =>
+        message.turnStatus === "buffered" && message.documentationStatus !== "batched",
+    )
+  );
+}
+
+async function sourceMessagesStillAvailableForAgentResponse(options: {
+  ctx: {
+    runQuery: (queryRef: any, args: Record<string, unknown>) => Promise<unknown>;
+  };
+  sourceMessageIds: Id<"whatsappMessages">[];
+}) {
+  if (options.sourceMessageIds.length === 0) {
+    return true;
+  }
+
+  const messages = (await options.ctx.runQuery(internal.whatsappData.getMessagesByIds, {
+    messageIds: options.sourceMessageIds,
+  })) as WhatsAppMessageDoc[];
+
+  return (
+    messages.length === options.sourceMessageIds.length &&
+    shouldDeliverBufferedTurnResponse(messages)
+  );
+}
+
+async function cancelPendingClarificationForThread(options: {
+  ctx: {
+    runQuery: (queryRef: any, args: Record<string, unknown>) => Promise<unknown>;
+    runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
+  };
+  threadId: string;
+}) {
+  const session = (await options.ctx.runQuery(
+    internal.aiState.getLatestPendingClarificationByThread,
+    {
+      threadId: options.threadId,
+    },
+  )) as {
+    id: Id<"aiClarificationSessions">;
+    status: "pending" | "answered" | "canceled" | "expired";
+  } | null;
+
+  if (!session || session.status !== "pending") {
+    return;
+  }
+
+  await options.ctx.runMutation(internal.aiState.resolveClarificationSession, {
+    clarificationSessionId: session.id,
+    status: "canceled",
+  });
 }
 
 function sleep(milliseconds: number) {
@@ -2318,6 +2378,7 @@ async function scheduleDocumentationReminder(options: {
 
 async function runBufferedTurnWithIndicator(options: {
   ctx: {
+    runQuery: (queryRef: any, args: Record<string, unknown>) => Promise<unknown>;
     runAction: (actionRef: any, args: Record<string, unknown>) => Promise<unknown>;
   };
   locale: AppLocale;
@@ -2343,12 +2404,19 @@ async function runBufferedTurnWithIndicator(options: {
   ]);
 
   if (firstResult.kind === "processing") {
-    await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
-      phoneNumberE164: options.connection.phoneNumberE164,
-      locale: options.locale,
-      text: workingOnThatMessage(options.locale),
-      connectionId: options.connection._id,
+    const canDeliverIndicator = await sourceMessagesStillAvailableForAgentResponse({
+      ctx: options.ctx,
+      sourceMessageIds: options.args.sourceMessageIds,
     });
+
+    if (canDeliverIndicator) {
+      await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+        phoneNumberE164: options.connection.phoneNumberE164,
+        locale: options.locale,
+        text: workingOnThatMessage(options.locale),
+        connectionId: options.connection._id,
+      });
+    }
 
     return await runPromise;
   }
@@ -2383,6 +2451,7 @@ async function processConnectedInbound(options: {
   });
 
   const commandText = normalizeCommandText(options.payload.body);
+  const explicitSendCommand = isSendCommand(commandText);
   let pendingReplyInputPromise: Promise<PendingReplyInput> | null = null;
   const getPendingReplyInput = () => {
     if (!pendingReplyInputPromise) {
@@ -2396,15 +2465,26 @@ async function processConnectedInbound(options: {
     return pendingReplyInputPromise;
   };
 
-  const pendingClarificationResult = await processPendingClarification({
-    ctx: options.ctx,
-    locale: options.locale,
-    resolvePendingReplyInput: getPendingReplyInput,
-    threadId,
-    organizationId: options.connection.organizationId,
-    userId: options.connection.userId,
-    memberId: options.connection.memberId,
-  });
+  if (explicitSendCommand) {
+    await cancelPendingClarificationForThread({
+      ctx: options.ctx,
+      threadId,
+    });
+  }
+
+  const pendingClarificationResult = explicitSendCommand
+    ? {
+        handled: false,
+      }
+    : await processPendingClarification({
+        ctx: options.ctx,
+        locale: options.locale,
+        resolvePendingReplyInput: getPendingReplyInput,
+        threadId,
+        organizationId: options.connection.organizationId,
+        userId: options.connection.userId,
+        memberId: options.connection.memberId,
+      });
 
   if (pendingClarificationResult.handled) {
     await sendPendingHandlingReply({
@@ -2614,7 +2694,7 @@ async function processConnectedInbound(options: {
     return;
   }
 
-  if (isSendCommand(commandText)) {
+  if (explicitSendCommand) {
     await persistInboundDocumentationMessage({
       ctx: options.ctx,
       locale: options.locale,
@@ -2802,14 +2882,17 @@ async function processConnectedInbound(options: {
     pendingActionId: string | null;
   };
 
-  if (result.text) {
-    await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
-      phoneNumberE164: options.connection.phoneNumberE164,
-      locale: options.locale,
-      text: result.text,
-      connectionId: options.connection._id,
-    });
+  const sourceMessageIds = normalizedBufferedMessages.map((message) => message._id);
+  const canDeliverAgentResponse = await sourceMessagesStillAvailableForAgentResponse({
+    ctx: options.ctx,
+    sourceMessageIds,
+  });
+
+  if (!canDeliverAgentResponse) {
+    return;
   }
+
+  let clarificationText: string | null = null;
 
   if (result.responseKind === "clarification" && result.clarificationSessionId) {
     const clarificationSession = (await options.ctx.runQuery(
@@ -2826,7 +2909,7 @@ async function processConnectedInbound(options: {
     } | null;
 
     if (clarificationSession) {
-      const clarificationText = clarificationSession.questions
+      clarificationText = clarificationSession.questions
         .map((question, index) => {
           return clarificationQuestionMessage({
             locale: options.locale,
@@ -2838,18 +2921,39 @@ async function processConnectedInbound(options: {
           });
         })
         .join("\n\n");
-
-      await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
-        phoneNumberE164: options.connection.phoneNumberE164,
-        locale: options.locale,
-        text: clarificationText,
-        connectionId: options.connection._id,
-      });
     }
   }
 
+  const outboundText = clarificationText ?? result.text;
+  if (outboundText) {
+    const canDeliverOutboundText = await sourceMessagesStillAvailableForAgentResponse({
+      ctx: options.ctx,
+      sourceMessageIds,
+    });
+
+    if (!canDeliverOutboundText) {
+      return;
+    }
+
+    await options.ctx.runAction((internal as any).whatsapp.sendSystemMessage, {
+      phoneNumberE164: options.connection.phoneNumberE164,
+      locale: options.locale,
+      text: outboundText,
+      connectionId: options.connection._id,
+    });
+  }
+
+  const canMarkMessages = await sourceMessagesStillAvailableForAgentResponse({
+    ctx: options.ctx,
+    sourceMessageIds,
+  });
+
+  if (!canMarkMessages) {
+    return;
+  }
+
   await options.ctx.runMutation(internal.whatsappData.markMessagesSentToAgent, {
-    messageIds: normalizedBufferedMessages.map((message) => message._id),
+    messageIds: sourceMessageIds,
   });
   await options.ctx.runMutation(internal.whatsappData.clearTurnBufferByConnection, {
     connectionId: options.connection._id,

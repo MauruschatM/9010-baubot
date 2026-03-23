@@ -4,6 +4,7 @@ import {
   handlePendingProjectResolution,
   processPendingClarification,
   resolvePendingReplyInput,
+  shouldDeliverBufferedTurnResponse,
   shouldDeferMediaOnlyTurn,
 } from "../convex/whatsapp";
 import {
@@ -184,6 +185,26 @@ describe("whatsapp pending reply handling", () => {
         hasAnyText: false,
         transcriptionText: null,
       }),
+    ).toBe(true);
+  });
+
+  test("suppresses buffered turn delivery once messages were claimed by a send batch", () => {
+    expect(
+      shouldDeliverBufferedTurnResponse([
+        {
+          turnStatus: "ignored",
+          documentationStatus: "batched",
+        },
+      ] as any),
+    ).toBe(false);
+
+    expect(
+      shouldDeliverBufferedTurnResponse([
+        {
+          turnStatus: "buffered",
+          documentationStatus: undefined,
+        },
+      ] as any),
     ).toBe(true);
   });
 

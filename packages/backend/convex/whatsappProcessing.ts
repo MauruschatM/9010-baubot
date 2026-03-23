@@ -58,6 +58,10 @@ type TimelineFieldLocales = {
 
 type TimelineMediaAsset = {
   mediaAssetId: Id<"whatsappMediaAssets">;
+  messageId: Id<"whatsappMessages">;
+  sourceIndex: number;
+  sourceMediaUrl: string;
+  storageId: Id<"_storage">;
   mimeType: string;
   kind: "image" | "audio" | "video" | "file";
   transcript?: string;
@@ -69,6 +73,15 @@ type TimelineMediaAsset = {
     extractedText?: string;
     summary?: string;
   };
+  processingStatus?: "pending" | "processed" | "failed";
+  processingError?: string;
+};
+
+type RoutingHints = {
+  projectQueryCandidates: string[];
+  addressCandidates: string[];
+  customerCandidates: string[];
+  reason: string;
 };
 
 type FinalizeResult = {
@@ -181,10 +194,25 @@ const DOMINANT_SIMILARITY_GAP = 0.05;
 const ROUTING_CONTEXT_LIMIT = 3;
 const ROUTING_CONTEXT_MIN_SIMILARITY = 0.78;
 const PROJECT_CHOICE_MIN_SIMILARITY = ROUTING_CONTEXT_MIN_SIMILARITY;
+const ROUTING_HINT_QUERY_LIMIT = 4;
+const ROUTING_SEARCH_QUERY_LIMIT = 9;
+const VISUAL_MEDIA_SUMMARY_MAX_LENGTH = 180;
+const VISUAL_MEDIA_KEYWORD_LIMIT = 8;
 const batchNarrativeSchema = z.object({
   batchTitle: z.string(),
   summary: z.string(),
   batchOverview: z.string(),
+});
+const routingHintsSchema = z.object({
+  projectQueryCandidates: z.array(z.string()).default([]),
+  addressCandidates: z.array(z.string()).default([]),
+  customerCandidates: z.array(z.string()).default([]),
+  reason: z.string(),
+});
+const visualMediaAnalysisSchema = z.object({
+  summary: z.string().optional(),
+  extractedText: z.string().optional(),
+  keywords: z.array(z.string()).optional(),
 });
 
 function errorMessageFromUnknown(error: unknown) {
@@ -281,14 +309,127 @@ function kindFromMimeType(mimeType: string): "image" | "audio" | "video" | "file
   return "file";
 }
 
-function batchSearchText(messages: Doc<"whatsappMessages">[]) {
-  return normalizeNameMatch(
-    messages
-      .flatMap((message) => [
-        message.text,
-        ...message.media.map((media) => media.transcription ?? ""),
-      ])
-      .join("\n"),
+function collectBatchSearchSegments(
+  messages: Doc<"whatsappMessages">[],
+  options?: {
+    mediaAssetsByKey?: Map<string, TimelineMediaAsset>;
+    extraText?: string[];
+  },
+) {
+  const segments: string[] = [];
+
+  for (const message of messages) {
+    segments.push(message.text);
+
+    for (const [index, media] of message.media.entries()) {
+      const asset = options?.mediaAssetsByKey?.get(`${String(message._id)}:${index}`);
+
+      segments.push(asset?.transcript ?? media.transcription ?? "");
+      segments.push(asset?.extractedText ?? "");
+    }
+  }
+
+  for (const extraText of options?.extraText ?? []) {
+    segments.push(extraText);
+  }
+
+  return segments
+    .map((segment) => normalizeWhitespace(segment))
+    .filter((segment): segment is string => Boolean(segment));
+}
+
+function buildBatchEvidenceText(
+  messages: Doc<"whatsappMessages">[],
+  options?: {
+    mediaAssetsByKey?: Map<string, TimelineMediaAsset>;
+    extraText?: string[];
+  },
+) {
+  return collectBatchSearchSegments(messages, options).join("\n");
+}
+
+function batchSearchText(
+  messages: Doc<"whatsappMessages">[],
+  options?: {
+    mediaAssetsByKey?: Map<string, TimelineMediaAsset>;
+    extraText?: string[];
+  },
+) {
+  return normalizeNameMatch(buildBatchEvidenceText(messages, options));
+}
+
+function normalizeRoutingCandidates(values: string[], limit: number) {
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of values) {
+    const normalizedValue = normalizeWhitespace(value);
+
+    if (!(normalizedValue && !seen.has(normalizedValue.toLowerCase()))) {
+      continue;
+    }
+
+    deduped.push(normalizedValue);
+    seen.add(normalizedValue.toLowerCase());
+
+    if (deduped.length >= limit) {
+      break;
+    }
+  }
+
+  return deduped;
+}
+
+function buildRoutingSearchQueries(options: {
+  searchText: string;
+  routingHints?: RoutingHints;
+}) {
+  return normalizeRoutingCandidates(
+    [
+      options.searchText,
+      ...(options.routingHints?.projectQueryCandidates ?? []),
+      ...(options.routingHints?.addressCandidates ?? []),
+      ...(options.routingHints?.customerCandidates ?? []),
+    ],
+    ROUTING_SEARCH_QUERY_LIMIT,
+  );
+}
+
+function mergeProjectRoutingHits(hitLists: ProjectRoutingHit[][]) {
+  const hitsByProjectId = new Map<string, ProjectRoutingHit>();
+
+  for (const hitList of hitLists) {
+    for (const hit of hitList) {
+      const key = String(hit.projectId);
+      const existingHit = hitsByProjectId.get(key);
+
+      if (!existingHit || hit.similarity > existingHit.similarity) {
+        hitsByProjectId.set(key, hit);
+      }
+    }
+  }
+
+  return Array.from(hitsByProjectId.values()).sort(
+    (left, right) => right.similarity - left.similarity,
+  );
+}
+
+function mergeCustomerRoutingHits(hitLists: CustomerRoutingHit[][]) {
+  const hitsByCustomerId = new Map<string, CustomerRoutingHit>();
+
+  for (const hitList of hitLists) {
+    for (const hit of hitList) {
+      const key = String(hit.customerId);
+      const existingHit = hitsByCustomerId.get(key);
+
+      if (!existingHit || hit.similarity > existingHit.similarity) {
+        hitsByCustomerId.set(key, hit);
+      }
+    }
+  }
+
+  return Array.from(hitsByCustomerId.values()).sort(
+    (left, right) => right.similarity - left.similarity,
   );
 }
 
@@ -445,6 +586,118 @@ async function searchSimilarCustomersByEmbedding(
     .sort((left, right) => right.similarity - left.similarity);
 }
 
+async function searchSimilarProjectsByQueries(
+  projects: Doc<"projects">[],
+  customers: Doc<"customers">[],
+  searchQueries: string[],
+): Promise<ProjectRoutingHit[]> {
+  const normalizedQueries = normalizeRoutingCandidates(
+    searchQueries,
+    ROUTING_SEARCH_QUERY_LIMIT,
+  );
+
+  if (normalizedQueries.length === 0) {
+    return [];
+  }
+
+  const hitLists = await Promise.all(
+    normalizedQueries.map((query) =>
+      searchSimilarProjectsByEmbedding(projects, customers, query),
+    ),
+  );
+
+  return mergeProjectRoutingHits(hitLists);
+}
+
+async function searchSimilarCustomersByQueries(
+  customers: Doc<"customers">[],
+  searchQueries: string[],
+): Promise<CustomerRoutingHit[]> {
+  const normalizedQueries = normalizeRoutingCandidates(
+    searchQueries,
+    ROUTING_SEARCH_QUERY_LIMIT,
+  );
+
+  if (normalizedQueries.length === 0) {
+    return [];
+  }
+
+  const hitLists = await Promise.all(
+    normalizedQueries.map((query) => searchSimilarCustomersByEmbedding(customers, query)),
+  );
+
+  return mergeCustomerRoutingHits(hitLists);
+}
+
+async function extractRoutingHints(options: {
+  locale: AppLocale;
+  evidenceText: string;
+  suggestedProjectLocation: string;
+}): Promise<RoutingHints> {
+  const fallback: RoutingHints = {
+    projectQueryCandidates: [],
+    addressCandidates: [],
+    customerCandidates: [],
+    reason: "no_routing_hints",
+  };
+
+  if (!process.env.AI_GATEWAY_API_KEY) {
+    return fallback;
+  }
+
+  const normalizedEvidenceText = normalizeWhitespace(options.evidenceText);
+  if (!normalizedEvidenceText) {
+    return fallback;
+  }
+
+  try {
+    const result = await generateObject({
+      model: gateway(
+        process.env.AI_GATEWAY_ROUTING_HINTS_MODEL ??
+          process.env.AI_GATEWAY_ROUTING_MODEL ??
+          WHATSAPP_AGENT_MODEL,
+      ),
+      schema: routingHintsSchema,
+      prompt: [
+        "Extract routing search hints for an existing project lookup from a WhatsApp documentation batch.",
+        `Write the optional reason in locale ${options.locale}.`,
+        "Return short search phrases only. These phrases are recall boosters, not final truth.",
+        `Return at most ${ROUTING_HINT_QUERY_LIMIT} projectQueryCandidates, ${ROUTING_HINT_QUERY_LIMIT} addressCandidates, and ${ROUTING_HINT_QUERY_LIMIT} customerCandidates.`,
+        "You may lightly normalize obvious speech-to-text or OCR noise when it helps search recall.",
+        "Do not invent entities that are unsupported by the evidence.",
+        "Prefer phrases that would help find an existing project, site address, or customer record.",
+        "If the evidence is weak, return empty arrays.",
+        "Context:",
+        JSON.stringify({
+          suggestedProjectLocation: options.suggestedProjectLocation,
+          evidenceText: normalizedEvidenceText,
+        }),
+      ].join("\n"),
+    });
+
+    return {
+      projectQueryCandidates: normalizeRoutingCandidates(
+        result.object.projectQueryCandidates,
+        ROUTING_HINT_QUERY_LIMIT,
+      ),
+      addressCandidates: normalizeRoutingCandidates(
+        result.object.addressCandidates,
+        ROUTING_HINT_QUERY_LIMIT,
+      ),
+      customerCandidates: normalizeRoutingCandidates(
+        result.object.customerCandidates,
+        ROUTING_HINT_QUERY_LIMIT,
+      ),
+      reason: normalizeWhitespace(result.object.reason) ?? fallback.reason,
+    };
+  } catch (error) {
+    console.warn("WhatsApp routing hint extraction failed", {
+      message: errorMessageFromUnknown(error),
+    });
+    return fallback;
+  }
+}
+
 const routingDecisionSchema = z.object({
   decision: z.union([
     z.literal("project"),
@@ -531,6 +784,8 @@ function buildRoutingDecisionFallback(options: {
 
 async function resolveRoutingDecision(options: {
   searchText: string;
+  routingHints?: RoutingHints;
+  searchQueries: string[];
   exactProjectMatches: Doc<"projects">[];
   exactCustomerMatches: Doc<"customers">[];
   projectHits: ProjectRoutingHit[];
@@ -548,7 +803,7 @@ async function resolveRoutingDecision(options: {
       schema: routingDecisionSchema,
       prompt: [
         "Resolve project routing for a WhatsApp documentation batch.",
-        "Use only the combined message text, transcripts, and the provided candidate project/customer metadata as evidence.",
+        "Use only the combined message text, transcripts, OCR text, extracted routing hints, and the provided candidate project/customer metadata as evidence.",
         "Choose 'project' only when one provided project is the strongest clearly supported match.",
         "Choose 'customer' only when one provided customer is clear but the project is still unclear.",
         "Choose 'ambiguous' when multiple provided projects or customers remain plausible, or the evidence conflicts.",
@@ -560,6 +815,8 @@ async function resolveRoutingDecision(options: {
         "Context:",
         JSON.stringify({
           searchText: options.searchText,
+          searchQueries: options.searchQueries,
+          routingHints: options.routingHints,
           exactProjectMatches: options.exactProjectMatches
             .map((project) => readProjectLocation(project))
             .filter((projectLocation): projectLocation is string => Boolean(projectLocation)),
@@ -1197,6 +1454,70 @@ async function generateBatchNarrative(options: {
   }
 }
 
+function normalizeKeywordList(values: string[] | undefined) {
+  return normalizeRoutingCandidates(values ?? [], VISUAL_MEDIA_KEYWORD_LIMIT);
+}
+
+async function describeVisualMedia(options: {
+  mediaUrl: string;
+  mimeType: string;
+  locale: AppLocale;
+}): Promise<{
+  summary?: string;
+  extractedText?: string;
+  keywords?: string[];
+} | null> {
+  if (!process.env.AI_GATEWAY_API_KEY) {
+    return null;
+  }
+
+  try {
+    const result = await generateObject({
+      model: gateway(
+        process.env.AI_GATEWAY_MEDIA_ANALYSIS_MODEL ??
+          process.env.AI_GATEWAY_ROUTING_MODEL ??
+          WHATSAPP_AGENT_MODEL,
+      ),
+      schema: visualMediaAnalysisSchema,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: [
+                "Analyze this WhatsApp image for project-routing evidence and timeline persistence.",
+                `Write summary in locale ${options.locale}.`,
+                `summary must be one sentence and at most ${VISUAL_MEDIA_SUMMARY_MAX_LENGTH} characters.`,
+                "If readable text is visible, copy it into extractedText as faithfully as possible.",
+                "Do not infer missing words. If no readable text is visible, omit extractedText.",
+                `keywords must be concise and contain at most ${VISUAL_MEDIA_KEYWORD_LIMIT} items.`,
+                "Return JSON only.",
+              ].join("\n"),
+            },
+            {
+              type: "image",
+              image: options.mediaUrl,
+              mediaType: options.mimeType,
+            },
+          ],
+        },
+      ],
+    });
+
+    return {
+      summary: normalizeWhitespace(result.object.summary),
+      extractedText: normalizeWhitespace(result.object.extractedText),
+      keywords: normalizeKeywordList(result.object.keywords),
+    };
+  } catch (error) {
+    console.warn("WhatsApp visual media analysis failed", {
+      message: errorMessageFromUnknown(error),
+    });
+    return null;
+  }
+}
+
 function dedupeKeywords(values: Array<string | undefined>) {
   const keywords: string[] = [];
   const seen = new Set<string>();
@@ -1328,6 +1649,10 @@ async function ensureMediaAssets(
   for (const asset of data.mediaAssets) {
     assetsByKey.set(`${String(asset.messageId)}:${asset.sourceIndex}`, {
       mediaAssetId: asset._id,
+      messageId: asset.messageId,
+      sourceIndex: asset.sourceIndex,
+      sourceMediaUrl: asset.sourceMediaUrl,
+      storageId: asset.storageId,
       mimeType: asset.mimeType,
       kind: asset.kind,
       transcript: asset.transcript,
@@ -1335,6 +1660,8 @@ async function ensureMediaAssets(
       summary: asset.summary,
       keywords: asset.keywords,
       fieldLocales: asset.fieldLocales,
+      processingStatus: asset.processingStatus,
+      processingError: asset.processingError,
     });
   }
 
@@ -1369,14 +1696,19 @@ async function ensureMediaAssets(
 
       assetsByKey.set(key, {
         mediaAssetId,
+        messageId: message._id,
+        sourceIndex: index,
+        sourceMediaUrl: media.mediaUrl ?? `storage:${String(media.storageId)}`,
+        storageId: media.storageId,
         mimeType: media.contentType,
         kind: kindFromMimeType(media.contentType),
         transcript: media.transcription,
         fieldLocales: media.transcriptionLocale
           ? {
-              transcript: media.transcriptionLocale,
-            }
+                transcript: media.transcriptionLocale,
+              }
           : undefined,
+        processingStatus: "processed",
       });
     }
   }
@@ -1384,7 +1716,108 @@ async function ensureMediaAssets(
   return assetsByKey;
 }
 
-async function resolveProjectChoice(data: BatchProcessingData): Promise<ProjectChoiceResult> {
+async function ensureEnrichedMediaAssets(
+  ctx: {
+    runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
+    storage: {
+      getUrl: (storageId: Id<"_storage">) => Promise<string | null>;
+    };
+  },
+  data: BatchProcessingData,
+  options: {
+    locale: AppLocale;
+  },
+) {
+  const assetsByKey = await ensureMediaAssets(ctx, data);
+
+  if (!process.env.AI_GATEWAY_API_KEY) {
+    return assetsByKey;
+  }
+
+  for (const [key, asset] of assetsByKey.entries()) {
+    if (
+      asset.kind !== "image" ||
+      asset.extractedText ||
+      asset.summary ||
+      (asset.keywords?.length ?? 0) > 0 ||
+      asset.processingStatus === "failed"
+    ) {
+      continue;
+    }
+
+    try {
+      const mediaUrl = await ctx.storage.getUrl(asset.storageId);
+
+      if (!mediaUrl) {
+        throw new Error("Stored media URL could not be resolved.");
+      }
+
+      const analysis = await describeVisualMedia({
+        mediaUrl,
+        mimeType: asset.mimeType,
+        locale: options.locale,
+      });
+
+      if (!analysis) {
+        continue;
+      }
+
+      const fieldLocales = {
+        ...asset.fieldLocales,
+        ...(analysis.extractedText ? { extractedText: options.locale } : {}),
+        ...(analysis.summary ? { summary: options.locale } : {}),
+      };
+
+      const nextAsset: TimelineMediaAsset = {
+        ...asset,
+        extractedText: analysis.extractedText ?? asset.extractedText,
+        summary: analysis.summary ?? asset.summary,
+        keywords: analysis.keywords ?? asset.keywords,
+        fieldLocales: Object.keys(fieldLocales).length > 0 ? fieldLocales : undefined,
+        processingStatus: "processed",
+        processingError: undefined,
+      };
+
+      assetsByKey.set(key, nextAsset);
+
+      await ctx.runMutation((internal as any).whatsappProcessingData.updateMediaAssetAnalysis, {
+        mediaAssetId: asset.mediaAssetId,
+        extractedText: nextAsset.extractedText,
+        summary: nextAsset.summary,
+        keywords: nextAsset.keywords,
+        fieldLocales: nextAsset.fieldLocales,
+        processingStatus: "processed",
+        processingError: "",
+      });
+    } catch (error) {
+      console.warn("WhatsApp media asset enrichment failed", {
+        mediaAssetId: String(asset.mediaAssetId),
+        message: errorMessageFromUnknown(error),
+      });
+
+      assetsByKey.set(key, {
+        ...asset,
+        processingStatus: "failed",
+        processingError: errorMessageFromUnknown(error),
+      });
+
+      await ctx.runMutation((internal as any).whatsappProcessingData.updateMediaAssetAnalysis, {
+        mediaAssetId: asset.mediaAssetId,
+        processingStatus: "failed",
+        processingError: errorMessageFromUnknown(error),
+      });
+    }
+  }
+
+  return assetsByKey;
+}
+
+async function resolveProjectChoice(options: {
+  data: BatchProcessingData;
+  mediaAssetsByKey: Map<string, TimelineMediaAsset>;
+  locale: AppLocale;
+}): Promise<ProjectChoiceResult> {
+  const { data } = options;
   const suggestedProjectLocation = suggestProjectLocation(data.messages, data.batch.createdAt);
 
   if (data.projects.length === 0) {
@@ -1396,14 +1829,33 @@ async function resolveProjectChoice(data: BatchProcessingData): Promise<ProjectC
     };
   }
 
-  const searchText = batchSearchText(data.messages);
+  const searchText = batchSearchText(data.messages, {
+    mediaAssetsByKey: options.mediaAssetsByKey,
+  });
+  const evidenceText = buildBatchEvidenceText(data.messages, {
+    mediaAssetsByKey: options.mediaAssetsByKey,
+  });
+  const routingHints = await extractRoutingHints({
+    locale: options.locale,
+    evidenceText,
+    suggestedProjectLocation,
+  });
+  const routingSearchQueries = buildRoutingSearchQueries({
+    searchText,
+    routingHints,
+  });
   const exactProjectMatches = data.projects.filter((project) =>
-    hasExactNameMention(searchText, readProjectLocation(project)),
+    routingSearchQueries.some((query) =>
+      hasExactNameMention(normalizeNameMatch(query), readProjectLocation(project)),
+    ),
   );
   const exactCustomerMatches = data.customers.filter(
     (customer) =>
-      hasExactNameMention(searchText, customer.name) ||
-      hasExactNameMention(searchText, customer.contactName),
+      routingSearchQueries.some(
+        (query) =>
+          hasExactNameMention(normalizeNameMatch(query), customer.name) ||
+          hasExactNameMention(normalizeNameMatch(query), customer.contactName),
+      ),
   );
 
   let projectHits: ProjectRoutingHit[] = [];
@@ -1411,15 +1863,17 @@ async function resolveProjectChoice(data: BatchProcessingData): Promise<ProjectC
 
   try {
     [projectHits, customerHits] = await Promise.all([
-      searchSimilarProjectsByEmbedding(data.projects, data.customers, searchText),
-      searchSimilarCustomersByEmbedding(data.customers, searchText),
+      searchSimilarProjectsByQueries(data.projects, data.customers, routingSearchQueries),
+      searchSimilarCustomersByQueries(data.customers, routingSearchQueries),
     ]);
   } catch (error) {
     console.error("WhatsApp routing similarity search failed", error);
   }
 
   const routingDecision = await resolveRoutingDecision({
-    searchText,
+    searchText: evidenceText,
+    searchQueries: routingSearchQueries,
+    routingHints,
     exactProjectMatches,
     exactCustomerMatches,
     projectHits,
@@ -1517,16 +1971,24 @@ async function finalizePreparedBatch(
     runAction: (actionRef: any, args: Record<string, unknown>) => Promise<unknown>;
     runMutation: (mutationRef: any, args: Record<string, unknown>) => Promise<unknown>;
     runQuery: (queryRef: any, args: Record<string, unknown>) => Promise<unknown>;
+    storage: {
+      getUrl: (storageId: Id<"_storage">) => Promise<string | null>;
+    };
   },
   options: {
     data: BatchProcessingData;
     projectId: Id<"projects">;
     projectLocation: string;
     locale: AppLocale;
+    mediaAssetsByKey?: Map<string, TimelineMediaAsset>;
   },
 ): Promise<FinalizeResult> {
   const addedByName = await resolveAddedByName(ctx, options.data.batch);
-  const mediaAssetsByKey = await ensureMediaAssets(ctx, options.data);
+  const mediaAssetsByKey =
+    options.mediaAssetsByKey ??
+    (await ensureEnrichedMediaAssets(ctx, options.data, {
+      locale: options.locale,
+    }));
   const detectedSourceTextLocales = await detectStoredLocalesForTextItems({
     items: options.data.messages
       .map((message) => ({
@@ -1742,7 +2204,14 @@ export const processSendBatch = internalAction({
         startedAt: Date.now(),
       });
 
-      const choice = await resolveProjectChoice(data);
+      const mediaAssetsByKey = await ensureEnrichedMediaAssets(ctx, data, {
+        locale,
+      });
+      const choice = await resolveProjectChoice({
+        data,
+        mediaAssetsByKey,
+        locale,
+      });
 
       console.info("WhatsApp processSendBatch resolved project choice", {
         batchId: String(args.batchId),
@@ -1763,6 +2232,7 @@ export const processSendBatch = internalAction({
           projectId: choice.project._id,
           projectLocation: readProjectLocation(choice.project) ?? "Unknown project",
           locale,
+          mediaAssetsByKey,
         });
         batchPersisted = true;
 
@@ -2095,6 +2565,7 @@ export const lookupRoutingContext = internalAction({
 
 export {
   batchSearchText,
+  buildRoutingSearchQueries,
   buildProjectSearchDocument,
   buildRoutingContextText,
   findProjectsByLocation,

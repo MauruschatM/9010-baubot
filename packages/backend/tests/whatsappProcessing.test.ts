@@ -4,6 +4,7 @@ import {
   batchSearchText,
   buildProjectSearchDocument,
   buildRoutingContextText,
+  buildRoutingSearchQueries,
   findProjectsByLocation,
   resolveProjectLocationInputChoice,
   resolveProjectChoiceFromSignals,
@@ -103,6 +104,58 @@ describe("whatsapp routing helpers", () => {
     expect(searchText).toContain("baustelle hauptstrasse");
     expect(searchText).toContain("musterkunde bittet um rueckruf");
     expect(searchText).not.toContain("ocr sollte ignoriert werden");
+  });
+
+  test("batch search text includes OCR text from enriched media assets", () => {
+    const searchText = batchSearchText(
+      [
+        {
+          _id: "message-1",
+          text: "",
+          media: [
+            {
+              transcription: undefined,
+            },
+          ],
+        },
+      ] as any,
+      {
+        mediaAssetsByKey: new Map([
+          [
+            "message-1:0",
+            {
+              mediaAssetId: "asset-1",
+              messageId: "message-1",
+              sourceIndex: 0,
+              sourceMediaUrl: "https://example.com/image.jpg",
+              storageId: "storage-1",
+              mimeType: "image/jpeg",
+              kind: "image",
+              extractedText: "Olivaer Platz 17",
+            },
+          ],
+        ]) as any,
+      },
+    );
+
+    expect(searchText).toContain("olivaer platz 17");
+  });
+
+  test("routing search queries combine extracted project, address, and customer hints", () => {
+    const queries = buildRoutingSearchQueries({
+      searchText: "olivaer platz 17",
+      routingHints: {
+        projectQueryCandidates: ["Oliverplatz 17"],
+        addressCandidates: ["Oliver Platz 17"],
+        customerCandidates: ["Musterkunde GmbH"],
+        reason: "speech_noise_cleanup",
+      },
+    });
+
+    expect(queries).toContain("olivaer platz 17");
+    expect(queries).toContain("Oliverplatz 17");
+    expect(queries).toContain("Oliver Platz 17");
+    expect(queries).toContain("Musterkunde GmbH");
   });
 
   test("project location matching ignores punctuation and accents", () => {

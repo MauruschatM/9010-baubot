@@ -199,6 +199,63 @@ export const createMediaAsset = internalMutation({
   },
 });
 
+export const updateMediaAssetAnalysis = internalMutation({
+  args: {
+    mediaAssetId: v.id("whatsappMediaAssets"),
+    transcript: v.optional(v.string()),
+    extractedText: v.optional(v.string()),
+    summary: v.optional(v.string()),
+    keywords: v.optional(v.array(v.string())),
+    fieldLocales: v.optional(mediaFieldLocalesValidator),
+    processingStatus: v.optional(
+      v.union(v.literal("pending"), v.literal("processed"), v.literal("failed")),
+    ),
+    processingError: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const asset = await ctx.db.get(args.mediaAssetId);
+
+    if (!asset) {
+      throw new ConvexError("Media asset not found.");
+    }
+
+    const patch: Partial<Doc<"whatsappMediaAssets">> = {};
+
+    if (args.transcript !== undefined) {
+      patch.transcript = args.transcript;
+    }
+
+    if (args.extractedText !== undefined) {
+      patch.extractedText = args.extractedText;
+    }
+
+    if (args.summary !== undefined) {
+      patch.summary = args.summary;
+    }
+
+    if (args.keywords !== undefined) {
+      patch.keywords = args.keywords;
+    }
+
+    if (args.fieldLocales !== undefined) {
+      patch.fieldLocales = args.fieldLocales;
+    }
+
+    if (args.processingStatus !== undefined) {
+      patch.processingStatus = args.processingStatus;
+    }
+
+    if (args.processingError !== undefined) {
+      patch.processingError = args.processingError;
+    }
+
+    await ctx.db.patch(args.mediaAssetId, patch);
+
+    return null;
+  },
+});
+
 export const updateSendBatch = internalMutation({
   args: {
     batchId: v.id("whatsappSendBatches"),

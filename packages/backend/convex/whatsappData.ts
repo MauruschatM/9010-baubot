@@ -1218,6 +1218,10 @@ export const markMessagesSentToAgent = internalMutation({
           return;
         }
 
+        if (message.turnStatus !== "buffered" || message.documentationStatus === "batched") {
+          return;
+        }
+
         await ctx.db.patch(messageId, {
           turnStatus: "sent_to_agent",
           sentToAgentAt: now,
