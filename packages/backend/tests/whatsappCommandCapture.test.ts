@@ -13,6 +13,10 @@ describe("whatsapp send command normalization", () => {
     expect(isSendCommand("/send")).toBe(true);
   });
 
+  test("accepts the german senden command", () => {
+    expect(isSendCommand("Senden")).toBe(true);
+  });
+
   test("keeps project context while stripping send control text", () => {
     expect(extractDocumentationTextFromSendCommand("Axitol Strasse senden")).toBe(
       "Axitol Strasse",

@@ -1,19 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
 
 import {
-  bufferHasDocumentableMedia,
-  doesBufferedTurnStillMatchMessageSet,
   handlePendingProjectResolution,
-  processPendingClarification,
+  processConnectedInbound,
   resolvePendingReplyInput,
-  shouldKeepBufferedDocumentationTurn,
-  shouldDeliverBufferedTurnResponse,
-  shouldDeferMediaOnlyTurn,
+  sendBufferedReminder,
 } from "../convex/whatsapp";
 import {
   documentationProjectChoiceMessage,
+  documentationStartedMessage,
   formatProjectChoiceOption,
   pendingVoiceReplyTypingFallbackMessage,
+  readyQuestionMessage,
+  waitForMoreMessage,
 } from "../convex/whatsapp/messages";
 
 const originalFetch = globalThis.fetch;
@@ -45,6 +44,145 @@ function mockVoyageEmbeddings(
         },
       },
     );
+  };
+}
+
+function createConnection() {
+  return {
+    _id: "connection-1",
+    organizationId: "org-1",
+    memberId: "member-1",
+    userId: "user-1",
+    phoneNumberE164: "+491234",
+    phoneNumberDigits: "491234",
+    status: "active",
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  } as any;
+}
+
+function createPayload(overrides: Partial<{
+  body: string;
+  messageSid: string;
+  media: Array<{
+    mediaUrl: string;
+    contentType: string;
+    fileName?: string;
+  }>;
+}>) {
+  return {
+    from: "whatsapp:+491234",
+    to: "whatsapp:+491110",
+    body: "",
+    messageSid: "SM-1",
+    media: [],
+    ...overrides,
+  };
+}
+
+function createTurnBuffer(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    _id: "buffer-1",
+    connectionId: "connection-1",
+    organizationId: "org-1",
+    userId: "user-1",
+    memberId: "member-1",
+    threadId: "thread-1",
+    status: "buffering",
+    bufferedMessageIds: ["message-1"],
+    firstBufferedAt: Date.now() - 10_000,
+    lastBufferedAt: Date.now() - 10_000,
+    updatedAt: Date.now() - 10_000,
+    ...overrides,
+  } as any;
+}
+
+function createInboundHarness(options?: {
+  initialBuffer?: any | null;
+  nextBuffer?: any | null;
+  pendingResolution?: any | null;
+  activeSendBatch?: any | null;
+  sendBatchResult?: any;
+}) {
+  const runMutationCalls: Array<Record<string, unknown>> = [];
+  const runActionCalls: Array<Record<string, unknown>> = [];
+  const scheduledCalls: Array<Record<string, unknown>> = [];
+  let connectionQueryCount = 0;
+  let orgPhoneQueryCount = 0;
+
+  const nextBuffer =
+    options?.nextBuffer ??
+    createTurnBuffer({
+      status: "buffering",
+      bufferedMessageIds: ["message-1"],
+    });
+
+  const ctx = {
+    runQuery: async (_ref: unknown, args: Record<string, unknown>) => {
+      if ("connectionId" in args) {
+        connectionQueryCount += 1;
+        return connectionQueryCount === 1 ? options?.initialBuffer ?? null : nextBuffer;
+      }
+
+      if ("organizationId" in args && "phoneE164" in args) {
+        orgPhoneQueryCount += 1;
+        return orgPhoneQueryCount === 1
+          ? options?.pendingResolution ?? null
+          : options?.activeSendBatch ?? null;
+      }
+
+      throw new Error(`Unexpected runQuery args: ${JSON.stringify(args)}`);
+    },
+    runMutation: async (_ref: unknown, args: Record<string, unknown>) => {
+      runMutationCalls.push(args);
+
+      if ("providerMessageSid" in args) {
+        return { id: `message-${runMutationCalls.length}` };
+      }
+
+      if ("messageId" in args && "connectionId" in args) {
+        return nextBuffer;
+      }
+
+      if ("commandMessageSid" in args) {
+        return (
+          options?.sendBatchResult ?? {
+            status: "queued",
+            messageCount: 1,
+          }
+        );
+      }
+
+      return null;
+    },
+    runAction: async (_ref: unknown, args: Record<string, unknown>) => {
+      runActionCalls.push(args);
+      return { ok: true };
+    },
+    scheduler: {
+      runAfter: async (
+        delayMs: number,
+        functionReference: unknown,
+        args: Record<string, unknown>,
+      ) => {
+        scheduledCalls.push({
+          delayMs,
+          functionReference,
+          args,
+        });
+        return "job-1" as any;
+      },
+    },
+    storage: {
+      store: async () => "storage-1" as any,
+    },
+  };
+
+  return {
+    ctx,
+    runMutationCalls,
+    runActionCalls,
+    scheduledCalls,
   };
 }
 
@@ -171,143 +309,248 @@ describe("whatsapp pending reply handling", () => {
     });
   });
 
-  test("does not defer a voice-only turn when a transcript exists", () => {
-    expect(
-      shouldDeferMediaOnlyTurn({
-        currentMessageHasMedia: true,
-        hasAnyText: false,
-        transcriptionText: "Bitte dokumentiere das fuer Nikias Wohnung",
+  test("buffers a normal text message and schedules one inactivity reminder", async () => {
+    const harness = createInboundHarness({
+      nextBuffer: createTurnBuffer({
+        bufferedMessageIds: ["message-1"],
       }),
-    ).toBe(false);
-  });
+    });
 
-  test("still defers true media-only turns without text or transcript", () => {
-    expect(
-      shouldDeferMediaOnlyTurn({
-        currentMessageHasMedia: true,
-        hasAnyText: false,
-        transcriptionText: null,
+    await processConnectedInbound({
+      ctx: harness.ctx as any,
+      payload: createPayload({
+        body: "Olivaer Platz, Fensterrahmen sind fertig.",
       }),
-    ).toBe(true);
+      locale: "de",
+      phoneNumberE164: "+491234",
+      connection: createConnection(),
+    });
+
+    expect(harness.runMutationCalls[0]).toMatchObject({
+      providerMessageSid: "SM-1",
+      text: "Olivaer Platz, Fensterrahmen sind fertig.",
+      turnStatus: "buffered",
+    });
+    expect(harness.scheduledCalls).toHaveLength(1);
+    expect(harness.scheduledCalls[0]).toMatchObject({
+      delayMs: 5 * 60 * 1000,
+      args: {
+        bufferId: "buffer-1",
+        connectionId: "connection-1",
+        phoneNumberE164: "+491234",
+        locale: "de",
+      },
+    });
+    expect(harness.runActionCalls).toHaveLength(0);
   });
 
-  test("treats mixed image-plus-text buffers as documentable media turns", () => {
-    expect(
-      bufferHasDocumentableMedia([
-        {
-          media: [],
-        },
-        {
-          media: [
-            {
-              contentType: "image/jpeg",
-            },
-          ],
-        },
-      ] as any),
-    ).toBe(true);
-
-    expect(
-      bufferHasDocumentableMedia([
-        {
-          media: [],
-        },
-      ] as any),
-    ).toBe(false);
-  });
-
-  test("keeps image-plus-note turns buffered until an explicit send command arrives", () => {
-    expect(
-      shouldKeepBufferedDocumentationTurn({
-        explicitSendCommand: false,
-        shouldForceSend: false,
-        messages: [
-          {
-            text: "",
-            media: [
-              {
-                contentType: "image/jpeg",
-              },
-            ],
-          },
-          {
-            text: "Diese Teile gehoeren zum Olivaer Platz, wir haben da einige Schrankarbeiten getaetigt.",
-            media: [],
-          },
-        ],
-      } as any),
-    ).toBe(true);
-  });
-
-  test("allows explicit proactive send intents with media to continue to turn detection", () => {
-    expect(
-      shouldKeepBufferedDocumentationTurn({
-        explicitSendCommand: false,
-        shouldForceSend: false,
-        messages: [
-          {
-            text: "Bitte schick das Bild an den Kunden per WhatsApp.",
-            media: [
-              {
-                contentType: "image/jpeg",
-              },
-            ],
-          },
-        ],
-      } as any),
-    ).toBe(false);
-  });
-
-  test("suppresses buffered turn delivery once messages were claimed by a send batch", () => {
-    expect(
-      shouldDeliverBufferedTurnResponse([
-        {
-          turnStatus: "ignored",
-          documentationStatus: "batched",
-        },
-      ] as any),
-    ).toBe(false);
-
-    expect(
-      shouldDeliverBufferedTurnResponse([
-        {
-          turnStatus: "buffered",
-          documentationStatus: undefined,
-        },
-      ] as any),
-    ).toBe(true);
-  });
-
-  test("requires the current buffer to still match the original message set", () => {
-    expect(
-      doesBufferedTurnStillMatchMessageSet({
-        currentBuffer: {
-          _id: "buffer-1" as any,
-          bufferedMessageIds: ["message-1", "message-2"] as any,
-        },
-        expectedBufferId: "buffer-1" as any,
-        expectedMessageIds: ["message-2", "message-1"] as any,
+  test("keeps buffering while a previous send batch is already processing", async () => {
+    const harness = createInboundHarness({
+      activeSendBatch: {
+        _id: "batch-1",
+        status: "processing",
+      },
+      nextBuffer: createTurnBuffer({
+        bufferedMessageIds: ["message-1"],
       }),
-    ).toBe(true);
+    });
 
-    expect(
-      doesBufferedTurnStillMatchMessageSet({
-        currentBuffer: {
-          _id: "buffer-1" as any,
-          bufferedMessageIds: ["message-1", "message-2", "message-3"] as any,
+    await processConnectedInbound({
+      ctx: harness.ctx as any,
+      payload: createPayload({
+        body: "Noch ein Bild vom Badezimmer.",
+      }),
+      locale: "de",
+      phoneNumberE164: "+491234",
+      connection: createConnection(),
+    });
+
+    expect(harness.runMutationCalls[0]).toMatchObject({
+      text: "Noch ein Bild vom Badezimmer.",
+      turnStatus: "buffered",
+    });
+    expect(harness.scheduledCalls).toHaveLength(1);
+    expect(harness.runActionCalls).toHaveLength(0);
+  });
+
+  test("starts documentation when send is confirmed from the inactivity reminder", async () => {
+    const harness = createInboundHarness({
+      initialBuffer: createTurnBuffer({
+        status: "awaiting_confirmation",
+        bufferedMessageIds: ["message-0"],
+      }),
+      sendBatchResult: {
+        status: "queued",
+        messageCount: 2,
+      },
+    });
+
+    await processConnectedInbound({
+      ctx: harness.ctx as any,
+      payload: createPayload({
+        body: "Olivaer Platz senden",
+      }),
+      locale: "de",
+      phoneNumberE164: "+491234",
+      connection: createConnection(),
+    });
+
+    expect(harness.runMutationCalls[0]).toMatchObject({
+      text: "Olivaer Platz",
+      turnStatus: "buffered",
+    });
+    expect(harness.runMutationCalls[2]).toMatchObject({
+      commandMessageSid: "SM-1",
+      phoneE164: "+491234",
+    });
+    expect(harness.runActionCalls).toEqual([
+      expect.objectContaining({
+        phoneNumberE164: "+491234",
+        text: documentationStartedMessage("de"),
+      }),
+    ]);
+    expect(harness.scheduledCalls).toHaveLength(0);
+  });
+
+  test("waits for more input when the user declines the inactivity reminder", async () => {
+    const harness = createInboundHarness({
+      initialBuffer: createTurnBuffer({
+        status: "awaiting_confirmation",
+        bufferedMessageIds: ["message-0"],
+      }),
+    });
+
+    await processConnectedInbound({
+      ctx: harness.ctx as any,
+      payload: createPayload({
+        body: "Nein",
+      }),
+      locale: "de",
+      phoneNumberE164: "+491234",
+      connection: createConnection(),
+    });
+
+    expect(harness.runMutationCalls).toEqual([
+      expect.objectContaining({
+        bufferId: "buffer-1",
+        status: "buffering",
+        readyPromptSentAt: undefined,
+        documentationPromptSentAt: undefined,
+        documentationReminderJobId: undefined,
+      }),
+    ]);
+    expect(harness.runActionCalls).toEqual([
+      expect.objectContaining({
+        phoneNumberE164: "+491234",
+        text: waitForMoreMessage("de"),
+      }),
+    ]);
+    expect(harness.scheduledCalls).toHaveLength(0);
+  });
+
+  test("treats a follow-up message after the reminder as new buffered content and restarts the timer", async () => {
+    const harness = createInboundHarness({
+      initialBuffer: createTurnBuffer({
+        status: "awaiting_confirmation",
+        bufferedMessageIds: ["message-0"],
+      }),
+      nextBuffer: createTurnBuffer({
+        bufferedMessageIds: ["message-0", "message-1"],
+      }),
+    });
+
+    await processConnectedInbound({
+      ctx: harness.ctx as any,
+      payload: createPayload({
+        body: "Hier ist noch die letzte Notiz vom Flur.",
+      }),
+      locale: "de",
+      phoneNumberE164: "+491234",
+      connection: createConnection(),
+    });
+
+    expect(harness.runMutationCalls[0]).toMatchObject({
+      text: "Hier ist noch die letzte Notiz vom Flur.",
+      turnStatus: "buffered",
+    });
+    expect(harness.scheduledCalls).toHaveLength(1);
+    expect(harness.runActionCalls).toHaveLength(0);
+  });
+
+  test("sends the inactivity reminder once the buffer has been idle long enough", async () => {
+    const now = Date.now();
+    const runMutationCalls: Array<Record<string, unknown>> = [];
+    const runActionCalls: Array<Record<string, unknown>> = [];
+
+    await sendBufferedReminder({
+      ctx: {
+        runQuery: async () =>
+          createTurnBuffer({
+            status: "buffering",
+            bufferedMessageIds: ["message-1", "message-2"],
+            lastBufferedAt: now - 5 * 60 * 1000 - 1,
+          }),
+        runMutation: async (_ref: unknown, args: Record<string, unknown>) => {
+          runMutationCalls.push(args);
+          return null;
         },
-        expectedBufferId: "buffer-1" as any,
-        expectedMessageIds: ["message-1", "message-2"] as any,
-      }),
-    ).toBe(false);
+        runAction: async (_ref: unknown, args: Record<string, unknown>) => {
+          runActionCalls.push(args);
+          return { ok: true };
+        },
+      } as any,
+      bufferId: "buffer-1" as any,
+      connectionId: "connection-1" as any,
+      phoneNumberE164: "+491234",
+      locale: "de",
+      now,
+    });
 
-    expect(
-      doesBufferedTurnStillMatchMessageSet({
-        currentBuffer: null,
-        expectedBufferId: "buffer-1" as any,
-        expectedMessageIds: ["message-1", "message-2"] as any,
+    expect(runMutationCalls).toEqual([
+      expect.objectContaining({
+        bufferId: "buffer-1",
+        status: "awaiting_confirmation",
+        readyPromptSentAt: now,
+        documentationReminderJobId: undefined,
       }),
-    ).toBe(false);
+    ]);
+    expect(runActionCalls).toEqual([
+      expect.objectContaining({
+        phoneNumberE164: "+491234",
+        text: readyQuestionMessage("de"),
+      }),
+    ]);
+  });
+
+  test("does not send the inactivity reminder before the timeout elapses", async () => {
+    const runMutationCalls: Array<Record<string, unknown>> = [];
+    const runActionCalls: Array<Record<string, unknown>> = [];
+
+    await sendBufferedReminder({
+      ctx: {
+        runQuery: async () =>
+          createTurnBuffer({
+            status: "buffering",
+            bufferedMessageIds: ["message-1"],
+            lastBufferedAt: Date.now(),
+          }),
+        runMutation: async (_ref: unknown, args: Record<string, unknown>) => {
+          runMutationCalls.push(args);
+          return null;
+        },
+        runAction: async (_ref: unknown, args: Record<string, unknown>) => {
+          runActionCalls.push(args);
+          return { ok: true };
+        },
+      } as any,
+      bufferId: "buffer-1" as any,
+      connectionId: "connection-1" as any,
+      phoneNumberE164: "+491234",
+      locale: "de",
+    });
+
+    expect(runMutationCalls).toHaveLength(0);
+    expect(runActionCalls).toHaveLength(0);
   });
 
   test("finalizes an awaiting project-location batch from a transcribed voice reply", async () => {
@@ -342,17 +585,7 @@ describe("whatsapp pending reply handling", () => {
         hadMedia: true,
         transcriptionAttempted: true,
       }),
-      connection: {
-        _id: "connection-1",
-        organizationId: "org-1",
-        memberId: "member-1",
-        userId: "user-1",
-        phoneNumberE164: "+491234",
-        phoneNumberDigits: "491234",
-        status: "active",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      } as any,
+      connection: createConnection(),
     });
 
     expect(runActionCalls).toHaveLength(1);
@@ -410,17 +643,7 @@ describe("whatsapp pending reply handling", () => {
         hadMedia: true,
         transcriptionAttempted: true,
       }),
-      connection: {
-        _id: "connection-1",
-        organizationId: "org-1",
-        memberId: "member-1",
-        userId: "user-1",
-        phoneNumberE164: "+491234",
-        phoneNumberDigits: "491234",
-        status: "active",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      } as any,
+      connection: createConnection(),
     });
 
     expect(runActionCalls).toHaveLength(1);
@@ -472,17 +695,7 @@ describe("whatsapp pending reply handling", () => {
         hadMedia: true,
         transcriptionAttempted: true,
       }),
-      connection: {
-        _id: "connection-1",
-        organizationId: "org-1",
-        memberId: "member-1",
-        userId: "user-1",
-        phoneNumberE164: "+491234",
-        phoneNumberDigits: "491234",
-        status: "active",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      } as any,
+      connection: createConnection(),
     });
 
     expect(result).toMatchObject({
@@ -545,17 +758,7 @@ describe("whatsapp pending reply handling", () => {
         hadMedia: true,
         transcriptionAttempted: true,
       }),
-      connection: {
-        _id: "connection-1",
-        organizationId: "org-1",
-        memberId: "member-1",
-        userId: "user-1",
-        phoneNumberE164: "+491234",
-        phoneNumberDigits: "491234",
-        status: "active",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      } as any,
+      connection: createConnection(),
     });
 
     expect(runActionCalls).toHaveLength(1);
@@ -625,17 +828,7 @@ describe("whatsapp pending reply handling", () => {
         hadMedia: true,
         transcriptionAttempted: true,
       }),
-      connection: {
-        _id: "connection-1",
-        organizationId: "org-1",
-        memberId: "member-1",
-        userId: "user-1",
-        phoneNumberE164: "+491234",
-        phoneNumberDigits: "491234",
-        status: "active",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      } as any,
+      connection: createConnection(),
     });
 
     expect(runActionCalls).toHaveLength(1);
@@ -708,17 +901,7 @@ describe("whatsapp pending reply handling", () => {
         hadMedia: true,
         transcriptionAttempted: true,
       }),
-      connection: {
-        _id: "connection-1",
-        organizationId: "org-1",
-        memberId: "member-1",
-        userId: "user-1",
-        phoneNumberE164: "+491234",
-        phoneNumberDigits: "491234",
-        status: "active",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      } as any,
+      connection: createConnection(),
     });
 
     expect(result).toMatchObject({
@@ -736,72 +919,5 @@ describe("whatsapp pending reply handling", () => {
         suggestedProjectLocation: "Nikias Wohnung",
       }),
     );
-  });
-
-  test("accepts a transcribed clarification reply", async () => {
-    const runMutationCalls: Array<Record<string, unknown>> = [];
-    const runActionCalls: Array<Record<string, unknown>> = [];
-    const ctx = {
-      runQuery: async () =>
-        ({
-          id: "clarification-1",
-          status: "pending",
-          prompt: "Original prompt",
-          assistantMessage: "Need clarification",
-          questions: [
-            {
-              id: "question_1",
-              prompt: "Which option?",
-              options: [
-                { id: "one", label: "Option one", description: "desc" },
-                { id: "two", label: "Option two", description: "desc" },
-              ],
-              required: true,
-            },
-          ],
-          expiresAt: Date.now() + 60_000,
-        }) as any,
-      runMutation: async (_ref: unknown, args: Record<string, unknown>) => {
-        runMutationCalls.push(args);
-        return null;
-      },
-      runAction: async (_ref: unknown, args: Record<string, unknown>) => {
-        runActionCalls.push(args);
-        return null;
-      },
-    };
-
-    const result = await processPendingClarification({
-      ctx,
-      locale: "en",
-      resolvePendingReplyInput: async () => ({
-        text: "1",
-        source: "transcript",
-        hadMedia: true,
-        transcriptionAttempted: true,
-      }),
-      threadId: "thread-1",
-      organizationId: "org-1",
-      userId: "user-1",
-      memberId: "member-1",
-    });
-
-    expect(result).toEqual({
-      handled: true,
-      reply: null,
-    });
-    expect(runMutationCalls).toHaveLength(1);
-    expect(runMutationCalls[0]).toMatchObject({
-      clarificationSessionId: "clarification-1",
-      status: "answered",
-    });
-    expect(runActionCalls).toHaveLength(1);
-    expect(runActionCalls[0]).toMatchObject({
-      threadId: "thread-1",
-      organizationId: "org-1",
-      userId: "user-1",
-      memberId: "member-1",
-      locale: "en",
-    });
   });
 });

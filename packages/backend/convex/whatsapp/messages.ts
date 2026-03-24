@@ -7,14 +7,14 @@ function toBinaryLocale(locale: AppLocale): "en" | "de" {
 export function onboardingGreetingMessages(locale: AppLocale) {
   if (toBinaryLocale(locale) === "de") {
     return [
-      "Hi, ich bin dein KI-Mitarbeiter.",
+      "Hi, ich sammle deine WhatsApp-Nachrichten für die Projektdokumentation.",
       "Lass uns kurz dein Konto verbinden.",
       "*Wie lautet deine E-Mail-Adresse?*",
     ];
   }
 
   return [
-    "Hi, I’m your AI coworker.",
+    "Hi, I collect your WhatsApp messages for project documentation.",
     "Let’s quickly connect your account.",
     "*What's your email address?*",
   ];
@@ -53,10 +53,10 @@ export function onboardingCompletedMessage(options: {
   organizationName: string;
 }) {
   if (toBinaryLocale(options.locale) === "de") {
-    return `Perfekt, dein WhatsApp ist jetzt mit ${options.organizationName} verbunden. Schreib mir einfach, wenn ich etwas erledigen soll.`;
+    return `Perfekt, dein WhatsApp ist jetzt mit ${options.organizationName} verbunden. Schick mir einfach Nachrichten, Bilder, Videos oder Sprachnachrichten. Ich sammle alles, bis du 'Senden' schreibst.`;
   }
 
-  return `Great, your WhatsApp is now connected to ${options.organizationName}. Message me anytime and I’ll take it from there.`;
+  return `Great, your WhatsApp is now connected to ${options.organizationName}. Send me messages, images, videos, or voice notes and I’ll keep everything together until you write 'Send'.`;
 }
 
 export function onboardingSwitchHintMessage(locale: AppLocale) {
@@ -73,7 +73,7 @@ export function onboardingPasswordAttemptsExceededMessage(locale: AppLocale) {
 
 export function readyQuestionMessage(locale: AppLocale) {
   return toBinaryLocale(locale) === "de"
-    ? "Soll ich das jetzt abschicken? Antworte mit 'Ja' oder 'Abschicken'."
+    ? "Soll ich das jetzt senden und für das Projekt dokumentieren? Antworte mit 'Ja' oder 'Senden'."
     : "Want me to send this now? Reply with 'Yes' or 'Send'.";
 }
 
@@ -85,14 +85,14 @@ export function waitForMoreMessage(locale: AppLocale) {
 
 export function documentationReminderMessage(locale: AppLocale) {
   return toBinaryLocale(locale) === "de"
-    ? "Soll ich das für das Projekt dokumentieren? Antworte mit 'Ja' oder 'Nein'."
-    : "Want me to document this for the project? Reply with 'Yes' or 'No'.";
+    ? "Soll ich das jetzt senden und für das Projekt dokumentieren? Antworte mit 'Ja' oder 'Senden'."
+    : "Want me to send and document this for the project now? Reply with 'Yes' or 'Send'.";
 }
 
 export function documentationStartedMessage(locale: AppLocale) {
   return toBinaryLocale(locale) === "de"
-    ? "Alles klar, ich dokumentiere das jetzt."
-    : "Alright, I’m documenting this now.";
+    ? "Alles klar, ich dokumentiere das jetzt für dein Projekt."
+    : "Alright, I’m documenting this for your project now.";
 }
 
 export function switchPromptMessage(options: {
