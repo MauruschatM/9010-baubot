@@ -437,6 +437,33 @@ function buildCustomerEmailSuggestions(
   return uniqueSuggestions;
 }
 
+function buildOptimisticSentEmailItem(options: {
+  batchId: Id<"whatsappSendBatches">;
+  recipientEmail: string;
+  subject: string;
+  body: string;
+  addedAt: number;
+  addedByName?: string;
+  addedByUserId: string;
+  media: TimelineMediaItem[];
+}): TimelineItem {
+  return {
+    _id: `optimistic-email-${options.addedAt}` as Id<"projectTimelineItems">,
+    batchId: options.batchId,
+    sourceType: "email_sent",
+    addedAt: options.addedAt,
+    dayBucketUtc: new Date(options.addedAt).toISOString().slice(0, 10),
+    addedByMemberId: "optimistic-email",
+    addedByUserId: options.addedByUserId,
+    addedByName: options.addedByName,
+    summary: undefined,
+    emailRecipient: options.recipientEmail,
+    emailSubject: options.subject,
+    emailBody: options.body,
+    media: options.media,
+  };
+}
+
 function formatMediaDuration(durationInSeconds: number | undefined) {
   if (
     durationInSeconds === undefined ||
@@ -1252,6 +1279,26 @@ function ProjectDetailRoute() {
         imageMediaAssetIds: selectedImageIds,
         videoMediaAssetIds: selectedVideoIds,
       });
+      const optimisticSentEmailItem = buildOptimisticSentEmailItem({
+        batchId: composingBatchId,
+        recipientEmail: normalizedRecipientEmail,
+        subject: emailSubject.trim(),
+        body: emailBody.trim(),
+        addedAt: Date.now(),
+        addedByName: undefined,
+        addedByUserId: "optimistic-email",
+        media: [...selectedImages, ...selectedVideos],
+      });
+      setLocalizedRows((current) =>
+        current ? [optimisticSentEmailItem, ...current] : [optimisticSentEmailItem],
+      );
+      void timelineLocalized({ projectId, limit: 500, viewerLocale: locale })
+        .then((result) => {
+          setLocalizedRows(result.rows as TimelineItem[]);
+        })
+        .catch(() => {
+          // Keep the optimistic row if the follow-up refresh fails.
+        });
       toast.success(t("app.projects.toasts.emailSent"));
       resetEmailComposer();
     } catch (error) {
@@ -1379,17 +1426,21 @@ function ProjectDetailRoute() {
                 });
 
               return (
-                <button
-                  key={entry.key}
-                  type="button"
-                  className="flex w-full items-start gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-muted/40"
-                  onClick={() => setSelectedSentEmailItem(item)}
-                >
-                  <span className="shrink-0 pt-0.5 text-xs text-muted-foreground">
-                    {dateFormatter.format(item.addedAt)}
-                  </span>
-                  <span className="min-w-0 text-sm text-foreground">{compactLabel}</span>
-                </button>
+                <section key={entry.key} className="space-y-2">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-muted-foreground">
+                      {dateFormatter.format(item.addedAt)}
+                    </span>
+                    <div className="h-px flex-1 bg-border" />
+                  </div>
+                  <button
+                    type="button"
+                    className="block rounded-md text-left text-sm font-medium text-foreground transition-colors hover:text-primary"
+                    onClick={() => setSelectedSentEmailItem(item)}
+                  >
+                    {compactLabel}
+                  </button>
+                </section>
               );
             }
 
@@ -1615,7 +1666,7 @@ function ProjectDetailRoute() {
           }
         }}
       >
-        <DialogContent className="max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-h-[92vh] w-[96vw] max-w-[1400px] overflow-y-auto sm:max-w-[1400px]">
           <DialogHeader>
             <DialogTitle>{t("app.projects.dialogs.sentEmailTitle")}</DialogTitle>
             <DialogDescription>
