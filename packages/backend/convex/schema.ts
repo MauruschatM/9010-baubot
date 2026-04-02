@@ -77,6 +77,7 @@ export default defineSchema({
     name: v.string(),
     contactName: v.optional(v.string()),
     email: v.optional(v.string()),
+    emailHistory: v.optional(v.array(v.string())),
     phone: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),

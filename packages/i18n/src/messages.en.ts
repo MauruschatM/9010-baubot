@@ -801,6 +801,7 @@ export const messagesEn = {
         noSearchMatches: "No projects match your search.",
         customerEmailLabel: "Customer email",
         customerEmailPlaceholder: "customer@example.com",
+        emailSuggestionsLabel: "Suggestions",
         saveEmail: "Save email",
         toLabel: "To",
         subjectLabel: "Subject",

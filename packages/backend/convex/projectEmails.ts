@@ -347,6 +347,15 @@ export const sendTimelineBatchEmail = action({
       mediaAssets: selectedMediaAssets,
     });
 
+    if (project.customerId) {
+      await ctx.runMutation(internal.customers.rememberEmailUsageForOrganization, {
+        organizationId: organization.id,
+        userId: authUserId,
+        customerId: project.customerId,
+        email: recipientEmail,
+      });
+    }
+
     return null;
   },
 });

@@ -78,6 +78,7 @@ type CustomerSummary = {
   name: string;
   contactName?: string;
   email?: string;
+  emailHistory?: string[];
   phone?: string;
 };
 
@@ -403,6 +404,37 @@ function buildTimelineEntries(rows: TimelineItem[], t: Translator): TimelineEntr
 
 function buildDefaultEmailSubject(projectLocation: string, batchTitle: string) {
   return `${projectLocation}: ${batchTitle}`;
+}
+
+function buildCustomerEmailSuggestions(
+  customer: CustomerSummary | undefined,
+  currentValue: string,
+) {
+  const query = currentValue.trim().toLowerCase();
+  const suggestions = [
+    customer?.email,
+    ...(customer?.emailHistory ?? []),
+  ]
+    .map((value) => value?.trim().toLowerCase())
+    .filter((value): value is string => Boolean(value));
+  const uniqueSuggestions: string[] = [];
+
+  for (const suggestion of suggestions) {
+    if (uniqueSuggestions.includes(suggestion)) {
+      continue;
+    }
+
+    if (query.length > 0 && !suggestion.includes(query)) {
+      continue;
+    }
+
+    uniqueSuggestions.push(suggestion);
+    if (uniqueSuggestions.length >= 5) {
+      break;
+    }
+  }
+
+  return uniqueSuggestions;
 }
 
 function formatMediaDuration(durationInSeconds: number | undefined) {
@@ -799,6 +831,10 @@ function ProjectDetailRoute() {
   const timelineEntries = useMemo(
     () => buildTimelineEntries(timelineRows as TimelineItem[], t),
     [t, timelineRows],
+  );
+  const emailRecipientSuggestions = useMemo(
+    () => buildCustomerEmailSuggestions(project?.customer, emailRecipient),
+    [project?.customer, emailRecipient],
   );
   const localizedBatchMap = useMemo(
     () => new Map(localizedBatches.map((batch) => [String(batch.batchId), batch])),
@@ -2010,6 +2046,26 @@ function ProjectDetailRoute() {
                     disabled={isSendingBatchEmail}
                     placeholder={t("app.projects.detail.customerEmailPlaceholder")}
                   />
+                  {emailRecipientSuggestions.length > 0 ? (
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <span className="pt-1 text-xs text-muted-foreground">
+                        {t("app.projects.detail.emailSuggestionsLabel")}
+                      </span>
+                      {emailRecipientSuggestions.map((suggestion) => (
+                        <Button
+                          key={suggestion}
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          onClick={() => setEmailRecipient(suggestion)}
+                          disabled={isSendingBatchEmail}
+                        >
+                          {suggestion}
+                        </Button>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="timeline-email-subject">{t("app.projects.detail.subjectLabel")}</Label>

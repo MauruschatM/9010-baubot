@@ -14,6 +14,7 @@ import { requireActiveOrganization, requireAuthUserId } from "./authhelpers";
 import {
   archivedCustomerResponseFields,
   customerResponseFields,
+  mergeCustomerEmailHistory,
   normalizeCustomerContactName,
   normalizeCustomerEmail,
   normalizeCustomerName,
@@ -244,6 +245,7 @@ export const getById = query({
       name: v.string(),
       contactName: v.optional(v.string()),
       email: v.optional(v.string()),
+      emailHistory: v.optional(v.array(v.string())),
       phone: v.optional(v.string()),
       createdAt: v.number(),
       updatedAt: v.number(),
@@ -286,6 +288,7 @@ export const create = mutation({
       name: normalizeCustomerName(args.name),
       contactName: normalizeCustomerContactName(args.contactName),
       email: normalizeCustomerEmail(args.email),
+      emailHistory: mergeCustomerEmailHistory(undefined, [args.email]),
       phone: normalizeCustomerPhone(args.phone),
       createdAt: now,
       updatedAt: now,
@@ -319,6 +322,7 @@ export const getByIdForOrganization = internalQuery({
       name: v.string(),
       contactName: v.optional(v.string()),
       email: v.optional(v.string()),
+      emailHistory: v.optional(v.array(v.string())),
       phone: v.optional(v.string()),
       createdAt: v.number(),
       updatedAt: v.number(),
@@ -352,6 +356,7 @@ export const createForOrganization = internalMutation({
       name: normalizeCustomerName(args.name),
       contactName: normalizeCustomerContactName(args.contactName),
       email: normalizeCustomerEmail(args.email),
+      emailHistory: mergeCustomerEmailHistory(undefined, [args.email]),
       phone: normalizeCustomerPhone(args.phone),
       createdAt: now,
       updatedAt: now,
@@ -404,6 +409,9 @@ export const updateForOrganization = internalMutation({
 
     if (args.email !== undefined) {
       patch.email = normalizeCustomerEmail(args.email ?? undefined);
+      patch.emailHistory = mergeCustomerEmailHistory(customer.emailHistory, [
+        args.email ?? undefined,
+      ]);
     }
 
     if (args.phone !== undefined) {
@@ -501,6 +509,9 @@ export const update = mutation({
 
     if (args.email !== undefined) {
       patch.email = normalizeCustomerEmail(args.email ?? undefined);
+      patch.emailHistory = mergeCustomerEmailHistory(customer.emailHistory, [
+        args.email ?? undefined,
+      ]);
     }
 
     if (args.phone !== undefined) {
@@ -508,6 +519,42 @@ export const update = mutation({
     }
 
     await ctx.db.patch(args.customerId, patch);
+    return null;
+  },
+});
+
+export const rememberEmailUsageForOrganization = internalMutation({
+  args: {
+    organizationId: v.string(),
+    userId: v.string(),
+    customerId: v.id("customers"),
+    email: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireOrganizationMember(ctx, args.organizationId, args.userId);
+    const customer = ensureCustomerBelongsToOrganization(
+      await ctx.db.get(args.customerId),
+      args.organizationId,
+    );
+
+    if (customer.deletedAt !== undefined) {
+      throw new ConvexError("Customer not found");
+    }
+
+    const normalizedEmail = normalizeCustomerEmail(args.email);
+    if (!normalizedEmail) {
+      return null;
+    }
+
+    await ctx.db.patch(args.customerId, {
+      emailHistory: mergeCustomerEmailHistory(customer.emailHistory, [
+        normalizedEmail,
+        customer.email,
+      ]),
+      updatedAt: Date.now(),
+    });
+
     return null;
   },
 });

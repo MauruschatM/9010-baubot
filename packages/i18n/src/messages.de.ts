@@ -823,6 +823,7 @@ export const messagesDe = {
         noSearchMatches: "Keine Projekte passen zu deiner Suche.",
         customerEmailLabel: "Kunden-E-Mail",
         customerEmailPlaceholder: "kunde@example.com",
+        emailSuggestionsLabel: "Vorschläge",
         saveEmail: "E-Mail speichern",
         toLabel: "An",
         subjectLabel: "Betreff",
