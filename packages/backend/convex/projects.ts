@@ -67,6 +67,12 @@ const timelineFieldLocalesValidator = v.object({
   nachtragItems: v.optional(v.array(v.string())),
 });
 
+const timelineSourceTypeValidator = v.union(
+  v.literal("whatsapp_message"),
+  v.literal("whatsapp_batch_summary"),
+  v.literal("email_sent"),
+);
+
 const projectResponseFields = {
   _id: v.id("projects"),
   _creationTime: v.number(),
@@ -516,6 +522,9 @@ async function listTimelineForProject(
         nachtragDetails: timelineRow.nachtragDetails,
         nachtragLanguage: normalizeAppLocale(timelineRow.nachtragLanguage) ?? undefined,
         keywords: timelineRow.keywords,
+        emailRecipient: timelineRow.emailRecipient,
+        emailSubject: timelineRow.emailSubject,
+        emailBody: timelineRow.emailBody,
         fieldLocales: timelineRow.fieldLocales,
         media,
       };
@@ -755,7 +764,7 @@ export const timeline = query({
     v.object({
       _id: v.id("projectTimelineItems"),
       batchId: v.id("whatsappSendBatches"),
-      sourceType: v.union(v.literal("whatsapp_message"), v.literal("whatsapp_batch_summary")),
+      sourceType: timelineSourceTypeValidator,
       messageId: v.optional(v.id("whatsappMessages")),
       addedAt: v.number(),
       dayBucketUtc: v.string(),
@@ -775,6 +784,9 @@ export const timeline = query({
       nachtragDetails: v.optional(v.string()),
       nachtragLanguage: v.optional(vAppLocale),
       keywords: v.optional(v.array(v.string())),
+      emailRecipient: v.optional(v.string()),
+      emailSubject: v.optional(v.string()),
+      emailBody: v.optional(v.string()),
       fieldLocales: v.optional(timelineFieldLocalesValidator),
       media: v.array(timelineMediaValidator),
     }),
@@ -878,7 +890,7 @@ export const timelineForOrganization = internalQuery({
     v.object({
       _id: v.id("projectTimelineItems"),
       batchId: v.id("whatsappSendBatches"),
-      sourceType: v.union(v.literal("whatsapp_message"), v.literal("whatsapp_batch_summary")),
+      sourceType: timelineSourceTypeValidator,
       messageId: v.optional(v.id("whatsappMessages")),
       addedAt: v.number(),
       dayBucketUtc: v.string(),
@@ -898,6 +910,9 @@ export const timelineForOrganization = internalQuery({
       nachtragDetails: v.optional(v.string()),
       nachtragLanguage: v.optional(vAppLocale),
       keywords: v.optional(v.array(v.string())),
+      emailRecipient: v.optional(v.string()),
+      emailSubject: v.optional(v.string()),
+      emailBody: v.optional(v.string()),
       fieldLocales: v.optional(timelineFieldLocalesValidator),
       media: v.array(timelineMediaValidator),
     }),

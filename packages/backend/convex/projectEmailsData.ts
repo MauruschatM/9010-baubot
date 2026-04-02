@@ -1,7 +1,7 @@
 import { ConvexError, v } from "convex/values";
 
-import type { Id } from "./_generated/dataModel";
-import { internalQuery } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
+import { internalMutation, internalQuery } from "./_generated/server";
 
 const mediaAssetResponseValidator = v.object({
   mediaAssetId: v.id("whatsappMediaAssets"),
@@ -14,6 +14,10 @@ const mediaAssetResponseValidator = v.object({
 
 function dedupeIds<T extends string>(ids: T[]) {
   return Array.from(new Set(ids));
+}
+
+function toUtcDayBucket(timestamp: number) {
+  return new Date(timestamp).toISOString().slice(0, 10);
 }
 
 export const getBatchImageAttachments = internalQuery({
@@ -70,5 +74,79 @@ export const getBatchImageAttachments = internalQuery({
     );
 
     return results;
+  },
+});
+
+export const recordSentTimelineEmail = internalMutation({
+  args: {
+    organizationId: v.string(),
+    projectId: v.id("projects"),
+    batchId: v.id("whatsappSendBatches"),
+    addedByUserId: v.string(),
+    addedByMemberId: v.string(),
+    addedByName: v.optional(v.string()),
+    recipientEmail: v.string(),
+    subject: v.string(),
+    body: v.string(),
+    mediaAssets: v.array(
+      v.object({
+        mediaAssetId: v.id("whatsappMediaAssets"),
+        mimeType: v.string(),
+        kind: v.union(v.literal("image"), v.literal("audio"), v.literal("video"), v.literal("file")),
+      }),
+    ),
+  },
+  returns: v.id("projectTimelineItems"),
+  handler: async (ctx, args) => {
+    const [project, batch] = await Promise.all([
+      ctx.db.get(args.projectId),
+      ctx.db.get(args.batchId),
+    ]);
+
+    if (!project || project.organizationId !== args.organizationId || project.deletedAt !== undefined) {
+      throw new ConvexError("Project not found");
+    }
+
+    if (!batch || batch.organizationId !== args.organizationId) {
+      throw new ConvexError("Timeline batch not found");
+    }
+
+    const batchRows = await ctx.db
+      .query("projectTimelineItems")
+      .withIndex("by_batchId", (q) => q.eq("batchId", args.batchId))
+      .collect();
+
+    const ownsBatch = batchRows.some(
+      (row) => row.organizationId === args.organizationId && row.projectId === args.projectId,
+    );
+    if (!ownsBatch) {
+      throw new ConvexError("Timeline batch not found");
+    }
+
+    const now = Date.now();
+    const timelineItemId = await ctx.db.insert("projectTimelineItems", {
+      organizationId: args.organizationId,
+      projectId: args.projectId,
+      batchId: args.batchId,
+      sourceType: "email_sent",
+      addedAt: now,
+      dayBucketUtc: toUtcDayBucket(now),
+      addedByMemberId: args.addedByMemberId,
+      addedByUserId: args.addedByUserId,
+      addedByName: args.addedByName,
+      emailRecipient: args.recipientEmail.trim(),
+      emailSubject: args.subject.trim(),
+      emailBody: args.body.trim(),
+      mediaAssets: args.mediaAssets,
+      createdAt: now,
+    });
+
+    const projectPatch: Partial<Doc<"projects">> = {
+      lastTimelineActivityAt: now,
+      updatedAt: now,
+    };
+    await ctx.db.patch(args.projectId, projectPatch);
+
+    return timelineItemId;
   },
 });

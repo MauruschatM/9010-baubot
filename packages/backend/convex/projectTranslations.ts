@@ -30,7 +30,7 @@ type TimelineLocalizedMedia = {
 type TimelineLocalizedRow = {
   _id: Id<"projectTimelineItems">;
   batchId: Id<"whatsappSendBatches">;
-  sourceType: "whatsapp_message" | "whatsapp_batch_summary";
+  sourceType: "whatsapp_message" | "whatsapp_batch_summary" | "email_sent";
   messageId?: Id<"whatsappMessages">;
   addedAt: number;
   dayBucketUtc: string;
@@ -50,6 +50,9 @@ type TimelineLocalizedRow = {
   nachtragDetails?: string;
   nachtragLanguage?: AppLocale;
   keywords?: string[];
+  emailRecipient?: string;
+  emailSubject?: string;
+  emailBody?: string;
   fieldLocales?: {
     sourceText?: string;
     text?: string;
@@ -558,7 +561,11 @@ export const timelineLocalized = action({
       v.object({
         _id: v.id("projectTimelineItems"),
         batchId: v.id("whatsappSendBatches"),
-        sourceType: v.union(v.literal("whatsapp_message"), v.literal("whatsapp_batch_summary")),
+        sourceType: v.union(
+          v.literal("whatsapp_message"),
+          v.literal("whatsapp_batch_summary"),
+          v.literal("email_sent"),
+        ),
         messageId: v.optional(v.id("whatsappMessages")),
         addedAt: v.number(),
         dayBucketUtc: v.string(),
@@ -578,6 +585,9 @@ export const timelineLocalized = action({
         nachtragDetails: v.optional(v.string()),
         nachtragLanguage: v.optional(vAppLocale),
         keywords: v.optional(v.array(v.string())),
+        emailRecipient: v.optional(v.string()),
+        emailSubject: v.optional(v.string()),
+        emailBody: v.optional(v.string()),
         fieldLocales: v.optional(
           v.object({
             sourceText: v.optional(v.string()),

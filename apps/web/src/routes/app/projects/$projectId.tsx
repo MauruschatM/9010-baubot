@@ -94,7 +94,7 @@ type TimelineMediaItem = {
 type TimelineItem = {
   _id: Id<"projectTimelineItems">;
   batchId: Id<"whatsappSendBatches">;
-  sourceType: "whatsapp_message" | "whatsapp_batch_summary";
+  sourceType: "whatsapp_message" | "whatsapp_batch_summary" | "email_sent";
   messageId?: Id<"whatsappMessages">;
   addedAt: number;
   dayBucketUtc: string;
@@ -114,6 +114,9 @@ type TimelineItem = {
   nachtragDetails?: string;
   nachtragLanguage?: string;
   keywords?: string[];
+  emailRecipient?: string;
+  emailSubject?: string;
+  emailBody?: string;
   media: TimelineMediaItem[];
 };
 
@@ -149,6 +152,20 @@ type BatchViewModel = {
   title: string;
   allMedia: TimelineMediaItem[];
 };
+
+type TimelineEntry =
+  | {
+      kind: "batch";
+      sortDate: number;
+      key: string;
+      batch: BatchViewModel;
+    }
+  | {
+      kind: "email_sent";
+      sortDate: number;
+      key: string;
+      item: TimelineItem;
+    };
 
 const EMPTY_CAPTION_TRACK = "data:text/vtt;charset=utf-8,WEBVTT%0A%0A";
 const INLINE_MARKDOWN_TOKEN_PATTERN =
@@ -302,6 +319,10 @@ function buildTimelineBatches(rows: TimelineItem[], t: Translator): BatchViewMod
   const byBatch = new Map<string, BatchAccumulator>();
 
   for (const row of rows) {
+    if (row.sourceType === "email_sent") {
+      continue;
+    }
+
     const key = String(row.batchId);
     const current = byBatch.get(key) ?? {
       batchId: row.batchId,
@@ -359,6 +380,25 @@ function buildTimelineBatches(rows: TimelineItem[], t: Translator): BatchViewMod
       } satisfies BatchViewModel;
     })
     .sort((left, right) => right.badgeDate - left.badgeDate);
+}
+
+function buildTimelineEntries(rows: TimelineItem[], t: Translator): TimelineEntry[] {
+  const batches = buildTimelineBatches(rows, t).map((batch) => ({
+    kind: "batch" as const,
+    sortDate: batch.badgeDate,
+    key: `batch:${String(batch.batchId)}`,
+    batch,
+  }));
+  const emailEvents = rows
+    .filter((row) => row.sourceType === "email_sent")
+    .map((item) => ({
+      kind: "email_sent" as const,
+      sortDate: item.addedAt,
+      key: `email:${String(item._id)}`,
+      item,
+    }));
+
+  return [...batches, ...emailEvents].sort((left, right) => right.sortDate - left.sortDate);
 }
 
 function buildDefaultEmailSubject(projectLocation: string, batchTitle: string) {
@@ -741,6 +781,7 @@ function ProjectDetailRoute() {
   const [messageLanguageById, setMessageLanguageById] = useState<
     Record<string, LanguageView>
   >({});
+  const [selectedSentEmailItem, setSelectedSentEmailItem] = useState<TimelineItem | null>(null);
   const [imageDialogMedia, setImageDialogMedia] = useState<TimelineMediaItem | null>(null);
   const [mediaDialogMedia, setMediaDialogMedia] = useState<TimelineMediaItem | null>(null);
   const [imageZoom, setImageZoom] = useState(IMAGE_ZOOM_MIN);
@@ -754,6 +795,10 @@ function ProjectDetailRoute() {
   const localizedBatches = useMemo(
     () => (localizedRows ? buildTimelineBatches(localizedRows as TimelineItem[], t) : []),
     [localizedRows, t],
+  );
+  const timelineEntries = useMemo(
+    () => buildTimelineEntries(timelineRows as TimelineItem[], t),
+    [t, timelineRows],
   );
   const localizedBatchMap = useMemo(
     () => new Map(localizedBatches.map((batch) => [String(batch.batchId), batch])),
@@ -1281,15 +1326,41 @@ function ProjectDetailRoute() {
 
       {isLoadingLocalizedRows && localizedRows === null && originalTimelineRows === undefined ? (
         <ProjectTimelineLoadingSkeleton />
-      ) : timelineBatches.length === 0 ? (
+      ) : timelineEntries.length === 0 ? (
         <div className="rounded-lg border border-dashed px-4 py-5 text-sm text-muted-foreground">
           <p className="font-medium text-foreground">{t("app.projects.detail.noTimelineTitle")}</p>
           <p className="mt-1">{t("app.projects.detail.noTimelineDescription")}</p>
         </div>
       ) : (
         <div className="space-y-7">
-          {timelineBatches.map((batch) => (
-            <section key={batch.batchId} className="space-y-3">
+          {timelineEntries.map((entry) => {
+            if (entry.kind === "email_sent") {
+              const item = entry.item;
+              const compactLabel =
+                item.summary?.trim() ||
+                t("app.projects.detail.emailTimelineCompactFallback", {
+                  recipientEmail: item.emailRecipient ?? t("app.projects.detail.unknownRecipient"),
+                });
+
+              return (
+                <button
+                  key={entry.key}
+                  type="button"
+                  className="flex w-full items-start gap-3 rounded-lg px-2 py-2 text-left transition-colors hover:bg-muted/40"
+                  onClick={() => setSelectedSentEmailItem(item)}
+                >
+                  <span className="shrink-0 pt-0.5 text-xs text-muted-foreground">
+                    {dateFormatter.format(item.addedAt)}
+                  </span>
+                  <span className="min-w-0 text-sm text-foreground">{compactLabel}</span>
+                </button>
+              );
+            }
+
+            const batch = entry.batch;
+
+            return (
+            <section key={entry.key} className="space-y-3">
               <div className="space-y-2">
                 <div className="flex items-center gap-3">
                   <span className="text-xs text-muted-foreground">
@@ -1495,9 +1566,153 @@ function ProjectDetailRoute() {
                 </CardContent>
               </Card>
             </section>
-          ))}
+            );
+          })}
         </div>
       )}
+
+      <Dialog
+        open={selectedSentEmailItem !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSelectedSentEmailItem(null);
+          }
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{t("app.projects.dialogs.sentEmailTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("app.projects.dialogs.sentEmailDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          {selectedSentEmailItem ? (
+            <div className="space-y-5">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="sent-email-recipient">{t("app.projects.detail.toLabel")}</Label>
+                  <Input
+                    id="sent-email-recipient"
+                    value={selectedSentEmailItem.emailRecipient ?? ""}
+                    disabled
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="sent-email-subject">{t("app.projects.detail.subjectLabel")}</Label>
+                  <Input
+                    id="sent-email-subject"
+                    value={selectedSentEmailItem.emailSubject ?? ""}
+                    disabled
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="sent-email-body">{t("app.projects.detail.emailTextLabel")}</Label>
+                <Textarea
+                  id="sent-email-body"
+                  value={selectedSentEmailItem.emailBody ?? ""}
+                  disabled
+                  rows={10}
+                />
+              </div>
+
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>
+                  {t("app.projects.detail.emailSentMeta", {
+                    sentAt: dateFormatter.format(selectedSentEmailItem.addedAt),
+                    senderName:
+                      selectedSentEmailItem.addedByName ??
+                      t("app.projects.detail.unknownMember"),
+                  })}
+                </p>
+              </div>
+
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">{t("app.projects.detail.imageAttachmentsTitle")}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {t("app.projects.detail.emailSentImagesDescription")}
+                  </p>
+                </div>
+                {selectedSentEmailItem.media.filter((media) => media.kind === "image").length > 0 ? (
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {selectedSentEmailItem.media
+                      .filter((media) => media.kind === "image")
+                      .map((media) => (
+                        <div key={mediaKey(media)} className="overflow-hidden rounded-xl border bg-background">
+                          {media.url ? (
+                            <button
+                              type="button"
+                              className="block aspect-[4/3] w-full overflow-hidden bg-muted"
+                              onClick={() => openImageDialog(media)}
+                            >
+                              <img
+                                src={media.url}
+                                alt={media.summary || t("app.projects.detail.projectImageAlt")}
+                                className="h-full w-full object-cover"
+                              />
+                            </button>
+                          ) : (
+                            <div className="flex aspect-[4/3] items-center justify-center px-3 text-center text-xs text-muted-foreground">
+                              {t("app.projects.detail.mediaPreviewUnavailable")}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+                    {t("app.projects.detail.noImageAttachments")}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">{t("app.projects.detail.videoLinksTitle")}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {t("app.projects.detail.emailSentVideosDescription")}
+                  </p>
+                </div>
+                {selectedSentEmailItem.media.filter((media) => media.kind === "video").length > 0 ? (
+                  <div className="space-y-2">
+                    {selectedSentEmailItem.media
+                      .filter((media) => media.kind === "video")
+                      .map((media, index) => (
+                        <div
+                          key={mediaKey(media)}
+                          className="rounded-lg border px-3 py-2"
+                        >
+                          <p className="text-sm font-medium">
+                            {t("app.projects.detail.videoLabel", { index: index + 1 })}
+                          </p>
+                          {media.summary ? (
+                            <p className="mt-1 text-sm text-muted-foreground">{media.summary}</p>
+                          ) : null}
+                          {media.url ? (
+                            <a
+                              href={media.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-1 inline-block text-sm underline"
+                            >
+                              {t("app.projects.detail.openCurrentVideoLink")}
+                            </a>
+                          ) : null}
+                        </div>
+                      ))}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+                    {t("app.projects.detail.noVideoLinks")}
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
         <DialogContent>

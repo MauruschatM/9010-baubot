@@ -769,6 +769,9 @@ export const messagesDe = {
         emailPreviewTitle: "E-Mail-Vorschau",
         emailPreviewDescription:
           "Prüfe das lokalisierte Update, entferne Medien, die du nicht senden willst, und sende es dann per E-Mail an den Kunden.",
+        sentEmailTitle: "Gesendete E-Mail",
+        sentEmailDescription:
+          "Prüfe, was für diesen Zeitleisten-Schritt an den Kunden verschickt wurde.",
       },
       detail: {
         notFoundTitle: "Projekt nicht gefunden",
@@ -794,6 +797,7 @@ export const messagesDe = {
         noTimelineTitle: "Noch keine Zeitleiste",
         noTimelineDescription:
           "Sobald WhatsApp-Dokumentation verarbeitet wurde, erscheint hier die strukturierte Zeitleiste.",
+        emailTimelineCompactFallback: "E-Mail an {recipientEmail} gesendet",
         overview: "Überblick",
         messages: "Nachrichten",
         sendEmail: "E-Mail senden",
@@ -831,12 +835,18 @@ export const messagesDe = {
         videoLinksTitle: "Videolinks",
         videoLinksDescription:
           "Ausgewählte Videos werden als Links in der E-Mail verschickt.",
+        emailSentImagesDescription:
+          "Diese Bilder wurden beim Versand an die E-Mail angehängt.",
+        emailSentVideosDescription:
+          "Diese Videolinks wurden beim Versand in die E-Mail aufgenommen.",
+        emailSentMeta: "Gesendet am {sentAt} von {senderName}.",
         noVideoLinks: "Keine Videolinks ausgewählt.",
         videoLabel: "Video {index}",
         openCurrentVideoLink: "Aktuellen Videolink öffnen",
         defaultSummary: "Keine Zusammenfassung verfügbar.",
         defaultBatchTitle: "Projektupdate",
         projectImageAlt: "Projektbild",
+        unknownRecipient: "unbekannter Empfänger",
         imagePreviewDescription:
           "Klicke auf das Bild, um den 5x-Zoom umzuschalten. Mit den Pfeilen wechselst du zwischen den Bildern.",
       },

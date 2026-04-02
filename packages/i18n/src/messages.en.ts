@@ -747,6 +747,9 @@ export const messagesEn = {
         emailPreviewTitle: "Email preview",
         emailPreviewDescription:
           "Review the localized update, remove media you do not want to send, and then email it to the customer.",
+        sentEmailTitle: "Sent email",
+        sentEmailDescription:
+          "Review what was sent to the customer for this timeline step.",
       },
       detail: {
         notFoundTitle: "Project not found",
@@ -772,6 +775,7 @@ export const messagesEn = {
         noTimelineTitle: "No timeline yet",
         noTimelineDescription:
           "Once WhatsApp documentation is processed, the structured timeline will appear here.",
+        emailTimelineCompactFallback: "Email sent to {recipientEmail}",
         overview: "Overview",
         messages: "Messages",
         sendEmail: "Send email",
@@ -809,12 +813,18 @@ export const messagesEn = {
         videoLinksTitle: "Video links",
         videoLinksDescription:
           "Selected videos will be sent as links inside the email.",
+        emailSentImagesDescription:
+          "These images were attached when the email was sent.",
+        emailSentVideosDescription:
+          "These video links were included when the email was sent.",
+        emailSentMeta: "Sent on {sentAt} by {senderName}.",
         noVideoLinks: "No video links selected.",
         videoLabel: "Video {index}",
         openCurrentVideoLink: "Open current video link",
         defaultSummary: "No summary available.",
         defaultBatchTitle: "Project update",
         projectImageAlt: "Project image",
+        unknownRecipient: "unknown recipient",
         imagePreviewDescription:
           "Click the image to toggle 5x zoom. Use the arrow buttons to switch images.",
       },

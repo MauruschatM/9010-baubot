@@ -367,6 +367,10 @@ async function buildProjectExport(
   const batchById = new Map<string, ExportBatchAccumulator>();
 
   for (const row of timelineRows) {
+    if (row.sourceType === "email_sent") {
+      continue;
+    }
+
     const batchKey = String(row.batchId);
     const batch = batchById.get(batchKey) ?? createBatchAccumulator(row.batchId, row.addedAt);
     batch.latestAddedAt = Math.max(batch.latestAddedAt, row.addedAt);

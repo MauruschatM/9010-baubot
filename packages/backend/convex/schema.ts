@@ -117,6 +117,7 @@ export default defineSchema({
     sourceType: v.union(
       v.literal("whatsapp_message"),
       v.literal("whatsapp_batch_summary"),
+      v.literal("email_sent"),
     ),
     messageId: v.optional(v.id("whatsappMessages")),
     addedAt: v.number(),
@@ -137,6 +138,9 @@ export default defineSchema({
     nachtragDetails: v.optional(v.string()),
     nachtragLanguage: v.optional(vAppLocale),
     keywords: v.optional(v.array(v.string())),
+    emailRecipient: v.optional(v.string()),
+    emailSubject: v.optional(v.string()),
+    emailBody: v.optional(v.string()),
     fieldLocales: v.optional(timelineFieldLocalesValidator),
     mediaAssets: v.optional(v.array(timelineMediaAssetValidator)),
     createdAt: v.number(),

@@ -22,12 +22,19 @@ type AuthUserDoc = {
   email?: string | null;
 };
 
+type OrganizationMemberDoc = {
+  _id: string;
+  organizationId: string;
+  userId: string;
+};
+
 type ProjectEmailTimelineRow = {
   batchId: Id<"whatsappSendBatches">;
-  sourceType: "whatsapp_message" | "whatsapp_batch_summary";
+  sourceType: "whatsapp_message" | "whatsapp_batch_summary" | "email_sent";
   batchTitle?: string;
   media: Array<{
     mediaAssetId: Id<"whatsappMediaAssets">;
+    mimeType: string;
     kind: "image" | "audio" | "video" | "file";
     url?: string;
     summary?: string;
@@ -149,7 +156,7 @@ export const sendTimelineBatchEmail = action({
     const body = normalizeBody(args.body);
     const uniqueImageIds = dedupeIds(args.imageMediaAssetIds.map((mediaAssetId) => String(mediaAssetId)));
     const uniqueVideoIds = dedupeIds(args.videoMediaAssetIds.map((mediaAssetId) => String(mediaAssetId)));
-    const [project, timelineRows, currentUser] = await Promise.all([
+    const [project, timelineRows, currentUser, organizationMember] = await Promise.all([
       ctx.runQuery(api.projects.getById, { projectId: args.projectId }),
       ctx.runQuery(api.projects.timeline, {
         projectId: args.projectId,
@@ -160,6 +167,21 @@ export const sendTimelineBatchEmail = action({
         where: [
           {
             field: "_id",
+            operator: "eq",
+            value: authUserId,
+          },
+        ],
+      }),
+      ctx.runQuery(components.betterAuth.adapter.findOne, {
+        model: "member",
+        where: [
+          {
+            field: "organizationId",
+            operator: "eq",
+            value: organization.id,
+          },
+          {
+            field: "userId",
             operator: "eq",
             value: authUserId,
           },
@@ -177,6 +199,7 @@ export const sendTimelineBatchEmail = action({
     }
 
     const sender = currentUser as AuthUserDoc | null;
+    const member = organizationMember as OrganizationMemberDoc | null;
     const senderEmail = sender?.email?.trim();
 
     if (!senderEmail || isPhoneOnlyMemberEmail(senderEmail)) {
@@ -284,6 +307,44 @@ export const sendTimelineBatchEmail = action({
       throwOnMissingConfig: true,
       replyToEmail: senderEmail,
       senderName,
+    });
+
+    if (!member?._id) {
+      throw new ConvexError("Organization member not found");
+    }
+
+    const selectedMediaAssets = [
+      ...selectedImages.map((image) => ({
+        mediaAssetId: image.mediaAssetId,
+        mimeType: image.mimeType,
+        kind: image.kind,
+      })),
+      ...uniqueVideoIds.map((mediaAssetId) => {
+        const media = mediaById.get(mediaAssetId);
+
+        if (!media || media.kind !== "video") {
+          throw new ConvexError("One of the selected videos is no longer available");
+        }
+
+        return {
+          mediaAssetId: media.mediaAssetId,
+          mimeType: media.mimeType,
+          kind: media.kind,
+        };
+      }),
+    ];
+
+    await ctx.runMutation(internal.projectEmailsData.recordSentTimelineEmail, {
+      organizationId: organization.id,
+      projectId: args.projectId,
+      batchId: args.batchId,
+      addedByUserId: authUserId,
+      addedByMemberId: member._id,
+      addedByName: sender?.name?.trim() || undefined,
+      recipientEmail,
+      subject,
+      body,
+      mediaAssets: selectedMediaAssets,
     });
 
     return null;

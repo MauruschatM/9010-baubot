@@ -100,7 +100,7 @@ type TimelineMediaSummary = {
 type TimelineSummaryRow = {
   _id: Id<"projectTimelineItems">;
   batchId: Id<"whatsappSendBatches">;
-  sourceType: "whatsapp_message" | "whatsapp_batch_summary";
+  sourceType: "whatsapp_message" | "whatsapp_batch_summary" | "email_sent";
   addedAt: number;
   addedByName?: string;
   summary?: string;
@@ -449,6 +449,10 @@ function buildTimelineBatchSummaries(options: {
   >();
 
   for (const row of options.rows) {
+    if (row.sourceType === "email_sent") {
+      continue;
+    }
+
     const batchId = String(row.batchId);
     const current = byBatchId.get(batchId) ?? {
       batchId,
