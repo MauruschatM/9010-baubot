@@ -132,6 +132,7 @@ export const sendTimelineBatchEmail = action({
   args: {
     projectId: v.id("projects"),
     batchId: v.id("whatsappSendBatches"),
+    recipientEmail: v.string(),
     subject: v.string(),
     body: v.string(),
     imageMediaAssetIds: v.array(v.id("whatsappMediaAssets")),
@@ -170,8 +171,9 @@ export const sendTimelineBatchEmail = action({
       throw new ConvexError("Project not found");
     }
 
-    if (!project.customer?.email) {
-      throw new ConvexError("The linked customer needs an email address");
+    const recipientEmail = args.recipientEmail.trim();
+    if (!recipientEmail) {
+      throw new ConvexError("A recipient email address is required");
     }
 
     const sender = currentUser as AuthUserDoc | null;
@@ -262,6 +264,7 @@ export const sendTimelineBatchEmail = action({
           batchId: args.batchId,
           senderUserId: authUserId,
           senderEmail,
+          recipientEmail,
           subject,
           body,
           imageIds: uniqueImageIds,
@@ -272,7 +275,7 @@ export const sendTimelineBatchEmail = action({
       .slice(0, 24);
 
     await sendProjectTimelineUpdateEmail({
-      email: project.customer.email,
+      email: recipientEmail,
       subject,
       bodyText: body,
       videoLinks: selectedVideoLinks,

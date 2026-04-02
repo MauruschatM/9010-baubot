@@ -18,7 +18,6 @@ import { useAction, useMutation, useQuery } from "convex/react";
 import {
   useEffect,
   useMemo,
-  useRef,
   useState,
   type FormEvent,
   type MouseEvent,
@@ -715,7 +714,6 @@ function ProjectDetailRoute() {
   const prepareZipManifest = useAction(api.exports.prepareZipManifest);
   const updateProject = useMutation(api.projects.update);
   const archiveProject = useMutation(api.projects.archive);
-  const updateCustomer = useMutation(api.customers.update);
   const markReviewed = useMutation(api.projects.markReviewed);
   const reassignBatchProject = useMutation(api.projects.reassignBatchProject);
   const [localizedRows, setLocalizedRows] = useState<TimelineItem[] | null>(null);
@@ -731,17 +729,12 @@ function ProjectDetailRoute() {
   const [targetProjectId, setTargetProjectId] = useState("");
   const [projectSearchQuery, setProjectSearchQuery] = useState("");
   const [isReassigning, setIsReassigning] = useState(false);
-  const [pendingEmailBatchId, setPendingEmailBatchId] = useState<Id<"whatsappSendBatches"> | null>(null);
   const [composingBatchId, setComposingBatchId] = useState<Id<"whatsappSendBatches"> | null>(null);
   const [emailRecipient, setEmailRecipient] = useState("");
   const [emailSubject, setEmailSubject] = useState("");
   const [emailBody, setEmailBody] = useState("");
   const [selectedImageIds, setSelectedImageIds] = useState<Array<Id<"whatsappMediaAssets">>>([]);
   const [selectedVideoIds, setSelectedVideoIds] = useState<Array<Id<"whatsappMediaAssets">>>([]);
-  const [isCustomerEmailDialogOpen, setIsCustomerEmailDialogOpen] = useState(false);
-  const [customerEmailCustomerId, setCustomerEmailCustomerId] = useState<Id<"customers"> | null>(null);
-  const [customerEmailInput, setCustomerEmailInput] = useState("");
-  const [isSavingCustomerEmail, setIsSavingCustomerEmail] = useState(false);
   const [isSendingBatchEmail, setIsSendingBatchEmail] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [headerRoot, setHeaderRoot] = useState<HTMLElement | null>(null);
@@ -752,7 +745,6 @@ function ProjectDetailRoute() {
   const [mediaDialogMedia, setMediaDialogMedia] = useState<TimelineMediaItem | null>(null);
   const [imageZoom, setImageZoom] = useState(IMAGE_ZOOM_MIN);
   const [imageTransformOrigin, setImageTransformOrigin] = useState("50% 50%");
-  const keepPendingEmailAfterCustomerDialogClose = useRef(false);
 
   const timelineRows = localizedRows ?? originalTimelineRows ?? [];
   const timelineBatches = useMemo(
@@ -1118,15 +1110,6 @@ function ProjectDetailRoute() {
     setSelectedVideoIds([]);
   };
 
-  const openCustomerEmailDialog = (
-    initialEmail: string,
-    customerId: Id<"customers"> | null,
-  ) => {
-    setCustomerEmailCustomerId(customerId);
-    setCustomerEmailInput(initialEmail);
-    setIsCustomerEmailDialogOpen(true);
-  };
-
   const openEmailComposer = (
     batchId: Id<"whatsappSendBatches">,
     recipientEmail: string,
@@ -1138,11 +1121,9 @@ function ProjectDetailRoute() {
     const localizedBatch = localizedBatchMap.get(String(batchId));
     if (!localizedBatch) {
       toast.error(t("app.projects.toasts.localizedUnavailable"));
-      setPendingEmailBatchId(null);
       return;
     }
 
-    setPendingEmailBatchId(null);
     setComposingBatchId(batchId);
     setEmailRecipient(recipientEmail.trim());
     setEmailSubject(buildDefaultEmailSubject(project.location, localizedBatch.title));
@@ -1160,113 +1141,22 @@ function ProjectDetailRoute() {
   };
 
   const handleStartBatchEmail = (batchId: Id<"whatsappSendBatches">) => {
-    if (!project) {
-      return;
-    }
-
     if (isLoadingLocalizedRows || !localizedRows) {
       toast.error(t("app.projects.toasts.localizedLoading"));
       return;
     }
 
-    if (!project.customer) {
-      setPendingEmailBatchId(batchId);
-      setIsCustomerDialogOpen(true);
-      return;
-    }
-
-    const customerEmail = project.customer.email?.trim();
-    if (!customerEmail) {
-      setPendingEmailBatchId(batchId);
-      openCustomerEmailDialog("", project.customer._id);
-      return;
-    }
-
-    openEmailComposer(batchId, customerEmail);
-  };
-
-  const handleCustomerDialogSaved = (result: {
-    customerId: Id<"customers"> | null;
-    email?: string;
-  }) => {
-    if (!pendingEmailBatchId) {
-      return;
-    }
-
-    if (!result.customerId) {
-      setPendingEmailBatchId(null);
-      return;
-    }
-
-    const nextEmail = result.email?.trim() ?? "";
-    if (!nextEmail) {
-      keepPendingEmailAfterCustomerDialogClose.current = true;
-      openCustomerEmailDialog("", result.customerId);
-      return;
-    }
-
-    openEmailComposer(pendingEmailBatchId, nextEmail);
-  };
-
-  const handleCustomerDialogOpenChange = (open: boolean) => {
-    setIsCustomerDialogOpen(open);
-
-    if (!open) {
-      if (pendingEmailBatchId && !keepPendingEmailAfterCustomerDialogClose.current) {
-        setPendingEmailBatchId(null);
-      }
-      keepPendingEmailAfterCustomerDialogClose.current = false;
-    }
-  };
-
-  const handleCustomerEmailDialogOpenChange = (open: boolean) => {
-    setIsCustomerEmailDialogOpen(open);
-
-    if (!open) {
-      setCustomerEmailCustomerId(null);
-      if (pendingEmailBatchId) {
-        setPendingEmailBatchId(null);
-      }
-    }
-  };
-
-  const handleSaveCustomerEmail = async () => {
-    if (!customerEmailCustomerId) {
-      return;
-    }
-
-    const normalizedEmail = customerEmailInput.trim();
-    if (!normalizedEmail) {
-      toast.error(t("app.projects.toasts.customerEmailRequired"));
-      return;
-    }
-
-    setIsSavingCustomerEmail(true);
-    try {
-      await updateCustomer({
-        customerId: customerEmailCustomerId,
-        email: normalizedEmail,
-      });
-      toast.success(t("app.projects.toasts.customerEmailUpdated"));
-
-      const nextPendingBatchId = pendingEmailBatchId;
-      setPendingEmailBatchId(null);
-      setIsCustomerEmailDialogOpen(false);
-
-      if (nextPendingBatchId) {
-        openEmailComposer(nextPendingBatchId, normalizedEmail);
-      }
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : t("app.projects.toasts.customerEmailUpdateFailed"),
-      );
-    } finally {
-      setIsSavingCustomerEmail(false);
-    }
+    openEmailComposer(batchId, project?.customer?.email?.trim() ?? "");
   };
 
   const handleSendBatchEmail = async () => {
     if (!project || !composingBatchId || !composingBatch) {
+      return;
+    }
+
+    const normalizedRecipientEmail = emailRecipient.trim();
+    if (!normalizedRecipientEmail) {
+      toast.error(t("app.projects.toasts.customerEmailRequired"));
       return;
     }
 
@@ -1275,6 +1165,7 @@ function ProjectDetailRoute() {
       await sendTimelineBatchEmail({
         projectId: project._id,
         batchId: composingBatchId,
+        recipientEmail: normalizedRecipientEmail,
         subject: emailSubject,
         body: emailBody,
         imageMediaAssetIds: selectedImageIds,
@@ -1878,53 +1769,6 @@ function ProjectDetailRoute() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={isCustomerEmailDialogOpen} onOpenChange={handleCustomerEmailDialogOpenChange}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{t("app.projects.dialogs.customerEmailTitle")}</DialogTitle>
-            <DialogDescription>
-              {project.customer && customerEmailCustomerId === project.customer._id
-                ? t("app.projects.dialogs.customerEmailDescriptionNamed", {
-                    customerName: project.customer.name,
-                  })
-                : t("app.projects.dialogs.customerEmailDescriptionDefault")}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="customer-email-for-send">
-                {t("app.projects.detail.customerEmailLabel")}
-              </Label>
-              <Input
-                id="customer-email-for-send"
-                type="email"
-                value={customerEmailInput}
-                onChange={(event) => setCustomerEmailInput(event.target.value)}
-                disabled={isSavingCustomerEmail}
-                placeholder={t("app.projects.detail.customerEmailPlaceholder")}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => handleCustomerEmailDialogOpenChange(false)}
-              disabled={isSavingCustomerEmail}
-            >
-              {t("common.actions.cancel")}
-            </Button>
-            <Button
-              type="button"
-              onClick={() => void handleSaveCustomerEmail()}
-              disabled={isSavingCustomerEmail}
-            >
-              {t("app.projects.detail.saveEmail")}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       <Dialog
         open={composingBatch !== null}
         onOpenChange={(open) => {
@@ -1943,7 +1787,14 @@ function ProjectDetailRoute() {
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <Label htmlFor="timeline-email-recipient">{t("app.projects.detail.toLabel")}</Label>
-                  <Input id="timeline-email-recipient" value={emailRecipient} disabled />
+                  <Input
+                    id="timeline-email-recipient"
+                    type="email"
+                    value={emailRecipient}
+                    onChange={(event) => setEmailRecipient(event.target.value)}
+                    disabled={isSendingBatchEmail}
+                    placeholder={t("app.projects.detail.customerEmailPlaceholder")}
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="timeline-email-subject">{t("app.projects.detail.subjectLabel")}</Label>
@@ -2106,6 +1957,7 @@ function ProjectDetailRoute() {
               onClick={() => void handleSendBatchEmail()}
               disabled={
                 isSendingBatchEmail ||
+                emailRecipient.trim().length === 0 ||
                 emailSubject.trim().length === 0 ||
                 emailBody.trim().length === 0
               }
@@ -2120,13 +1972,12 @@ function ProjectDetailRoute() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
       <ProjectCustomerDialog
         open={isCustomerDialogOpen}
         project={project}
-        onOpenChange={handleCustomerDialogOpenChange}
-        onSaved={handleCustomerDialogSaved}
+        onOpenChange={setIsCustomerDialogOpen}
       />
+
     </div>
   );
 }

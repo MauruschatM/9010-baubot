@@ -2361,6 +2361,7 @@ export async function executePendingAction(options: ExecutePendingActionOptions)
       await options.ctx.runAction(api.projectEmails.sendTimelineBatchEmail, {
         projectId: options.payload.projectId as Id<"projects">,
         batchId: options.payload.batchId as Id<"whatsappSendBatches">,
+        recipientEmail: options.payload.recipientEmail ?? "",
         subject: options.payload.subject ?? "",
         body: options.payload.body ?? "",
         imageMediaAssetIds:
